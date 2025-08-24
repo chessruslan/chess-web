@@ -1,0 +1,214 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:chess/chess.dart' as ch;
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Chess API Demo',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(title: 'Chess API with FEN'),
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+  final String title;
+
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
+}
+
+class _MyHomePageState extends State<MyHomePage> {
+  final TextEditingController _fenController = TextEditingController(
+    text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1',
+  );
+  final ch.Chess game = ch.Chess();
+  String? _result;
+  bool _loading = false;
+  int? selectedIndex;
+
+  Future<void> fetchBestMove() async {
+    final fen = _fenController.text.trim();
+    if (fen.isEmpty) return;
+
+    setState(() {
+      _loading = true;
+      _result = null;
+    });
+
+    final url = Uri.parse('https://chess-api.com/v1');
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'fen': fen,
+          'variants': 3,
+          'depth': 18,
+          'maxThinkingTime': 2000,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        setState(() {
+          _result = json.toString();
+        });
+      } else {
+        setState(() {
+          _result = 'Error ${response.statusCode}: ${response.body}';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _result = 'Exception: $e';
+      });
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
+  String _indexToSquare(int index) {
+    final file = String.fromCharCode('a'.codeUnitAt(0) + (index % 8));
+    final rank = 8 - (index ~/ 8);
+    return '$file$rank';
+  }
+
+  String getPieceSymbol(ch.Piece? piece) {
+    if (piece == null) return '';
+    switch (piece.type) {
+      case ch.PieceType.PAWN:
+        return piece.color == ch.Color.WHITE ? '♙' : '♟';
+      case ch.PieceType.ROOK:
+        return piece.color == ch.Color.WHITE ? '♖' : '♜';
+      case ch.PieceType.KNIGHT:
+        return piece.color == ch.Color.WHITE ? '♘' : '♞';
+      case ch.PieceType.BISHOP:
+        return piece.color == ch.Color.WHITE ? '♗' : '♝';
+      case ch.PieceType.QUEEN:
+        return piece.color == ch.Color.WHITE ? '♕' : '♛';
+      case ch.PieceType.KING:
+        return piece.color == ch.Color.WHITE ? '♔' : '♚';
+    }
+    return '';
+  }
+
+  void _makeMove(String from, String to) {
+    final move = game.move({'from': from, 'to': to});
+    if (move != null) {
+      setState(() {
+        _fenController.text = game.fen;
+      });
+    }
+  }
+
+  Widget _buildChessBoard() {
+    return SizedBox(
+      width: 300,
+      height: 300,
+      child: GridView.builder(
+        gridDelegate:
+            const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8),
+        itemCount: 64,
+        itemBuilder: (context, index) {
+          final square = _indexToSquare(index);
+          final piece = game.get(square);
+          final isWhiteSquare = (index ~/ 8 + index % 8) % 2 == 0;
+          return DragTarget<int>(
+            onAccept: (fromIndex) {
+              final from = _indexToSquare(fromIndex);
+              final to = square;
+              _makeMove(from, to);
+            },
+            builder: (context, candidateData, rejectedData) => Container(
+              decoration: BoxDecoration(
+                color: isWhiteSquare ? Colors.white : Colors.brown,
+                border: Border.all(color: Colors.black12),
+              ),
+              child: piece != null
+                  ? Draggable<int>(
+                      data: index,
+                      feedback: Material(
+                        color: Colors.transparent,
+                        child: Text(
+                          getPieceSymbol(piece),
+                          style: const TextStyle(fontSize: 28),
+                        ),
+                      ),
+                      childWhenDragging: const SizedBox.shrink(),
+                      child: Center(
+                        child: Text(
+                          getPieceSymbol(piece),
+                          style: const TextStyle(fontSize: 28),
+                        ),
+                      ),
+                    )
+                  : null,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: SingleChildScrollView(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(height: 12),
+            _buildChessBoard(),
+            const SizedBox(height: 24),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _fenController,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: 'Enter FEN',
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loading ? null : fetchBestMove,
+              child: const Text('Get Best Move'),
+            ),
+            const SizedBox(height: 24),
+            if (_loading)
+              const CircularProgressIndicator()
+            else if (_result != null)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: SelectableText(
+                  _result!,
+                  style: const TextStyle(fontSize: 14),
+                ),
+              )
+            else
+              const Text('Enter a FEN and press the button.'),
+          ],
+        ),
+      ),
+    );
+  }
+}

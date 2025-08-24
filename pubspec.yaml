@@ -1,0 +1,25 @@
+name: my_new_chess_app
+description: Chess demo project
+publish_to: "none"
+
+environment:
+  sdk: ">=3.2.3 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0            # совместимо с Dart 3.2.x (избегаем >=1.2.1, где нужен Dart 3.3+)
+  flutter_svg: ^2.0.10+1
+  chess: ^0.8.1           # стабильная ветка под Dart 3.2.x
+  audioplayers: ^5.2.1    # звук ходов/взятия
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/pieces/cburnett/   # 12 SVG фигур (wP..wK, bP..bK)
+    - assets/sfx/               # move.mp3, capture.mp3
