@@ -1,0 +1,55 @@
+Как обновлять сайт в будущем
+
+После правок в коде:
+
+flutter build web --release --web-renderer canvaskit --base-href /chess-web/
+robocopy build\web docs /E
+git add .
+git commit -m "Update site"
+git push
+
+
+Сделаешь «Save» на странице Pages — и пришли ссылку, проверим, всё ли открывается.
+
+Как обновлять сайт теперь (короткая памятка)
+
+В PowerShell в папке проекта (PS C:\3_3_s_my_new_chess_app>):
+
+flutter build web --release --web-renderer canvaskit --base-href /chess-web/
+robocopy build\web docs /E
+git add .
+git commit -m "Update site"
+git push
+
+
+Если на слабых устройствах тяжеловато, можно собрать легче:
+
+flutter build web --release --web-renderer html --base-href /chess-web/
+
+Полезные улучшения (по желанию)
+
+Собственный домен: в репо → Settings → Pages → Custom domain.
+У провайдера домена добавь CNAME на chessruslan.github.io.
+
+SEO и заголовок: правь web/index.html
+<title>Chess Web</title> и <meta name="description" content="Шахматы на Flutter с листом ходов">.
+
+Иконка сайта: замени web/icons/* и web/favicon.png.
+
+Кеш/офлайн: для веба у Flutter есть сервис-воркер (flutter_service_worker.js). При большом объёме ассетов чаще используй --web-renderer html.
+
+Аналитика: вставь код счётчика (GA/ЯМетрика) в index.html перед </head>.
+
+CI/CD (автодеплой): можно сделать GitHub Action, чтобы деплоить без ручных команд — скажешь, сгенерю deploy.yml под твой репозиторий.
+
+Идеи для функционала
+
+Кнопки Undo/Redo, Flip board, Copy PGN/FEN, Load PGN/FEN.
+
+Кликабельная лента ходов (переход по позиции).
+
+Таймеры, режим «против компьютера» (автоматически делать лучший ход из API).
+
+Сохранение партии в LocalStorage + кнопка «Поделиться» ссылкой (FEN в URL).
+
+Хочешь — сделаю автодеплой через GitHub Actions и добавлю Undo/Redo + «Flip board».

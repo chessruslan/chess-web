@@ -1,0 +1,1441 @@
+  // ============ Engine (без изменений) ============
+  String? _extractUci(dynamic obj) {
+    if (obj == null) return null;
+    String? pick(dynamic v) {
+      if (v is String) return v;
+      if (v is Map && v['uci'] is String) return v['uci'] as String;
+      if (v is Map && v['move'] is String) return v['move'] as String;
+      return null;
+    }
+
+    for (final k in ['bestMove', 'best_move', 'bestmove', 'move', 'uci']) {
+      if (obj is Map && obj[k] != null) {
+        final s = pick(obj[k]);
+        if (s != null) return s;
+      }
+    }
+    if (obj is Map &&
+        obj['variants'] is List &&
+        (obj['variants'] as List).isNotEmpty) {
+      final v0 = (obj['variants'] as List).first;
+      final s = pick(v0);
+      if (s != null) return s;
+      if (v0 is Map && v0['line'] is List && v0['line'].isNotEmpty) {
+        final first = v0['line'].first;
+        if (first is String) return first;
+      }
+    }
+    if (obj is Map && obj['pv'] is String) {
+      final pv = (obj['pv'] as String).trim().split(RegExp(r'\s+'));
+      if (pv.isNotEmpty && pv.first.length >= 4) return pv.first;
+    }
+    final rx = RegExp(r'\b[a-h][1-8][a-h][1-8][qrbn]?\b', caseSensitive: false);
+    final text = const JsonEncoder().convert(obj);
+    final m = rx.firstMatch(text);
+    return m?.group(0);
+  }
+
+  Future<String?> _fetchUciBestMove(String fen) async {
+    // 1) приводим FEN в “безопасный” вид: корректируем/убираем EP
+    final saneFen = sanitizeFenEp(fen);
+    final fenForApi = stripEpField(saneFen);
+
+    // 2) тот же API, что и в рабочем примере
+    final url = Uri.parse('https://chess-api.com/v1');
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'fen': fenForApi,
+          'variants': 3,
+          'depth': 18,
+          'maxThinkingTime': 2000,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final obj = jsonDecode(response.body);
+        final uci = _extractUci(obj);
+        setState(
+            () => _result = const JsonEncoder.withIndent('  ').convert(obj));
+        return uci;
+      } else {
+        setState(
+            () => _result = 'Error ${response.statusCode}: ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      setState(() => _result = 'Exception: $e');
+      return null;
+    }
+  }
+
+  Future<void> _engineMove() async {
+    if (!_vsEngine || _engineThinking) return;
+    if (game.game_over) return;
+    // Движок думает только когда мы на конце истории
+    if (_plyIndex != _sanMoves.length) return;
+
+    setState(() => _engineThinking = true);
+    final uci = await _fetchUciBestMove(game.fen);
+    if (uci != null) {
+      await _applyUciMove(uci);
+      _checkGameOver();
+    }
+    setState(() => _engineThinking = false);
+  }
+
+  // ============ History helpers ============
+  void _resetToFen(String fen) {
+    game.load(fen);
+    _fenController.text = game.fen;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+  }
+
+  void _setPly(int n) {
+    _plyIndex = n.clamp(0, _sanMoves.length);
+    _resetToFen(_fens[_plyIndex]);
+    setState(() {});
+  }
+
+  void _goStart() => _setPly(0);
+  void _goEnd() => _setPly(_sanMoves.length);
+  void _goPrev() => _setPly(_plyIndex - 1);
+  void _goNext() => _setPly(_plyIndex + 1);
+
+  void _truncateFutureBranch() {
+    if (_plyIndex < _sanMoves.length) {
+      _sanMoves.removeRange(_plyIndex, _sanMoves.length);
+      _fens.removeRange(_plyIndex + 1, _fens.length);
+    }
+  }
+
+  // ============ Board helpers ============
+  String _displayIndexToSquare(int index) {
+    final row = index ~/ 8; // 0..7 сверху вниз
+    final col = index % 8; // 0..7 слева направо
+    if (_isFlipped) {
+      final file = String.fromCharCode('h'.codeUnitAt(0) - col); // h..a
+      final rank = row + 1; // 1..8
+      return '$file$rank';
+    } else {
+      final file = String.fromCharCode('a'.codeUnitAt(0) + col); // a..h
+      final rank = 8 - row; // 8..1
+      return '$file$rank';
+    }
+  }
+
+  bool _needsPromotion(String from, String to) {
+    final p = game.get(from);
+    if (p == null || p.type != ch.PieceType.PAWN) return false;
+    final toRank = int.tryParse(to.substring(1)) ?? 0;
+    if (p.color == ch.Color.WHITE && toRank == 8) return true;
+    if (p.color == ch.Color.BLACK && toRank == 1) return true;
+    return false;
+  }
+
+  Future<String?> _askPromotionPiece(
+      BuildContext context, ch.Color color) async {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выберите фигуру для превращения'),
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final entry in {
+              'q': color == ch.Color.WHITE ? '♕' : '♛',
+              'r': color == ch.Color.WHITE ? '♖' : '♜',
+              'b': color == ch.Color.WHITE ? '♗' : '♝',
+              'n': color == ch.Color.WHITE ? '♘' : '♞',
+            }.entries)
+              IconButton(
+                icon: Text(entry.value, style: const TextStyle(fontSize: 32)),
+                onPressed: () => Navigator.of(context).pop(entry.key),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _willBeCapture(String from, String to) {
+    try {
+      final ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      final m = ms.firstWhere((m) => m['to'] == to, orElse: () => {});
+      if (m.isEmpty) return false;
+      final flags = (m['flags'] as String?) ?? '';
+      return flags.contains('c') ||
+          flags.contains('e') ||
+          m['captured'] != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _sanFor(String from, String to, {String? promotion}) {
+    try {
+      final List<Map<String, dynamic>> ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      for (final m in ms) {
+        if (m['to'] == to) {
+          final pr = m['promotion'] as String?;
+          if (promotion == null || promotion == pr) return m['san'] as String?;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ходить можно только своим цветом (в онлайне/против ИИ)
+  bool _myTurnNow() {
+    if (_gameTerminated) return false;
+    if (!_vsEngine && !_inRoom) return true;
+    return game.turn == _humanColor;
+  }
+
+  Future<void> _applyUciMove(String uci) async {
+    _truncateFutureBranch();
+    final from = uci.substring(0, 2);
+    final to = uci.substring(2, 4);
+    final promo = uci.length >= 5 ? uci[4].toLowerCase() : null;
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final params = {
+      'from': from,
+      'to': to,
+      if (promo != null) 'promotion': promo
+    };
+    final ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+  }
+
+  void _afterHumanMoveCommon(String san, bool isCapture) {
+    _sanMoves.add(san);
+    _fens.add(game.fen);
+    _plyIndex = _sanMoves.length;
+
+    setState(() {
+      _fenController.text = game.fen;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _playSound(capture: isCapture);
+    _scrollMovesToEnd();
+
+    // часы: инкремент тому, кто ходил, и передаём ход сопернику
+    _onLocalMoveAffectClocks();
+
+    // сразу рассылаем снапшот часов (мгновенное переключение у соперника)
+    _broadcastClockSnapshot();
+  }
+
+  void _scrollMovesToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_movesScroll.hasClients) {
+        _movesScroll.animateTo(
+          _movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _checkGameOver() {
+    if (game.in_checkmate) {
+      final winner = game.turn == ch.Color.WHITE ? "Чёрные" : "Белые";
+      _finishGameWithResult(
+          game.turn == ch.Color.WHITE ? '0-1' : '1-0', 'Мат: $winner победили');
+      return;
+    }
+    if (game.in_stalemate) {
+      _finishGameWithResult('1/2-1/2', 'Пат — ничья');
+      return;
+    }
+    if (game.in_threefold_repetition) {
+      _finishGameWithResult('1/2-1/2', 'Троекратное повторение — ничья');
+      return;
+    }
+    if (game.in_draw) {
+      _finishGameWithResult('1/2-1/2', 'Ничья по правилам');
+      return;
+    }
+  }
+
+  void _showInfo(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'))
+        ],
+      ),
+    );
+  }
+
+  // ================== TIME CONTROL ==================
+
+  void _applyTimeControl({
+    required int minutes,
+    required int increment,
+    required bool rated,
+    bool broadcast = false,
+  }) {
+    setState(() {
+      _tcMinutes = minutes;
+      _tcIncrement = increment;
+      _rated = rated;
+      _matchRated =
+          rated; // <-- ДОБАВИЛИ. Фиксируем выбранный режим для текущего матча
+    });
+
+    _resetClocks();
+    if (broadcast) _broadcastTimeControl();
+    _broadcastClockSnapshot();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Контроль: $minutes+${increment}${rated ? " (рейтинговая)" : ""}')),
+      );
+    }
+  }
+
+  void _resetClocks() {
+    final ms = _tcMinutes * 60 * 1000;
+    _whiteMs = ms;
+    _blackMs = ms;
+    _lastTickAt = null;
+    _lastClockCastAt = null;
+    _clocksStarted = false; // <-- часы ещё не идут
+    _stopTick();
+    // НИКАКИХ запусков до первого хода!
+  }
+
+  void _startTickForActiveSide() {
+    _stopTick();
+    if (!_inRoom) return;
+    if (_gameTerminated) return;
+    _lastTickAt = DateTime.now();
+    _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final now = DateTime.now();
+      final delta = now.difference(_lastTickAt!).inMilliseconds;
+      _lastTickAt = now;
+
+      setState(() {
+        if (game.turn == ch.Color.WHITE) {
+          _whiteMs = (_whiteMs - delta).clamp(0, 1 << 31);
+          if (_whiteMs <= 0) _onFlagFall(ch.Color.WHITE);
+        } else {
+          _blackMs = (_blackMs - delta).clamp(0, 1 << 31);
+          if (_blackMs <= 0) _onFlagFall(ch.Color.BLACK);
+        }
+      });
+    });
+  }
+
+  void _stopTick() {
+    _tick?.cancel();
+    _tick = null;
+    _lastTickAt = null;
+  }
+
+  void _switchTurnAndApplyIncrement(ch.Color movedColor) {
+    if (_tcIncrement > 0) {
+      if (movedColor == ch.Color.WHITE) {
+        _whiteMs += _tcIncrement * 1000;
+      } else {
+        _blackMs += _tcIncrement * 1000;
+      }
+    }
+    _startTickForActiveSide();
+  }
+
+  // >>> ИЗМЕНЕНО: формулировка сообщения при падении флага
+  void _onFlagFall(ch.Color flagSide) {
+    final result = (flagSide == ch.Color.WHITE) ? '0-1' : '1-0';
+    final reason =
+        (flagSide == ch.Color.WHITE) ? 'Победа черных' : 'Победа белых';
+    _finishGameWithResult(result, reason);
+  }
+
+  String _fmtMs(int ms) {
+    final s = (ms / 1000).floor();
+    final m = s ~/ 60;
+    final sec = s % 60;
+    final pad = (sec < 10) ? '0$sec' : '$sec';
+    return '$m:$pad';
+  }
+  // ================== ONLINE: Lobby & Room ==================
+  Future<void> _enterLobby() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null || _nickname == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала войдите в аккаунт')),
+      );
+      return;
+    }
+
+    if (_lobby == null) {
+      final lobby = LobbyService(
+        supa,
+        username: _nickname!,
+        userId: uid,
+        myRating: _myRating, // <-- добавили
+      );
+
+      lobby.onOnlineChanged = () => setState(() {});
+      lobby.onInvite =
+          (roomId, fromId, fromName, inviterColor, m, inc, rated) async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Вызов на игру'),
+            content: Text(
+                '$fromName приглашает вас сыграть\nКонтроль: $m+${inc}${rated ? " (рейтинговая)" : ""}'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отклонить')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Принять')),
+            ],
+          ),
+        );
+        if (ok == true) {
+          // Зафиксировать у себя TC из приглашения (без рассылки)
+          _applyTimeControl(
+              minutes: m, increment: inc, rated: rated, broadcast: false);
+          _matchRated = rated; // фиксируем «рейтинговость» матча у принимающего
+
+          final myColor = _opposite(inviterColor);
+          await lobby.sendAccept(
+              toUserId: fromId,
+              toName: fromName,
+              roomId: roomId,
+              color: myColor);
+
+          await _openRoom(
+            roomId,
+            opponentId: fromId,
+            opponentName: fromName,
+            myColor: myColor,
+            spectator: false,
+          );
+        }
+      };
+
+      lobby.onAccept = (roomId, fromId, fromName, acceptorColor) {
+        final myColor = _opposite(acceptorColor);
+        _openRoom(roomId,
+            opponentId: fromId,
+            opponentName: fromName,
+            myColor: myColor,
+            spectator: false);
+      };
+
+      _lobby = lobby;
+    }
+
+    await _lobby!.connect();
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Вы в лобби')));
+    }
+  }
+
+  Future<void> _leaveLobby() async {
+    await _lobby?.disconnect();
+    setState(() {});
+  }
+
+  Future<void> _invitePlayer(String id, String name) async {
+    if (_lobby == null) {
+      await _enterLobby();
+      if (_lobby == null) return;
+    }
+
+    // 1) Выбор цвета
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выбор цвета'),
+        content: const Text('Кем хотите играть?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'random'),
+              child: const Text('Случайный')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'white'),
+              child: const Text('Белыми')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'black'),
+              child: const Text('Чёрными')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+
+    String myColor = choice;
+    if (myColor == 'random') {
+      myColor = (math.Random().nextBool()) ? 'white' : 'black';
+    }
+
+    // 2) Выбор контроля ДО инвайта
+    final pickedTc = await showDialog<_TcChoice>(
+      context: context,
+      builder: (_) => _TcDialog(
+        initialMinutes: _tcMinutes,
+        initialIncrement: _tcIncrement,
+        initialRated: _matchRated, // ✅ реальный режим текущего матча
+      ),
+    );
+    if (pickedTc == null) return;
+
+    // локально применяем, без рассылки
+    _applyTimeControl(
+      minutes: pickedTc.minutes,
+      increment: pickedTc.increment,
+      rated: pickedTc.rated,
+      broadcast: false,
+    );
+    _matchRated =
+        pickedTc.rated; // фиксируем «рейтинговость» матча у инициатора
+
+    final roomId = const Uuid().v4();
+
+    // 3) Отправляем инвайт с TC
+    await _lobby!.sendInvite(
+      toUserId: id,
+      toName: name,
+      roomId: roomId,
+      color: myColor,
+      minutes: pickedTc.minutes,
+      increment: pickedTc.increment,
+      rated: pickedTc.rated,
+    );
+
+    if (mounted) {
+      final colorLabel = (myColor == 'white') ? 'белые' : 'чёрные';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Приглашение отправлено: $name ($colorLabel), контроль ${pickedTc.minutes}+${pickedTc.increment}${pickedTc.rated ? " рейтинговая" : ""}')),
+      );
+    }
+  }
+
+  Future<void> _openRoom(
+    String roomId, {
+    required String opponentId,
+    required String opponentName,
+    required String myColor, // 'white' | 'black'
+    required bool spectator,
+  }) async {
+    _room?.disconnect();
+    final supa = Supabase.instance.client;
+    // создаём сервис комнаты
+    _room = RoomService(supa, roomId: roomId);
+
+    // обработчики
+    _room!.onMove = (m) {
+      final rid = m['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return; // фильтр
+      _applyRemoteMove(
+        '${m['from']}',
+        '${m['to']}',
+        m['promotion']?.toString(),
+      );
+    };
+
+    _room!.onChat = (msg) {
+      final rid = msg['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final text = (msg['msg'] ?? '') as String;
+      if (text.isEmpty) return;
+
+      final fromName = (msg['fromName'] ?? 'player').toString();
+      final from = (msg['from'] ?? '').toString();
+      final myId = Supabase.instance.client.auth.currentUser?.id;
+
+      final mine = (from.isNotEmpty && myId != null && from == myId);
+
+      setState(() {
+        _chat.add(_ChatMsg(from: fromName, text: text, mine: mine));
+      });
+    };
+
+    _room!.onCtrl = (evt) => _onRemoteCtrl(evt);
+
+    // ничья/ответ/сдача отдельными событиями
+    _room!.onDrawOffer = (evt) async {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      setState(() {
+        _drawOfferedByMe = false;
+        _drawOfferedToMe = true;
+      });
+      _maybeAskDrawDialog();
+    };
+
+    _room!.onDrawAnswer = (evt) {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      final accepted = evt['accepted'] == true;
+
+      if (accepted) {
+        setState(() {
+          _drawOfferedByMe = false;
+          _drawOfferedToMe = false;
+        });
+        _finishGameWithResult('1/2-1/2', 'Ничья по соглашению');
+      } else {
+        setState(() {
+          _drawOfferedByMe = false;
+          _drawOfferedToMe = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Соперник отклонил ничью')),
+        );
+      }
+    };
+
+    _room!.onResign = (evt) {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      final result = (_humanColor == ch.Color.WHITE) ? '1-0' : '0-1';
+      _finishGameWithResult(result, 'Соперник сдался');
+    };
+
+    await _room!.connect();
+
+    setState(() {
+      _roomId = roomId;
+      _opponentId = opponentId;
+      _opponentName = opponentName;
+      _vsEngine = false;
+      _engineThinking = false;
+      _humanColor =
+          (myColor.toLowerCase() == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
+      _isSpectator = spectator;
+      _chat.clear();
+      _drawOfferedByMe = _drawOfferedToMe = false;
+      _rematchOfferedByMe = _rematchOfferedToMe = false;
+      _gameTerminated = false;
+    });
+
+    try {
+      final row = await supa
+          .from('profiles')
+          .select('rating, games_played, nickname')
+          .eq('id', opponentId)
+          .maybeSingle();
+      setState(() {
+        _oppRating = (row?['rating'] as int?) ?? 1200;
+        _oppGames = (row?['games_played'] as int?) ?? 0;
+        _opponentName = (row?['nickname'] as String?) ?? opponentName;
+      });
+    } catch (_) {}
+
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves..clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+
+    _resetClocks();
+
+    html.window.localStorage[_LS_ROOM] = jsonEncode({
+      'roomId': roomId,
+      'opponentId': opponentId,
+      'opponentName': _opponentName,
+      'myColor': (myColor.toLowerCase()),
+      'spectator': spectator,
+    });
+
+    _broadcastTimeControl();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Игра против $_opponentName (${myColor == 'white' ? 'белыми' : 'чёрными'})')),
+      );
+    }
+  }
+
+  Future<void> _leaveRoom() async {
+    await _room?.disconnect();
+    _stopTick();
+    setState(() {
+      _room = null;
+      _roomId = null;
+      _opponentId = null;
+      _opponentName = null;
+      _isSpectator = false;
+    });
+
+    _matchRated =
+        _rated; // для локальных/ИИ партий синхронизируем с переключателем
+
+    html.window.localStorage.remove(_LS_ROOM);
+  }
+
+  Future<void> _tryRestoreRoom() async {
+    final s = html.window.localStorage[_LS_ROOM];
+    if (s == null) return;
+    try {
+      final map = jsonDecode(s) as Map<String, dynamic>;
+      final roomId = map['roomId'] as String?;
+      final oppId = map['opponentId'] as String?;
+      final oppName = map['opponentName'] as String? ?? 'opponent';
+      final myColor = map['myColor'] as String? ?? 'white';
+      final spectator = (map['spectator'] as bool?) ?? false;
+      if (roomId != null && oppId != null) {
+        final supa = Supabase.instance.client;
+        if (supa.auth.currentUser == null) return;
+        await _openRoom(roomId,
+            opponentId: oppId,
+            opponentName: oppName,
+            myColor: myColor,
+            spectator: spectator);
+      }
+    } catch (_) {}
+  }
+
+  // ================== PGN / Result / Ratings ==================
+  List<String> _rowsFromSan(List<String> san) {
+    final out = <String>[];
+    for (int i = 0; i < san.length; i += 2) {
+      final n = i ~/ 2 + 1;
+      final w = san[i];
+      final b = (i + 1 < san.length) ? san[i + 1] : '';
+      out.add('$n. $w ${b.isEmpty ? '' : b}');
+    }
+    return out;
+  }
+
+  String _makePGN(String result) {
+    final rows = _rowsFromSan(_sanMoves).join(' ');
+    return '$rows $result'.trim();
+  }
+
+  int _kFactor(int rating, int games) {
+    if (games < 30) return 40;
+    if (rating >= 2400) return 10;
+    return 20;
+  }
+
+  Map<String, int> _eloDelta({
+    required int rA,
+    required int rB,
+    required double sA,
+    required int gA,
+    required int gB,
+  }) {
+    double expA = 1.0 / (1 + math.pow(10, (rB - rA) / 400.0));
+    final kA = _kFactor(rA, gA);
+    final kB = _kFactor(rB, gB);
+    final dA = (kA * (sA - expA)).round();
+    final dB = -dA * kB ~/ kA;
+    return {'da': dA, 'db': dB};
+  }
+
+  Future<void> _storeGameAndRatings(String result) async {
+    final supa = Supabase.instance.client;
+    final me = supa.auth.currentUser?.id;
+    if (me == null) return;
+    debugPrint(
+        '[RATING] inRoom=$_inRoom spect=$_isSpectator matchRated=$_matchRated');
+
+    // Игра считается рейтинговой, только если мы в комнате и не зритель.
+    final bool ratedGame = _inRoom && !_isSpectator && _matchRated;
+
+    final String? whiteId = (_humanColor == ch.Color.WHITE) ? me : _opponentId;
+    final String? blackId = (_humanColor == ch.Color.WHITE) ? _opponentId : me;
+
+    try {
+      final pgn = _rowsFromSan(_sanMoves).join(' ');
+      await supa.from('games').insert({
+        'white_id': whiteId,
+        'black_id': blackId,
+        'pgn': pgn,
+        'result': result,
+        'rated': ratedGame,
+      });
+    } catch (e) {
+      debugPrint('games.insert failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось сохранить партию: $e')),
+        );
+      }
+    }
+
+    if (!ratedGame) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Нерейтинговая партия — рейтинг не изменён')),
+        );
+      }
+      // return; // намеренно не выходим — покажем локальный пересчёт
+    }
+
+    try {
+      final myStats = await _loadProfileStats(me);
+      final int myOld = myStats['rating']!;
+      final int myPlayed = myStats['games_played']!;
+
+      int oppOld = _oppRating;
+      int oppPlayed = _oppGames;
+      if ((_opponentId ?? '').isNotEmpty) {
+        final oppStats = await _loadProfileStats(_opponentId!);
+        oppOld = oppStats['rating']!;
+        oppPlayed = oppStats['games_played']!;
+      }
+
+      double sMy;
+      if (result == '1-0') {
+        sMy = (_humanColor == ch.Color.WHITE) ? 1.0 : 0.0;
+      } else if (result == '0-1') {
+        sMy = (_humanColor == ch.Color.BLACK) ? 1.0 : 0.0;
+      } else {
+        sMy = 0.5;
+      }
+
+      final deltas = _eloDelta(
+        rA: myOld,
+        rB: oppOld,
+        sA: sMy,
+        gA: myPlayed,
+        gB: oppPlayed,
+      );
+      final int dMy = deltas['da']!;
+      final int dOpp = deltas['db']!;
+      final int myNew = myOld + dMy;
+      final int oppNew = oppOld + dOpp;
+
+      debugPrint('[RATING] old=$myOld/$oppOld  score=$sMy  dMy=$dMy -> $myNew');
+
+      await supa
+          .from('profiles')
+          .update({'rating': myNew, 'games_played': myPlayed + 1}).eq('id', me);
+
+      setState(() {
+        _myRating = myNew;
+        _myGames = myPlayed + 1;
+        _oppRating = oppNew;
+        _oppGames = oppPlayed + 1;
+      });
+
+      _lobby?.updateMyRating(_myRating);
+      _lobby?.sendPresenceNow();
+
+      if (mounted) {
+        final sign = (dMy >= 0) ? '+$dMy' : '$dMy';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Рейтинг обновлён: $myOld → $myNew ($sign)')),
+        );
+      }
+    } catch (e) {
+      debugPrint('profiles.update failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось обновить рейтинг: $e')),
+        );
+      }
+    }
+  }
+  // >>> Завершение партии + диалог
+  void _finishGameWithResult(String result, String reason,
+      {bool broadcast = true}) {
+    setState(() => _gameTerminated = true);
+    _stopTick();
+
+    if (broadcast && _room != null) {
+      _room!.sendCtrl({
+        'type': 'result',
+        'result': result,
+        'reason': reason,
+        'clientId': _clientId,
+        'roomId': _roomId,
+      });
+    }
+
+    _storeGameAndRatings(result).whenComplete(() {
+      final showCompact = reason.toLowerCase().startsWith('победа ');
+      final message =
+          showCompact ? '$reason  $result' : '$reason — результат $result';
+      _showInfo('Игра окончена', message);
+    });
+
+    html.window.localStorage.remove(_LS_ROOM);
+  }
+
+  // ================== CHAT / CTRL HANDLERS ==================
+  void _onRemoteCtrl(Map<String, dynamic> evt) {
+    final senderCid = evt['clientId'] as String?;
+    if (senderCid != null && senderCid == _clientId) return;
+
+    final String? evtRoom = evt['roomId'] as String?;
+    if (_roomId != null && evtRoom != null && evtRoom != _roomId) return;
+
+    switch ((evt['type'] as String?) ?? '') {
+      case 'result':
+        if (_gameTerminated) break;
+        final result = (evt['result'] as String?) ?? '';
+        final reason = (evt['reason'] as String?) ?? 'Игра окончена';
+        if (result.isEmpty) break;
+        _finishGameWithResult(result, reason, broadcast: false);
+        break;
+
+      case 'tc':
+        {
+          final hasRated = evt.containsKey('rated') && evt['rated'] is bool;
+          final newRated = hasRated ? (evt['rated'] as bool) : _matchRated;
+          _applyTimeControl(
+            minutes: (evt['m'] as num?)?.toInt() ?? _tcMinutes,
+            increment: (evt['inc'] as num?)?.toInt() ?? _tcIncrement,
+            rated: newRated,
+            broadcast: false,
+          );
+          _matchRated = newRated;
+          break;
+        }
+
+      case 'clock':
+        final w = (evt['w'] as num?)?.toInt();
+        final b = (evt['b'] as num?)?.toInt();
+        final turn = (evt['turn'] as String?) ?? '';
+        if (w != null && b != null) {
+          setState(() {
+            _whiteMs = w;
+            _blackMs = b;
+            _clocksStarted = true;
+          });
+        }
+        _startTickForActiveSide();
+        break;
+
+      case 'rematch_offer':
+        setState(() {
+          _rematchOfferedToMe = true;
+        });
+        _maybeAskRematchDialog();
+        break;
+
+      case 'rematch_accept':
+        setState(() {
+          _rematchOfferedByMe = false;
+          _rematchOfferedToMe = false;
+        });
+        _startRematch(modeFromOpponent: (evt['mode'] as String?) ?? 'same');
+        break;
+
+      case 'rematch_decline':
+        setState(() {
+          _rematchOfferedByMe = false;
+          _rematchOfferedToMe = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Реванш отклонён')),
+        );
+        break;
+    }
+  }
+
+  // ================== MOVES (local & remote) ==================
+  void _onLocalMoveAffectClocks() {
+    if (!_inRoom) return;
+    final movedColor =
+        (game.turn == ch.Color.WHITE) ? ch.Color.BLACK : ch.Color.WHITE;
+    _switchTurnAndApplyIncrement(movedColor);
+  }
+
+  void _applyRemoteMove(String from, String to, String? promo) {
+    if (_plyIndex != _sanMoves.length) _goEnd();
+    if (_gameTerminated) return;
+    final isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+    final ok = game
+        .move({'from': from, 'to': to, if (promo != null) 'promotion': promo});
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    _broadcastClockSnapshot();
+  }
+
+  // ================== UI: actions ==================
+  Future<void> _makeMove(String from, String to) async {
+    if (_gameTerminated) return;
+    if (_vsEngine && game.turn != _humanColor) return;
+    if (_isSpectator) return;
+
+    _truncateFutureBranch();
+
+    final Map<String, dynamic> params = {'from': from, 'to': to};
+
+    String? promo;
+    if (_needsPromotion(from, to)) {
+      final color = game.get(from)!.color;
+      final choice = await _askPromotionPiece(context, color);
+      if (choice == null) return;
+      params['promotion'] = choice;
+      promo = choice;
+    }
+
+    final bool isCapture = _willBeCapture(from, to);
+    final String san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final bool ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    if (_room != null) {
+      await _room!.sendMove(from: from, to: to, promotion: promo);
+    }
+
+    if (_vsEngine && game.turn != _humanColor && !game.game_over) {
+      await _engineMove();
+    }
+  }
+
+  void _broadcastClockSnapshot() {
+    if (_room == null) return;
+    _room!.sendCtrl({
+      'type': 'clock',
+      'w': _whiteMs,
+      'b': _blackMs,
+      'turn': (game.turn == ch.Color.WHITE) ? 'w' : 'b',
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  void _broadcastTimeControl() {
+    if (_room == null) return;
+    _room!.sendCtrl({
+      'type': 'tc',
+      'm': _tcMinutes,
+      'inc': _tcIncrement,
+      'rated': _matchRated,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _offerDrawOnline() async {
+    if (!_inRoom || game.game_over || _isSpectator) return;
+
+    setState(() {
+      _drawOfferedByMe = true;
+      _drawOfferedToMe = false;
+    });
+
+    await _room!.sendDrawOffer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Предложение ничьей отправлено')),
+    );
+  }
+
+  Future<void> _acceptDrawOnline() async {
+    if (!_inRoom || !_drawOfferedToMe) return;
+
+    await _room!.sendDrawAnswer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+      accepted: true,
+    );
+
+    setState(() {
+      _drawOfferedByMe = false;
+      _drawOfferedToMe = false;
+    });
+
+    _finishGameWithResult('1/2-1/2', 'Ничья по соглашению');
+  }
+
+  Future<void> _declineDrawOnline() async {
+    if (!_inRoom || !_drawOfferedToMe) return;
+
+    await _room!.sendDrawAnswer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+      accepted: false,
+    );
+
+    setState(() {
+      _drawOfferedByMe = false;
+      _drawOfferedToMe = false;
+    });
+  }
+
+  Future<void> _resignOnline() async {
+    if (!_inRoom || game.game_over || _isSpectator) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: const Text('Подтвердите сдачу.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Сдаться'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _room!.sendResign(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+    );
+
+    final result = (_humanColor == ch.Color.WHITE) ? '0-1' : '1-0';
+    _finishGameWithResult(result, 'Сдача');
+  }
+
+  void _maybeAskDrawDialog() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Ничья?'),
+        content: const Text('Соперник предлагает ничью. Принять?'),
+        actions: [
+          TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _declineDrawOnline();
+              },
+              child: const Text('Отклонить')),
+          FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _acceptDrawOnline();
+              },
+              child: const Text('Принять')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _offerRematch() async {
+    if (!_inRoom || _isSpectator) return;
+    final mode = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Реванш'),
+        content: const Text('Как сыграть реванш?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'same'),
+              child: const Text('Те же цвета')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'flip'),
+              child: const Text('Поменять цвета')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'random'),
+              child: const Text('Случайно')),
+        ],
+      ),
+    );
+    if (mode == null) return;
+    setState(() => _rematchOfferedByMe = true);
+    await _room!.sendCtrl({
+      'type': 'rematch_offer',
+      'mode': mode,
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _acceptRematch() async {
+    if (!_rematchOfferedToMe) return;
+    setState(() => _rematchOfferedToMe = false);
+    await _room!.sendCtrl({
+      'type': 'rematch_accept',
+      'mode': 'same',
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _declineRematch() async {
+    if (!_rematchOfferedToMe) return;
+    setState(() => _rematchOfferedToMe = false);
+    await _room!.sendCtrl({
+      'type': 'rematch_decline',
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  void _maybeAskRematchDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Реванш?'),
+        content: const Text('Соперник предлагает реванш. Принять?'),
+        actions: [
+          TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _declineRematch();
+              },
+              child: const Text('Отклонить')),
+          FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _acceptRematch();
+              },
+              child: const Text('Принять')),
+        ],
+      ),
+    );
+  }
+
+  void _startRematch({required String modeFromOpponent}) {
+    String myColor = (_humanColor == ch.Color.WHITE) ? 'white' : 'black';
+    if (modeFromOpponent == 'flip') {
+      myColor = (myColor == 'white') ? 'black' : 'white';
+    } else if (modeFromOpponent == 'random') {
+      myColor = (math.Random().nextBool()) ? 'white' : 'black';
+    }
+    setState(() {
+      _humanColor = (myColor == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
+    });
+
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves..clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+    _resetClocks();
+
+    _broadcastTimeControl();
+  }
+  // ================== BUILD ==================
+  @override
+  Widget build(BuildContext context) {
+    final double desired = _baseAt100 * (_boardPercent / 100.0);
+    final sizeLimit = math.min(MediaQuery.of(context).size.width,
+            MediaQuery.of(context).size.height) -
+        32;
+    final double boardSize = desired.clamp(120.0, sizeLimit);
+
+    final isLogged = Supabase.instance.client.auth.currentUser != null;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          if (_inRoom)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Chip(
+                avatar: const Icon(Icons.sports_esports, size: 18),
+                label: Text('Комната: ${_opponentName ?? 'opponent'}'),
+              ),
+            ),
+
+          // Кнопка «Новая игра»
+          IconButton(
+            tooltip: 'Новая игра',
+            onPressed: _startFreshGame,
+            icon: const Icon(Icons.fiber_new),
+          ),
+
+          // === Масштаб доски ===
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Уменьшить (-10%)',
+                onPressed: () => _changeBoardPercent(-_stepPercent),
+                icon: const Icon(Icons.remove),
+              ),
+              Text('${_boardPercent.toStringAsFixed(0)}%'),
+              IconButton(
+                tooltip: 'Увеличить (+10%)',
+                onPressed: () => _changeBoardPercent(_stepPercent),
+                icon: const Icon(Icons.add),
+              ),
+              PopupMenuButton<double>(
+                tooltip: 'Выбрать масштаб',
+                onSelected: (value) => _setBoardPercent(value),
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 40, child: Text('40%')),
+                  PopupMenuItem(value: 60, child: Text('60%')),
+                  PopupMenuItem(value: 80, child: Text('80%')),
+                  PopupMenuItem(value: 100, child: Text('100%')),
+                  PopupMenuItem(value: 120, child: Text('120%')),
+                  PopupMenuItem(value: 140, child: Text('140%')),
+                ],
+              ),
+              OutlinedButton(
+                onPressed: _resetBoardPercent,
+                child: const Text('100%'),
+              ),
+            ],
+          ),
+
+          // Кнопка аккаунта
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: _AuthButton(
+              nickname: _nickname,
+              isLoggedIn: isLogged,
+              onTap: () => setState(() => _authOpen = !_authOpen),
+              onLogout: () async {
+                await Supabase.instance.client.auth.signOut();
+                await _leaveRoom();
+                await _leaveLobby();
+                setState(() {
+                  _authOpen = false;
+                  _nickname = null;
+                });
+              },
+            ),
+          ),
+        ],
+      ),
+
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            child: Column(
+              children: [
+                const SizedBox(height: 12),
+                _buildTopBar(),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildLeftColumn(boardSize),
+                      const SizedBox(width: 24),
+                      _MoveListPanel(
+                        san: _sanMoves,
+                        currentPly: _plyIndex,
+                        controller: _movesScroll,
+                        onCopyPGN: () {
+                          final rows = _rowsFromSan(_sanMoves);
+                          final pgn = rows.join(' ');
+                          Clipboard.setData(ClipboardData(text: pgn));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('PGN скопирован')));
+                        },
+                        onClear: () {
+                          setState(() {
+                            _sanMoves.clear();
+                            _fens
+                              ..clear()
+                              ..add(game.fen);
+                            _plyIndex = 0;
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 24),
+                      _LobbyPanel(
+                        isLoggedIn: isLogged,
+                        inLobby: _lobby != null,
+                        online: _lobby?.online ?? const [],
+                        myId: Supabase.instance.client.auth.currentUser?.id,
+                        myRating: _myRating,
+                        onEnterLobby: _enterLobby,
+                        onLeaveLobby: _leaveLobby,
+                        onInvite: (id, name) => _invitePlayer(id, name),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildBottomTools(),
+                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+          if (_authOpen)
+            Positioned(
+              top: 12,
+              right: 12,
+              child: _AuthPanel(
+                isLogin: _authIsLogin,
+                passCtl: _passCtl,
+                nickCtl: _nickCtl,
+                authError: _authError,
+                onClose: () => setState(() => _authOpen = false),
+                onToggleMode: () =>
+                    setState(() => _authIsLogin = !_authIsLogin),
+                onSubmit: _submitAuth,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

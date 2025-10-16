@@ -1,0 +1,1174 @@
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:chess/chess.dart' as ch;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:http/http.dart' as http;
+import 'package:audioplayers/audioplayers.dart';
+
+import 'utils.dart';
+import 'secrets.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Chess API Demo',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(title: 'Chess API with FEN'),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+  final String title;
+
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
+}
+
+class _MyHomePageState extends State<MyHomePage> {
+  // --------- STATE ----------
+  final TextEditingController _fenController = TextEditingController(
+    text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+  );
+  final ch.Chess game = ch.Chess();
+  String? _result;
+  bool _loading = false;
+
+  // --- режим против ИИ ---
+  bool _vsEngine = false;
+  bool _engineThinking = false;
+  ch.Color _humanColor = ch.Color.WHITE;
+  bool get _isFlipped => _humanColor == ch.Color.BLACK;
+
+  // --- история для навигации ---
+  final List<String> _sanMoves = []; // все SAN ходы
+  final List<String> _fens = []; // FEN на каждом полуходе + старт
+  int _plyIndex = 0; // текущая «позиция просмотра»: 0.._sanMoves.length
+
+  // --- TAP-TO-MOVE state ---
+  String? _selectedSquare;
+  Set<String> _legalTargets = {};
+  Set<String> _captureTargets = {};
+
+  final ScrollController _movesScroll = ScrollController();
+
+  // --------- BOARD SCALE ----------
+  static const double _baseAt100 = 480.0;
+  static const double _minPercent = 50.0;
+  static const double _maxPercent = 200.0;
+  static const double _stepPercent = 10.0;
+  double _boardPercent = 100.0;
+
+  @override
+  void initState() {
+    super.initState();
+    // начальное состояние
+    _fens.add(game.fen); // стартовая позиция
+    _plyIndex = 0;
+  }
+
+  void _bumpZoom(bool increase) {
+    final next = _boardPercent + (increase ? _stepPercent : -_stepPercent);
+    setState(() {
+      _boardPercent = next.clamp(_minPercent, _maxPercent);
+    });
+  }
+
+  // --------- AUDIO ----------
+  final AudioPlayer _player = AudioPlayer();
+  Future<void> _playSound({required bool capture}) async {
+    try {
+      final name = capture ? 'sfx/capture.mp3' : 'sfx/move.mp3';
+      await _player.play(AssetSource(name));
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    _movesScroll.dispose();
+    super.dispose();
+  }
+
+  // --------- SVG helpers ----------
+  String _assetFor(String code) => 'assets/pieces/cburnett/$code.svg';
+  String _codeFor(ch.Piece p) {
+    final c = p.color == ch.Color.WHITE ? 'w' : 'b';
+    switch (p.type) {
+      case ch.PieceType.PAWN:
+        return '${c}P';
+      case ch.PieceType.KNIGHT:
+        return '${c}N';
+      case ch.PieceType.BISHOP:
+        return '${c}B';
+      case ch.PieceType.ROOK:
+        return '${c}R';
+      case ch.PieceType.QUEEN:
+        return '${c}Q';
+      case ch.PieceType.KING:
+        return '${c}K';
+      default:
+        return '${c}P';
+    }
+  }
+
+  // ---------- ENGINE ----------
+  String? _extractUci(dynamic obj) {
+    if (obj == null) return null;
+    String? pick(dynamic v) {
+      if (v is String) return v;
+      if (v is Map && v['uci'] is String) return v['uci'] as String;
+      if (v is Map && v['move'] is String) return v['move'] as String;
+      return null;
+    }
+
+    for (final k in ['bestMove', 'best_move', 'bestmove', 'move', 'uci']) {
+      if (obj is Map && obj[k] != null) {
+        final s = pick(obj[k]);
+        if (s != null) return s;
+      }
+    }
+    if (obj is Map &&
+        obj['variants'] is List &&
+        (obj['variants'] as List).isNotEmpty) {
+      final v0 = (obj['variants'] as List).first;
+      final s = pick(v0);
+      if (s != null) return s;
+      if (v0 is Map && v0['line'] is List && v0['line'].isNotEmpty) {
+        final first = v0['line'].first;
+        if (first is String) return first;
+      }
+    }
+    if (obj is Map && obj['pv'] is String) {
+      final pv = (obj['pv'] as String).trim().split(RegExp(r'\s+'));
+      if (pv.isNotEmpty && pv.first.length >= 4) return pv.first;
+    }
+    final rx = RegExp(r'\b[a-h][1-8][a-h][1-8][qrbn]?\b', caseSensitive: false);
+    final text = const JsonEncoder().convert(obj);
+    final m = rx.firstMatch(text);
+    return m?.group(0);
+  }
+
+  Future<String?> _fetchUciBestMove(String fen) async {
+    final saneFen = sanitizeFenEp(fen);
+    final fenForApi = stripEpField(saneFen);
+    final url = Uri.parse('https://chess-api.com/v1');
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'fen': fenForApi,
+          'variants': 3,
+          'depth': 18,
+          'maxThinkingTime': 2000,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final obj = jsonDecode(response.body);
+        final uci = _extractUci(obj);
+        setState(
+            () => _result = const JsonEncoder.withIndent('  ').convert(obj));
+        return uci;
+      } else {
+        setState(
+            () => _result = 'Error ${response.statusCode}: ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      setState(() => _result = 'Exception: $e');
+      return null;
+    }
+  }
+
+  Future<void> _engineMove() async {
+    if (!_vsEngine || _engineThinking) return;
+    if (game.game_over) return;
+    // ход движка делаем только когда на конце истории
+    if (_plyIndex != _sanMoves.length) return;
+
+    setState(() => _engineThinking = true);
+    final uci = await _fetchUciBestMove(game.fen);
+    if (uci != null) {
+      await _applyUciMove(uci);
+      _checkGameOver();
+    }
+    setState(() => _engineThinking = false);
+  }
+
+  // ---------- HISTORY helpers ----------
+  void _resetToFen(String fen) {
+    game.load(fen);
+    _fenController.text = game.fen;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+  }
+
+  void _setPly(int n) {
+    _plyIndex = n.clamp(0, _sanMoves.length);
+    _resetToFen(_fens[_plyIndex]);
+    setState(() {});
+  }
+
+  void _goStart() => _setPly(0);
+  void _goEnd() => _setPly(_sanMoves.length);
+  void _goPrev() => _setPly(_plyIndex - 1);
+  void _goNext() => _setPly(_plyIndex + 1);
+
+  void _truncateFutureBranch() {
+    if (_plyIndex < _sanMoves.length) {
+      _sanMoves.removeRange(_plyIndex, _sanMoves.length);
+      _fens.removeRange(_plyIndex + 1, _fens.length);
+    }
+  }
+
+  // ---------- BOARD HELPERS ----------
+  String _displayIndexToSquare(int index) {
+    final row = index ~/ 8; // 0..7 сверху вниз
+    final col = index % 8; // 0..7 слева направо
+    if (_isFlipped) {
+      final file = String.fromCharCode('h'.codeUnitAt(0) - col); // h..a
+      final rank = row + 1; // 1..8
+      return '$file$rank';
+    } else {
+      final file = String.fromCharCode('a'.codeUnitAt(0) + col); // a..h
+      final rank = 8 - row; // 8..1
+      return '$file$rank';
+    }
+  }
+
+  bool _needsPromotion(String from, String to) {
+    final p = game.get(from);
+    if (p == null || p.type != ch.PieceType.PAWN) return false;
+    final toRank = int.tryParse(to.substring(1)) ?? 0;
+    if (p.color == ch.Color.WHITE && toRank == 8) return true;
+    if (p.color == ch.Color.BLACK && toRank == 1) return true;
+    return false;
+  }
+
+  Future<String?> _askPromotionPiece(
+      BuildContext context, ch.Color color) async {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выберите фигуру для превращения'),
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final entry in {
+              'q': color == ch.Color.WHITE ? '♕' : '♛',
+              'r': color == ch.Color.WHITE ? '♖' : '♜',
+              'b': color == ch.Color.WHITE ? '♗' : '♝',
+              'n': color == ch.Color.WHITE ? '♘' : '♞',
+            }.entries)
+              IconButton(
+                icon: Text(entry.value, style: const TextStyle(fontSize: 32)),
+                onPressed: () => Navigator.of(context).pop(entry.key),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _willBeCapture(String from, String to) {
+    try {
+      final ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      final m = ms.firstWhere((m) => m['to'] == to, orElse: () => {});
+      if (m.isEmpty) return false;
+      final flags = (m['flags'] as String?) ?? '';
+      return flags.contains('c') ||
+          flags.contains('e') ||
+          m['captured'] != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _sanFor(String from, String to, {String? promotion}) {
+    try {
+      final List<Map<String, dynamic>> ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      for (final m in ms) {
+        if (m['to'] == to) {
+          final pr = m['promotion'] as String?;
+          if (promotion == null || promotion == pr) {
+            return m['san'] as String?;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _applyUciMove(String uci) async {
+    // если мы в середине истории — обрежем ветку и продолжим
+    _truncateFutureBranch();
+
+    final from = uci.substring(0, 2);
+    final to = uci.substring(2, 4);
+    final promo = uci.length >= 5 ? uci[4].toLowerCase() : null;
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final params = {
+      'from': from,
+      'to': to,
+      if (promo != null) 'promotion': promo
+    };
+    final ok = game.move(params);
+    if (!ok) return;
+
+    // зафиксировать историю
+    _sanMoves.add(san);
+    _fens.add(game.fen);
+    _plyIndex = _sanMoves.length;
+
+    setState(() {
+      _fenController.text = game.fen;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _playSound(capture: isCapture);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_movesScroll.hasClients) {
+        _movesScroll.animateTo(
+          _movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _afterHumanMoveCommon(String san, bool isCapture) {
+    _sanMoves.add(san);
+    _fens.add(game.fen);
+    _plyIndex = _sanMoves.length;
+
+    setState(() {
+      _fenController.text = game.fen;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _playSound(capture: isCapture);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_movesScroll.hasClients) {
+        _movesScroll.animateTo(
+          _movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _makeMove(String from, String to) async {
+    if (_vsEngine && game.turn != _humanColor) return;
+
+    // ветка с середины — обрезаем будущее
+    _truncateFutureBranch();
+
+    final params = {'from': from, 'to': to};
+
+    String? promo;
+    if (_needsPromotion(from, to)) {
+      final color = game.get(from)!.color;
+      final choice = await _askPromotionPiece(context, color);
+      if (choice == null) return;
+      params['promotion'] = choice;
+      promo = choice;
+    }
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final bool ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    if (_vsEngine && game.turn != _humanColor && !game.game_over) {
+      await _engineMove();
+    }
+  }
+
+  void _checkGameOver() {
+    if (game.in_checkmate) {
+      final winner = game.turn == ch.Color.WHITE ? "Чёрные" : "Белые";
+      _showGameOverDialog("Мат", "$winner победили!");
+      return;
+    }
+    if (game.in_stalemate) {
+      _showGameOverDialog("Пат", "Ничья — патовое положение");
+      return;
+    }
+    if (game.in_threefold_repetition) {
+      _showGameOverDialog("Ничья", "Ничья — троекратное повторение позиции");
+      return;
+    }
+    if (game.in_draw) {
+      _showGameOverDialog("Ничья", "Игра окончена вничью");
+      return;
+    }
+  }
+
+  void _showGameOverDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("OK"))
+        ],
+      ),
+    );
+  }
+
+  // ====== TAP-TO-MOVE ======
+  void _computeLegalTargets(String fromSquare) {
+    final Set<String> legal = {};
+    final Set<String> caps = {};
+    try {
+      final moves = game.moves({'square': fromSquare, 'verbose': true});
+      for (final m in moves) {
+        final to = (m['to'] ?? '') as String;
+        if (to.isEmpty) continue;
+        legal.add(to);
+        final flags = (m['flags'] as String?) ?? '';
+        if (flags.contains('c') ||
+            flags.contains('e') ||
+            m['captured'] != null) {
+          caps.add(to);
+        }
+      }
+    } catch (_) {}
+    setState(() {
+      _selectedSquare = fromSquare;
+      _legalTargets = legal;
+      _captureTargets = caps;
+    });
+  }
+
+  void _onTapDownSquare(String square) {
+    if (_vsEngine && game.turn != _humanColor) return;
+    final p = game.get(square);
+    if (p != null && p.color == game.turn) {
+      _computeLegalTargets(square);
+    }
+  }
+
+  void _onTapSquare(String square) {
+    if (_vsEngine && game.turn != _humanColor) return;
+    if (_selectedSquare == null) return;
+
+    if (_legalTargets.contains(square)) {
+      _makeMove(_selectedSquare!, square);
+      return;
+    }
+
+    final pHere = game.get(square);
+    final pSel = game.get(_selectedSquare!);
+    if (pHere != null && pSel != null && pHere.color == pSel.color) {
+      _computeLegalTargets(square);
+      return;
+    }
+
+    if (square == _selectedSquare) return;
+
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+  }
+
+  void _onSecondaryTapSquare() {
+    if (_vsEngine && game.turn != _humanColor) return;
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+  }
+
+  Future<void> _startNewGame() async {
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+      game.reset();
+      _fenController.text = game.fen;
+
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    if (_humanColor == ch.Color.BLACK) {
+      await _engineMove(); // ИИ делает первый ход
+    }
+  }
+
+  void _stopGame() {
+    setState(() {
+      _vsEngine = false;
+      _engineThinking = false;
+    });
+  }
+
+  Future<void> _continueVsEngine() async {
+    if (_vsEngine) return; // уже включен
+
+    // включаем режим против ИИ, позицию НЕ трогаем
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+    });
+
+    // если смотрим не последний ход — переходим в конец истории
+    if (_plyIndex != _sanMoves.length) {
+      _goEnd();
+    }
+
+    // если сейчас очередь ИИ — пусть подумает и сделает ход
+    if (!game.game_over && game.turn != _humanColor) {
+      await _engineMove();
+    }
+
+    // подсказка
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Режим против компьютера включен')),
+      );
+    }
+  }
+
+  Future<void> _offerDraw() async {
+    if (!_vsEngine) return;
+    final accept = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Предложить ничью?'),
+        content: const Text('Вы предлагаете ничью сопернику (ИИ). Продолжить?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Нет'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Да'),
+          ),
+        ],
+      ),
+    );
+
+    if (accept == true) {
+      // ИИ "принимает" ничью.
+      _showGameOverDialog('Ничья', 'Партия окончена по соглашению сторон.');
+      _stopGame();
+    }
+  }
+
+  Future<void> _resign() async {
+    if (!_vsEngine) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: const Text('Подтвердите сдачу.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Сдаться'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok == true) {
+      final winner = _humanColor == ch.Color.WHITE ? "Чёрные" : "Белые";
+      _showGameOverDialog('Сдача', '$winner победили (сдача).');
+      _stopGame();
+    }
+  }
+
+  // ---------- BOARD (grid) ----------
+  Widget _buildChessBoardGrid(double boardSize) {
+    final double cell = boardSize / 8;
+    final double pieceSize = cell * 0.85;
+
+    return SizedBox(
+      width: boardSize,
+      height: boardSize,
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate:
+            const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8),
+        itemCount: 64,
+        itemBuilder: (context, index) {
+          final square = _displayIndexToSquare(index);
+          final piece = game.get(square);
+          final row = index ~/ 8;
+          final col = index % 8;
+          final isWhiteSquare = (row + col) % 2 == 0;
+
+          final bool isSelected = _selectedSquare == square;
+          final bool isLegal = _legalTargets.contains(square);
+          final bool isCapture = _captureTargets.contains(square);
+
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (_) => _onTapDownSquare(square),
+            onTap: () => _onTapSquare(square),
+            onSecondaryTap: _onSecondaryTapSquare,
+            child: DragTarget<int>(
+              onAccept: (fromIndex) {
+                if (_vsEngine && game.turn != _humanColor) return;
+                final from = _displayIndexToSquare(fromIndex);
+                final to = square;
+                _makeMove(from, to);
+              },
+              builder: (context, _, __) => Container(
+                decoration: BoxDecoration(
+                  color: isWhiteSquare
+                      ? const Color(0xFFF0D9B5)
+                      : const Color(0xFFB58863),
+                  border: Border.all(
+                    color: isSelected ? Colors.amber : Colors.black12,
+                    width: isSelected ? 3 : 1,
+                  ),
+                ),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (isLegal && !isCapture)
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: cell * 0.3,
+                            height: cell * 0.3,
+                            decoration: const BoxDecoration(
+                              color: Color(0x5500FF00),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (isCapture)
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: cell * 0.75,
+                            height: cell * 0.75,
+                            decoration: BoxDecoration(
+                              border:
+                                  Border.all(color: Colors.redAccent, width: 3),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (piece != null)
+                      Center(
+                        child: Draggable<int>(
+                          data: index,
+                          feedback: Material(
+                            color: Colors.transparent,
+                            child: SvgPicture.asset(
+                              _assetFor(_codeFor(piece)),
+                              width: pieceSize,
+                              height: pieceSize,
+                            ),
+                          ),
+                          childWhenDragging: const SizedBox.shrink(),
+                          child: SvgPicture.asset(
+                            _assetFor(_codeFor(piece)),
+                            width: pieceSize,
+                            height: pieceSize,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // Доска + координаты
+  Widget _buildBoardWithCoords(double boardSize) {
+    const double m = 18; // поле под метки
+    final files = _isFlipped
+        ? ['H', 'G', 'F', 'E', 'D', 'C', 'B', 'A']
+        : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    final ranks = _isFlipped
+        ? ['1', '2', '3', '4', '5', '6', '7', '8']
+        : ['8', '7', '6', '5', '4', '3', '2', '1'];
+
+    final labelStyle = TextStyle(
+      fontSize: math.max(10, boardSize / 32),
+      color: Colors.black.withOpacity(0.7),
+    );
+
+    return SizedBox(
+      width: boardSize + m,
+      height: boardSize + m,
+      child: Stack(
+        children: [
+          Positioned(left: m, top: 0, child: _buildChessBoardGrid(boardSize)),
+          Positioned(
+            left: 0,
+            top: 0,
+            width: m,
+            height: boardSize,
+            child: Column(
+              children: List.generate(
+                  8,
+                  (i) => SizedBox(
+                        height: boardSize / 8,
+                        child: Align(
+                            alignment: Alignment.center,
+                            child: Text(ranks[i], style: labelStyle)),
+                      )),
+            ),
+          ),
+          Positioned(
+            left: m,
+            top: boardSize,
+            width: boardSize,
+            height: m,
+            child: Row(
+              children: List.generate(
+                  8,
+                  (i) => SizedBox(
+                        width: boardSize / 8,
+                        child: Center(child: Text(files[i], style: labelStyle)),
+                      )),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildZoomControl() {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const Icon(Icons.zoom_in),
+          const SizedBox(width: 8),
+          Container(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: theme.dividerColor),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _bumpZoom(false),
+                    icon: const Icon(Icons.remove)),
+                const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Text('Масштаб')),
+                Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text('${_boardPercent.round()} %')),
+                IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _bumpZoom(true),
+                    icon: const Icon(Icons.add)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- UI ----------
+  @override
+  Widget build(BuildContext context) {
+    final double desired = _baseAt100 * (_boardPercent / 100.0);
+    final sizeLimit = math.min(MediaQuery.of(context).size.width,
+            MediaQuery.of(context).size.height) -
+        32;
+    final double boardSize = desired.clamp(120.0, sizeLimit);
+
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            const SizedBox(height: 12),
+            _buildZoomControl(),
+            const SizedBox(height: 8),
+
+            // Панель управления + навигация по ходам
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  const Text('Вы играете за:'),
+                  ToggleButtons(
+                    isSelected: [
+                      _humanColor == ch.Color.WHITE,
+                      _humanColor == ch.Color.BLACK
+                    ],
+                    onPressed: _vsEngine
+                        ? null
+                        : (i) => setState(() {
+                              _humanColor =
+                                  i == 0 ? ch.Color.WHITE : ch.Color.BLACK;
+                            }),
+                    borderRadius: BorderRadius.circular(10),
+                    children: const [
+                      Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Text('Белые')),
+                      Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Text('Чёрные')),
+                    ],
+                  ),
+                  FilledButton.icon(
+                    onPressed: _vsEngine ? null : _startNewGame,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Начать игру'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _vsEngine ? _stopGame : null,
+                    icon: const Icon(Icons.stop),
+                    label: const Text('Стоп'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: _vsEngine ? null : _continueVsEngine,
+                    icon: const Icon(Icons.smart_toy),
+                    label: const Text('Продолжить с компьютером'),
+                  ),
+
+                  OutlinedButton.icon(
+                    onPressed: _vsEngine ? _offerDraw : null,
+                    icon: const Icon(Icons
+                        .pan_tool_alt), // «рукопожатие» заменяем на стабильную иконку ладони
+                    label: const Text('Предложить ничью'),
+                  ),
+
+                  OutlinedButton.icon(
+                    onPressed: _vsEngine ? _resign : null,
+                    icon: const Icon(Icons.flag),
+                    label: const Text('Сдаться'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
+                  ),
+
+                  const SizedBox(width: 16),
+                  // Навигация
+                  IconButton(
+                    tooltip: 'В начало',
+                    onPressed: _plyIndex > 0 ? _goStart : null,
+                    icon: const Icon(Icons.first_page),
+                  ),
+                  IconButton(
+                    tooltip: 'Назад',
+                    onPressed: _plyIndex > 0 ? _goPrev : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  IconButton(
+                    tooltip: 'Вперёд',
+                    onPressed: _plyIndex < _sanMoves.length ? _goNext : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                  IconButton(
+                    tooltip: 'В конец',
+                    onPressed: _plyIndex < _sanMoves.length ? _goEnd : null,
+                    icon: const Icon(Icons.last_page),
+                  ),
+                  if (_engineThinking)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2)),
+                          SizedBox(width: 8),
+                          Text('ИИ думает...')
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Доска + панель ходов
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildBoardWithCoords(boardSize),
+                  const SizedBox(width: 24),
+                  _MoveListPanel(
+                    san: _sanMoves,
+                    currentPly: _plyIndex,
+                    controller: _movesScroll,
+                    onCopyPGN: () {
+                      final rows = _rowsFromSan(_sanMoves);
+                      final pgn = rows.join(' ');
+                      Clipboard.setData(ClipboardData(text: pgn));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('PGN скопирован')),
+                      );
+                    },
+                    onClear: () {
+                      setState(() {
+                        _sanMoves.clear();
+                        _fens
+                          ..clear()
+                          ..add(game.fen);
+                        _plyIndex = 0;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // --- FEN + Best Move (отладка)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _fenController,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: 'Enter FEN',
+                ),
+                onSubmitted: (v) {
+                  final ok = game.load(v.trim());
+                  if (ok) {
+                    setState(() {
+                      _selectedSquare = null;
+                      _legalTargets.clear();
+                      _captureTargets.clear();
+                      _sanMoves.clear();
+                      _fens
+                        ..clear()
+                        ..add(game.fen);
+                      _plyIndex = 0;
+                    });
+                  }
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loading
+                  ? null
+                  : () async {
+                      setState(() => _loading = true);
+                      final uci =
+                          await _fetchUciBestMove(_fenController.text.trim());
+                      setState(() => _loading = false);
+                      if (uci != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Best move (UCI): $uci')),
+                        );
+                      }
+                    },
+              child: const Text('Get Best Move'),
+            ),
+            const SizedBox(height: 24),
+
+            if (_loading)
+              const CircularProgressIndicator()
+            else if (_result != null)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: SelectableText(_result!,
+                    style: const TextStyle(fontSize: 14)),
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16.0),
+                child: Text('Enter a FEN and press the button.'),
+              ),
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Утилита: «1. e4 e5 …»
+  List<String> _rowsFromSan(List<String> san) {
+    final out = <String>[];
+    for (int i = 0; i < san.length; i += 2) {
+      final n = i ~/ 2 + 1;
+      final w = san[i];
+      final b = (i + 1 < san.length) ? san[i + 1] : '';
+      out.add('$n. $w ${b.isEmpty ? '' : b}');
+    }
+    return out;
+  }
+}
+
+// ---- Панель со списком ходов (с подсветкой текущего плана) ----
+class _MoveListPanel extends StatelessWidget {
+  const _MoveListPanel({
+    required this.san,
+    required this.currentPly,
+    required this.controller,
+    required this.onCopyPGN,
+    required this.onClear,
+    Key? key,
+  }) : super(key: key);
+
+  final List<String> san;
+  final int currentPly; // 0..san.length
+  final ScrollController controller;
+  final VoidCallback onCopyPGN;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final rowsCount = (san.length / 2.0).ceil();
+    return SizedBox(
+      width: 300,
+      height: 480,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFFDFCF9),
+          border: Border.all(color: const Color(0xFF333333), width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Moves',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Scrollbar(
+                  controller: controller,
+                  child: ListView.builder(
+                    controller: controller,
+                    itemCount: rowsCount,
+                    itemBuilder: (_, i) {
+                      final moveNo = i + 1;
+                      final whiteIndex = i * 2;
+                      final blackIndex = whiteIndex + 1;
+
+                      final whiteShown = whiteIndex < currentPly;
+                      final blackShown = blackIndex < currentPly;
+
+                      final white = whiteIndex < san.length && whiteShown
+                          ? san[whiteIndex]
+                          : '';
+                      final black = blackIndex < san.length && blackShown
+                          ? san[blackIndex]
+                          : '';
+
+                      final isFutureRow = whiteIndex >= currentPly;
+                      final style = TextStyle(
+                        color: isFutureRow
+                            ? Colors.black.withOpacity(0.45)
+                            : Colors.black,
+                      );
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                            '$moveNo. $white ${black.isEmpty ? '' : black}',
+                            style: style),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: san.isEmpty ? null : onCopyPGN,
+                      child: const Text('Скопировать PGN'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: 'Очистить',
+                    onPressed: san.isEmpty ? null : onClear,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

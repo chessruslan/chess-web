@@ -1,0 +1,19 @@
+String _codeFor(ch.Piece p) {
+  final c = p.color == ch.Color.WHITE ? 'w' : 'b';
+  switch (p.type) {
+    case ch.PieceType.PAWN:
+      return '${c}P';
+    case ch.PieceType.KNIGHT:
+      return '${c}N';
+    case ch.PieceType.BISHOP:
+      return '${c}B';
+    case ch.PieceType.ROOK:
+      return '${c}R';
+    case ch.PieceType.QUEEN:
+      return '${c}Q';
+    case ch.PieceType.KING:
+      return '${c}K';
+  }
+  // Fallback на случай, если анализатор всё равно требует возврат.
+  return '${c}P';
+}

@@ -1,0 +1,4 @@
+Терминал:
+
+flutter clean
+flutter pub get

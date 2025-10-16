@@ -1,0 +1,27 @@
+name: my_new_chess_app
+description: Chess demo project
+publish_to: "none"
+
+environment:
+  sdk: ">=3.2.3 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  flutter_svg: ^2.0.10+1
+  chess: ^0.8.1
+  audioplayers: ^5.2.1
+  supabase_flutter: ^2.8.4
+  go_router: ^14.2.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/pieces/cburnett/
+    - assets/sfx/

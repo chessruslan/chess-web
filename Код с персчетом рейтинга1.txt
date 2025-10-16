@@ -1,0 +1,2267 @@
+// main.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:html' as html;
+
+import 'package:audioplayers/audioplayers.dart';
+import 'package:chess/chess.dart' as ch;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:http/http.dart' as http;
+import 'package:realtime_client/realtime_client.dart' as rt;
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
+
+import 'secrets.dart';
+
+// ------------------ одноразовый снос старого SW и кэшей ------------------
+Future<void> _killServiceWorkerOnce() async {
+  if (!kIsWeb) return;
+  try {
+    final ls = html.window.localStorage;
+    if (ls['sw_fix_done'] == '1') return;
+
+    final sw = html.window.navigator.serviceWorker;
+    if (sw != null) {
+      final regs = await sw.getRegistrations();
+      for (final r in regs) {
+        try {
+          await r.unregister();
+        } catch (_) {}
+      }
+    }
+    final caches = html.window.caches;
+    if (caches != null) {
+      final keys = await caches.keys();
+      for (final k in keys) {
+        try {
+          await caches.delete(k);
+        } catch (_) {}
+      }
+    }
+    ls['sw_fix_done'] = '1';
+    html.window.location.reload();
+  } catch (_) {}
+}
+
+// ------------------------------ APP ------------------------------
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  await _killServiceWorkerOnce();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Chess API Demo',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(title: 'Chess API with FEN'),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+  final String title;
+
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
+}
+
+// ------------------------------ LOBBY ------------------------------
+class LobbyService {
+  LobbyService(this.supa,
+      {required this.username, required this.userId, required this.myRating});
+
+  final SupabaseClient supa;
+  final String username;
+  final String userId;
+  int myRating;
+
+  rt.RealtimeChannel? _chan;
+
+  void Function()? onOnlineChanged;
+  void Function(String roomId, String fromId, String fromName, String color)?
+      onInvite;
+  void Function(String roomId, String fromId, String fromName, String color)?
+      onAccept;
+
+  final Map<String, _Peer> _peers = {};
+  List<Map<String, String>> get online => _peers.values
+      .map((p) => {
+            'id': p.id,
+            'username': p.name,
+            'rating': '${p.rating}',
+          })
+      .toList(growable: false);
+
+  static const _beat = Duration(seconds: 12);
+  Timer? _heartbeat;
+
+  Map<String, dynamic> _parsePayload(dynamic raw) {
+    if (raw is Map) {
+      final m = Map<String, dynamic>.from(raw);
+      final inner = m['payload'];
+      if (inner is Map) return Map<String, dynamic>.from(inner);
+      return m;
+    }
+    return <String, dynamic>{};
+  }
+
+  void _touch(String id, String name, int rating) {
+    if (id.isEmpty) return;
+    final n = name.isEmpty ? 'player' : name;
+    final p = _peers[id];
+    if (p == null) {
+      _peers[id] =
+          _Peer(id: id, name: n, rating: rating, lastSeen: DateTime.now());
+    } else {
+      p.name = n;
+      p.rating = rating;
+      p.lastSeen = DateTime.now();
+    }
+    onOnlineChanged?.call();
+  }
+
+  Future<void> connect() async {
+    if (_chan != null) return;
+    final chan =
+        supa.channel('lobby', opts: const rt.RealtimeChannelConfig(self: true));
+
+    chan.onBroadcast(
+        event: 'whois', callback: (payload, [ref]) => _sendHello(chan));
+
+    chan.onBroadcast(
+        event: 'hello',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          final id = '${p['id'] ?? ''}';
+          final name = '${p['name'] ?? 'player'}';
+          final rating = int.tryParse('${p['rating'] ?? '1200'}') ?? 1200;
+          if (id.isEmpty) return;
+          _touch(id, name, rating);
+          if (id != userId) _sendHello(chan);
+        });
+
+    chan.onBroadcast(
+        event: 'ping',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          _touch('${p['id'] ?? ''}', '${p['name'] ?? 'player'}',
+              int.tryParse('${p['rating'] ?? '1200'}') ?? 1200);
+        });
+
+    chan.onBroadcast(event: 'bye', callback: (payload, [ref]) {});
+
+    // инвайты/акцепты
+    chan.onBroadcast(
+        event: 'invite',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          if ('${p['to']}' == userId) {
+            onInvite?.call(
+              '${p['roomId']}',
+              '${p['from']}',
+              '${p['fromName']}',
+              '${p['color'] ?? 'white'}',
+            );
+          }
+        });
+
+    chan.onBroadcast(
+        event: 'accept',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          if ('${p['to']}' == userId) {
+            onAccept?.call(
+              '${p['roomId']}',
+              '${p['from']}',
+              '${p['fromName']}',
+              '${p['color'] ?? 'white'}',
+            );
+          }
+        });
+
+    await chan.subscribe();
+
+    _sendHello(chan);
+    chan.sendBroadcastMessage(event: 'whois', payload: {'from': userId});
+
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(_beat, (_) => _sendPing(chan));
+
+    _touch(userId, username, myRating);
+
+    html.window.onBeforeUnload.listen((_) {
+      chan.sendBroadcastMessage(event: 'bye', payload: {'id': userId});
+    });
+
+    _chan = chan;
+  }
+
+  void sendPresenceNow() {
+    final ch = _chan;
+    if (ch != null) _sendPing(ch);
+  }
+
+  void _sendHello(rt.RealtimeChannel ch) => ch.sendBroadcastMessage(
+      event: 'hello',
+      payload: {'id': userId, 'name': username, 'rating': myRating});
+
+  void _sendPing(rt.RealtimeChannel ch) => ch.sendBroadcastMessage(
+      event: 'ping',
+      payload: {'id': userId, 'name': username, 'rating': myRating});
+
+  Future<void> disconnect() async {
+    _heartbeat?.cancel();
+    final ch = _chan;
+    if (ch != null) {
+      await ch.sendBroadcastMessage(event: 'bye', payload: {'id': userId});
+      await ch.unsubscribe();
+    }
+    _chan = null;
+  }
+
+  Future<void> sendInvite({
+    required String toUserId,
+    required String toName,
+    required String roomId,
+    required String color,
+  }) async {
+    _chan?.sendBroadcastMessage(event: 'invite', payload: {
+      'roomId': roomId,
+      'from': userId,
+      'fromName': username,
+      'to': toUserId,
+      'toName': toName,
+      'color': color,
+    });
+  }
+
+  Future<void> sendAccept({
+    required String toUserId,
+    required String toName,
+    required String roomId,
+    required String color,
+  }) async {
+    _chan?.sendBroadcastMessage(event: 'accept', payload: {
+      'roomId': roomId,
+      'from': userId,
+      'fromName': username,
+      'to': toUserId,
+      'toName': toName,
+      'color': color,
+    });
+  }
+}
+
+class _Peer {
+  _Peer(
+      {required this.id,
+      required this.name,
+      required this.rating,
+      required this.lastSeen});
+  final String id;
+  String name;
+  int rating;
+  DateTime lastSeen;
+}
+
+// ------------------------------ ROOM ------------------------------
+class RoomService {
+  RoomService(this.supa, {required this.roomId});
+  final SupabaseClient supa;
+  final String roomId;
+
+  rt.RealtimeChannel? _chan;
+  final Completer<void> _ready = Completer<void>();
+
+  void Function(Map<String, dynamic> move)? onMove;
+  void Function(String result)? onResult; // 'white' | 'black' | 'draw'
+  void Function()? onDrawOffer;
+  void Function(bool accepted)? onDrawAnswer;
+  void Function()? onResign; // соперник сдался
+
+  Map<String, dynamic> _parsePayload(dynamic raw) {
+    if (raw is Map) {
+      final m = Map<String, dynamic>.from(raw);
+      final inner = m['payload'];
+      if (inner is Map) return Map<String, dynamic>.from(inner);
+      return m;
+    }
+    return <String, dynamic>{};
+  }
+
+  Future<void> connect() async {
+    if (_chan != null) return;
+    _chan = supa.channel('room:$roomId',
+        opts: const rt.RealtimeChannelConfig(self: true));
+
+    _chan!.onBroadcast(
+        event: 'move',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          onMove?.call(p);
+        });
+
+    _chan!.onBroadcast(
+        event: 'result',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          onResult?.call('${p['result'] ?? 'draw'}');
+        });
+
+    _chan!.onBroadcast(
+        event: 'draw_offer',
+        callback: (payload, [ref]) {
+          onDrawOffer?.call();
+        });
+
+    _chan!.onBroadcast(
+        event: 'draw_answer',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          onDrawAnswer?.call(p['accepted'] == true);
+        });
+
+    _chan!.onBroadcast(
+        event: 'resign',
+        callback: (payload, [ref]) {
+          onResign?.call();
+        });
+
+    await _chan!.subscribe();
+    if (!_ready.isCompleted) _ready.complete();
+  }
+
+  Future<void> disconnect() async {
+    await _chan?.unsubscribe();
+    _chan = null;
+    if (!_ready.isCompleted) _ready.completeError(StateError('disconnected'));
+  }
+
+  Future<void> sendMove(
+      {required String from, required String to, String? promotion}) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(
+      event: 'move',
+      payload: {
+        'from': from,
+        'to': to,
+        if (promotion != null) 'promotion': promotion,
+      },
+    );
+  }
+
+  Future<void> sendResult(String result) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'result', payload: {'result': result});
+  }
+
+  Future<void> sendDrawOffer() async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'draw_offer', payload: {});
+  }
+
+  Future<void> sendDrawAnswer(bool accepted) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(
+        event: 'draw_answer', payload: {'accepted': accepted});
+  }
+
+  Future<void> sendResign() async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'resign', payload: {});
+  }
+}
+
+// ========================= STATE =========================
+class _MyHomePageState extends State<MyHomePage> {
+  final TextEditingController _fenController = TextEditingController(
+    text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+  );
+  final ch.Chess game = ch.Chess();
+  String? _result;
+  bool _loading = false;
+
+  // vs Engine
+  bool _vsEngine = false;
+  bool _engineThinking = false;
+  ch.Color _humanColor = ch.Color.WHITE;
+  bool get _isFlipped => _humanColor == ch.Color.BLACK;
+
+  // history
+  final List<String> _sanMoves = [];
+  final List<String> _fens = [];
+  int _plyIndex = 0;
+
+  // tap-to-move
+  String? _selectedSquare;
+  Set<String> _legalTargets = {};
+  Set<String> _captureTargets = {};
+  final ScrollController _movesScroll = ScrollController();
+
+  // board scale
+  static const double _baseAt100 = 480.0;
+  static const double _minPercent = 50.0;
+  static const double _maxPercent = 200.0;
+  static const double _stepPercent = 10.0;
+  double _boardPercent = 100.0;
+
+  // audio
+  final AudioPlayer _player = AudioPlayer();
+
+  // ---------- AUTH ----------
+  bool _authOpen = false;
+  bool _authIsLogin = true;
+  final _passCtl = TextEditingController();
+  final _nickCtl = TextEditingController();
+  String? _authError;
+  String? _nickname;
+
+  // ---------- Ratings ----------
+  int _myRating = 1200;
+  int? _opponentRating;
+  bool _resultSent = false;
+
+  // ---------- Realtime ----------
+  LobbyService? _lobby;
+  RoomService? _room;
+  String? _roomId;
+  String? _opponentId;
+  String? _opponentName;
+
+  bool get _inRoom => _roomId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _fens.add(game.fen);
+    _plyIndex = 0;
+    _loadNickname();
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    _movesScroll.dispose();
+    _room?.disconnect();
+    _lobby?.disconnect();
+    super.dispose();
+  }
+
+  Future<void> _loadNickname() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null) {
+      setState(() {
+        _nickname = null;
+        _myRating = 1200;
+      });
+      return;
+    }
+    try {
+      final row = await supa
+          .from('profiles')
+          .select('nickname, rating')
+          .eq('id', uid)
+          .maybeSingle();
+      setState(() {
+        _nickname = (row?['nickname'] as String?) ?? 'player';
+        _myRating = (row?['rating'] as int?) ?? 1200;
+      });
+    } catch (_) {}
+  }
+
+  // ---------------------- helpers ----------------------
+  void _bumpZoom(bool increase) {
+    final next = _boardPercent + (increase ? _stepPercent : -_stepPercent);
+    setState(() {
+      _boardPercent = next.clamp(_minPercent, _maxPercent);
+    });
+  }
+
+  Future<void> _playSound({required bool capture}) async {
+    try {
+      final name = capture ? 'sfx/capture.mp3' : 'sfx/move.mp3';
+      await _player.play(AssetSource(name));
+    } catch (_) {}
+  }
+
+  String _assetFor(String code) => 'assets/pieces/cburnett/$code.svg';
+  String _codeFor(ch.Piece p) {
+    final c = p.color == ch.Color.WHITE ? 'w' : 'b';
+    if (p.type == ch.PieceType.PAWN) return '${c}P';
+    if (p.type == ch.PieceType.KNIGHT) return '${c}N';
+    if (p.type == ch.PieceType.BISHOP) return '${c}B';
+    if (p.type == ch.PieceType.ROOK) return '${c}R';
+    if (p.type == ch.PieceType.QUEEN) return '${c}Q';
+    if (p.type == ch.PieceType.KING) return '${c}K';
+    return '${c}P';
+  }
+
+  String _opposite(String c) => c.toLowerCase() == 'white' ? 'black' : 'white';
+
+  // ==================== ENGINE ====================
+  String? _extractUci(dynamic obj) {
+    if (obj == null) return null;
+    String? pick(dynamic v) {
+      if (v is String) return v;
+      if (v is Map && v['uci'] is String) return v['uci'] as String;
+      if (v is Map && v['move'] is String) return v['move'] as String;
+      return null;
+    }
+
+    for (final k in ['bestMove', 'best_move', 'bestmove', 'move', 'uci']) {
+      if (obj is Map && obj[k] != null) {
+        final s = pick(obj[k]);
+        if (s != null) return s;
+      }
+    }
+    if (obj is Map &&
+        obj['variants'] is List &&
+        (obj['variants'] as List).isNotEmpty) {
+      final v0 = (obj['variants'] as List).first;
+      final s = pick(v0);
+      if (s != null) return s;
+      if (v0 is Map && v0['line'] is List && v0['line'].isNotEmpty) {
+        final first = v0['line'].first;
+        if (first is String) return first;
+      }
+    }
+    if (obj is Map && obj['pv'] is String) {
+      final pv = (obj['pv'] as String).trim().split(RegExp(r'\s+'));
+      if (pv.isNotEmpty && pv.first.length >= 4) return pv.first;
+    }
+    final rx = RegExp(r'\b[a-h][1-8][a-h][1-8][qrbn]?\b', caseSensitive: false);
+    final text = const JsonEncoder().convert(obj);
+    final m = rx.firstMatch(text);
+    return m?.group(0);
+  }
+
+  Future<String?> _fetchUciBestMove(String fen) async {
+    final url = Uri.parse('https://chess-api.com/v1');
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'fen': fen,
+          'variants': 3,
+          'depth': 18,
+          'maxThinkingTime': 2000,
+        }),
+      );
+      if (response.statusCode == 200) {
+        final obj = jsonDecode(response.body);
+        final uci = _extractUci(obj);
+        setState(
+            () => _result = const JsonEncoder.withIndent('  ').convert(obj));
+        return uci;
+      } else {
+        setState(
+            () => _result = 'Error ${response.statusCode}: ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      setState(() => _result = 'Exception: $e');
+      return null;
+    }
+  }
+
+  Future<void> _engineMove() async {
+    if (!_vsEngine || _engineThinking) return;
+    if (game.game_over) return;
+    if (_plyIndex != _sanMoves.length) return;
+
+    setState(() => _engineThinking = true);
+    final uci = await _fetchUciBestMove(game.fen);
+    if (uci != null) {
+      await _applyUciMove(uci);
+      _checkGameOver();
+    }
+    setState(() => _engineThinking = false);
+  }
+
+  // =============== HISTORY helpers ===============
+  void _resetToFen(String fen) {
+    game.load(fen);
+    _fenController.text = game.fen;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+  }
+
+  void _setPly(int n) {
+    _plyIndex = n.clamp(0, _sanMoves.length);
+    _resetToFen(_fens[_plyIndex]);
+    setState(() {});
+  }
+
+  void _goStart() => _setPly(0);
+  void _goEnd() => _setPly(_sanMoves.length);
+  void _goPrev() => _setPly(_plyIndex - 1);
+  void _goNext() => _setPly(_plyIndex + 1);
+
+  void _truncateFutureBranch() {
+    if (_plyIndex < _sanMoves.length) {
+      _sanMoves.removeRange(_plyIndex, _sanMoves.length);
+      _fens.removeRange(_plyIndex + 1, _fens.length);
+    }
+  }
+
+  // =============== BOARD helpers ===============
+  String _displayIndexToSquare(int index) {
+    final row = index ~/ 8;
+    final col = index % 8;
+    if (_isFlipped) {
+      final file = String.fromCharCode('h'.codeUnitAt(0) - col);
+      final rank = row + 1;
+      return '$file$rank';
+    } else {
+      final file = String.fromCharCode('a'.codeUnitAt(0) + col);
+      final rank = 8 - row;
+      return '$file$rank';
+    }
+  }
+
+  bool _needsPromotion(String from, String to) {
+    final p = game.get(from);
+    if (p == null || p.type != ch.PieceType.PAWN) return false;
+    final toRank = int.tryParse(to.substring(1)) ?? 0;
+    if (p.color == ch.Color.WHITE && toRank == 8) return true;
+    if (p.color == ch.Color.BLACK && toRank == 1) return true;
+    return false;
+  }
+
+  Future<String?> _askPromotionPiece(
+      BuildContext context, ch.Color color) async {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выберите фигуру для превращения'),
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final entry in {
+              'q': color == ch.Color.WHITE ? '♕' : '♛',
+              'r': color == ch.Color.WHITE ? '♖' : '♜',
+              'b': color == ch.Color.WHITE ? '♗' : '♝',
+              'n': color == ch.Color.WHITE ? '♘' : '♞',
+            }.entries)
+              IconButton(
+                icon: Text(entry.value, style: const TextStyle(fontSize: 32)),
+                onPressed: () => Navigator.of(context).pop(entry.key),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _willBeCapture(String from, String to) {
+    try {
+      final ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      final m = ms.firstWhere((m) => m['to'] == to, orElse: () => {});
+      if (m.isEmpty) return false;
+      final flags = (m['flags'] as String?) ?? '';
+      return flags.contains('c') ||
+          flags.contains('e') ||
+          m['captured'] != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _sanFor(String from, String to, {String? promotion}) {
+    try {
+      final List<Map<String, dynamic>> ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      for (final m in ms) {
+        if (m['to'] == to) {
+          final pr = m['promotion'] as String?;
+          if (promotion == null || promotion == pr) {
+            return m['san'] as String?;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // --- Ходить можно только своим цветом / в свою очередь ---
+  bool _myTurnNow() {
+    if (!_vsEngine && !_inRoom) return true;
+    return game.turn == _humanColor;
+  }
+
+  Future<void> _applyUciMove(String uci) async {
+    _truncateFutureBranch();
+    final from = uci.substring(0, 2);
+    final to = uci.substring(2, 4);
+    final promo = uci.length >= 5 ? uci[4].toLowerCase() : null;
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final params = {
+      'from': from,
+      'to': to,
+      if (promo != null) 'promotion': promo
+    };
+    final ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+  }
+
+  void _afterHumanMoveCommon(String san, bool isCapture) {
+    _sanMoves.add(san);
+    _fens.add(game.fen);
+    _plyIndex = _sanMoves.length;
+
+    setState(() {
+      _fenController.text = game.fen;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _playSound(capture: isCapture);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_movesScroll.hasClients) {
+        _movesScroll.animateTo(
+          _movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  // ---------- Elo ----------
+  double _expected(int ra, int rb) =>
+      1.0 / (1.0 + math.pow(10, (rb - ra) / 400.0));
+  int _elo(int r, int opp, double score, {int k = 32}) {
+    final e = _expected(r, opp);
+    return (r + k * (score - e)).round();
+  }
+
+  Future<void> _saveMyRating(int newRating) async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null) return;
+    try {
+      await supa.from('profiles').update({'rating': newRating}).eq('id', uid);
+    } catch (_) {}
+  }
+
+  Future<void> _finalizeOnlineResult(String result) async {
+    if (!_inRoom) return;
+    if (_resultSent) return;
+    _resultSent = true;
+
+    double myScore;
+    if (result == 'draw') {
+      myScore = 0.5;
+    } else {
+      final winnerIsWhite = (result == 'white');
+      final iAmWhite = (_humanColor == ch.Color.WHITE);
+      myScore = (winnerIsWhite == iAmWhite) ? 1.0 : 0.0;
+    }
+
+    final opp = _opponentRating ?? _myRating;
+    final newMy = _elo(_myRating, opp, myScore);
+    final delta = newMy - _myRating;
+
+    setState(() => _myRating = newMy);
+    await _saveMyRating(newMy);
+
+    if (_lobby != null) {
+      _lobby!.myRating = _myRating;
+      _lobby!.sendPresenceNow();
+    }
+
+    if (mounted) {
+      final sign = delta >= 0 ? '+' : '';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Рейтинг: $_myRating ($sign$delta)')),
+      );
+    }
+  }
+
+  void _checkGameOver() {
+    if (game.in_checkmate) {
+      final winner = game.turn == ch.Color.WHITE ? "Чёрные" : "Белые";
+      _showGameOverDialog("Мат", "$winner победили!");
+      if (_inRoom) {
+        // сейчас ход цвета, которому поставили мат
+        final res = (game.turn == ch.Color.WHITE) ? 'black' : 'white';
+        _room?.sendResult(res);
+        _finalizeOnlineResult(res);
+      }
+      return;
+    }
+    if (game.in_stalemate) {
+      _showGameOverDialog("Пат", "Ничья — патовое положение");
+      if (_inRoom) {
+        _room?.sendResult('draw');
+        _finalizeOnlineResult('draw');
+      }
+      return;
+    }
+    if (game.in_threefold_repetition) {
+      _showGameOverDialog("Ничья", "Ничья — троекратное повторение позиции");
+      if (_inRoom) {
+        _room?.sendResult('draw');
+        _finalizeOnlineResult('draw');
+      }
+      return;
+    }
+    if (game.in_draw) {
+      _showGameOverDialog("Ничья", "Игра окончена вничью");
+      if (_inRoom) {
+        _room?.sendResult('draw');
+        _finalizeOnlineResult('draw');
+      }
+      return;
+    }
+  }
+
+  void _showGameOverDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("OK"))
+        ],
+      ),
+    );
+  }
+
+  void _applyRemoteMove(String from, String to, String? promo) {
+    if (_plyIndex != _sanMoves.length) _goEnd();
+    final isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+    final ok = game
+        .move({'from': from, 'to': to, if (promo != null) 'promotion': promo});
+    if (!ok) return;
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+  }
+
+  // ====== TAP-TO-MOVE ======
+  void _computeLegalTargets(String fromSquare) {
+    final Set<String> legal = {};
+    final Set<String> caps = {};
+    try {
+      final moves = game.moves({'square': fromSquare, 'verbose': true});
+      for (final m in moves) {
+        final to = (m['to'] ?? '') as String;
+        if (to.isEmpty) continue;
+        legal.add(to);
+        final flags = (m['flags'] as String?) ?? '';
+        if (flags.contains('c') ||
+            flags.contains('e') ||
+            m['captured'] != null) {
+          caps.add(to);
+        }
+      }
+    } catch (_) {}
+    setState(() {
+      _selectedSquare = fromSquare;
+      _legalTargets = legal;
+      _captureTargets = caps;
+    });
+  }
+
+  void _onTapDownSquare(String square) {
+    if (!_myTurnNow()) return;
+    final p = game.get(square);
+    if (p != null && p.color == game.turn) {
+      _computeLegalTargets(square);
+    }
+  }
+
+  void _onTapSquare(String square) {
+    if (!_myTurnNow()) return;
+    if (_selectedSquare == null) return;
+
+    if (_legalTargets.contains(square)) {
+      _makeMove(_selectedSquare!, square);
+      return;
+    }
+
+    final pHere = game.get(square);
+    final pSel = game.get(_selectedSquare!);
+    if (pHere != null && pSel != null && pHere.color == pSel.color) {
+      _computeLegalTargets(square);
+      return;
+    }
+
+    if (square == _selectedSquare) return;
+
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+  }
+
+  void _onSecondaryTapSquare() {
+    if (!_myTurnNow()) return;
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+  }
+
+  Future<void> _startNewGame() async {
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+      game.reset();
+      _fenController.text = game.fen;
+
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    if (_humanColor == ch.Color.BLACK) {
+      await _engineMove();
+    }
+  }
+
+  void _stopGame() {
+    setState(() {
+      _vsEngine = false;
+      _engineThinking = false;
+    });
+  }
+
+  Future<void> _continueVsEngine() async {
+    if (_vsEngine) return;
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+    });
+
+    if (_plyIndex != _sanMoves.length) {
+      _goEnd();
+    }
+
+    if (!game.game_over && game.turn != _humanColor) {
+      await _engineMove();
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Режим против компьютера включен')),
+      );
+    }
+  }
+
+  // ---- Онлайн «ничья/сдаться» ----
+  Future<void> _offerDrawOnline() async {
+    if (!_inRoom) return;
+    await _room!.sendDrawOffer();
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Вы предложили ничью')));
+    }
+  }
+
+  Future<void> _resignOnline() async {
+    if (!_inRoom) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: const Text('Подтвердите сдачу.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Сдаться')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _room!.sendResign();
+    final winner = _humanColor == ch.Color.WHITE ? 'black' : 'white';
+    await _room!.sendResult(winner);
+    await _finalizeOnlineResult(winner);
+    _showGameOverDialog('Сдача',
+        '${_humanColor == ch.Color.WHITE ? "Чёрные" : "Белые"} победили (сдача).');
+  }
+
+  // ----------- Lobby & Room helpers -----------
+  Future<void> _enterLobby() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null || _nickname == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала войдите в аккаунт')),
+      );
+      return;
+    }
+
+    if (_lobby == null) {
+      final lobby = LobbyService(supa,
+          username: _nickname!, userId: uid, myRating: _myRating);
+
+      lobby.onOnlineChanged = () => setState(() {});
+      lobby.onInvite = (roomId, fromId, fromName, inviterColor) async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Вызов на игру'),
+            content: Text('$fromName приглашает вас сыграть'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отклонить')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Принять')),
+            ],
+          ),
+        );
+        if (ok == true) {
+          final myColor = _opposite(inviterColor);
+          await lobby.sendAccept(
+            toUserId: fromId,
+            toName: fromName,
+            roomId: roomId,
+            color: myColor,
+          );
+          await _openRoom(
+            roomId,
+            opponentId: fromId,
+            opponentName: fromName,
+            myColor: myColor,
+          );
+        }
+      };
+      lobby.onAccept = (roomId, fromId, fromName, acceptorColor) {
+        final myColor = _opposite(acceptorColor);
+        _openRoom(
+          roomId,
+          opponentId: fromId,
+          opponentName: fromName,
+          myColor: myColor,
+        );
+      };
+
+      _lobby = lobby;
+    }
+
+    await _lobby!.connect();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы в лобби')),
+      );
+    }
+  }
+
+  Future<void> _leaveLobby() async {
+    await _lobby?.disconnect();
+    setState(() {});
+  }
+
+  Future<void> _invitePlayer(String id, String name) async {
+    if (_lobby == null) {
+      await _enterLobby();
+      if (_lobby == null) return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выбор цвета'),
+        content: const Text('Кем хотите играть?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'random'),
+              child: const Text('Случайный')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'white'),
+              child: const Text('Белыми')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'black'),
+              child: const Text('Чёрными')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+
+    String myColor = choice;
+    if (myColor == 'random') {
+      myColor = (math.Random().nextBool()) ? 'white' : 'black';
+    }
+
+    final roomId = const Uuid().v4();
+    await _lobby!.sendInvite(
+      toUserId: id,
+      toName: name,
+      roomId: roomId,
+      color: myColor,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Приглашение отправлено: $name (${myColor == 'white' ? 'белые' : 'чёрные'})')),
+      );
+    }
+  }
+
+  Future<void> _openRoom(
+    String roomId, {
+    required String opponentId,
+    required String opponentName,
+    required String myColor,
+  }) async {
+    _room?.disconnect();
+    final supa = Supabase.instance.client;
+    final room = RoomService(supa, roomId: roomId)
+      ..onMove = (m) {
+        _applyRemoteMove(
+            '${m['from']}', '${m['to']}', m['promotion']?.toString());
+      }
+      ..onResult = (res) async {
+        await _finalizeOnlineResult(res);
+      }
+      ..onDrawOffer = () async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Предложение ничьей'),
+            content: Text('$_opponentName предлагает ничью. Принять?'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отклонить')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Принять')),
+            ],
+          ),
+        );
+        await _room?.sendDrawAnswer(ok == true);
+        if (ok == true) {
+          await _room?.sendResult('draw');
+          await _finalizeOnlineResult('draw');
+          _showGameOverDialog('Ничья', 'Партия окончена по соглашению сторон.');
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Ничья отклонена')),
+            );
+          }
+        }
+      }
+      ..onDrawAnswer = (accepted) {
+        if (accepted) {
+          _finalizeOnlineResult('draw');
+          _showGameOverDialog('Ничья', 'Партия окончена по соглашению сторон.');
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Соперник отклонил ничью')),
+            );
+          }
+        }
+      }
+      ..onResign = () {
+        final winner = _humanColor == ch.Color.WHITE ? 'white' : 'black';
+        _finalizeOnlineResult(winner);
+        _showGameOverDialog('Соперник сдался',
+            '${_humanColor == ch.Color.WHITE ? "Белые" : "Чёрные"} победили (сдача соперника).');
+      };
+
+    await room.connect();
+    setState(() {
+      _room = room;
+      _roomId = roomId;
+      _opponentId = opponentId;
+      _opponentName = opponentName;
+      _vsEngine = false;
+      _engineThinking = false;
+      _humanColor =
+          (myColor.toLowerCase() == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
+      _resultSent = false;
+      _opponentRating = null;
+    });
+
+    // Попробуем взять рейтинг соперника из лобби
+    final peer = _lobby?.online
+        .firstWhere((e) => e['id'] == opponentId, orElse: () => {});
+    if (peer != null && peer.isNotEmpty) {
+      setState(() => _opponentRating =
+          int.tryParse(peer['rating'] ?? '') ?? _opponentRating);
+    }
+
+    // Сброс партии
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves.clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Игра против $_opponentName (${myColor == 'white' ? 'белыми' : 'чёрными'})')),
+      );
+    }
+  }
+
+  Future<void> _leaveRoom() async {
+    await _room?.disconnect();
+    setState(() {
+      _room = null;
+      _roomId = null;
+      _opponentId = null;
+      _opponentName = null;
+      _resultSent = false;
+    });
+  }
+
+  // ===================== UI BUILD =====================
+  @override
+  Widget build(BuildContext context) {
+    final double desired = _baseAt100 * (_boardPercent / 100.0);
+    final sizeLimit = math.min(MediaQuery.of(context).size.width,
+            MediaQuery.of(context).size.height) -
+        32;
+    final double boardSize = desired.clamp(120.0, sizeLimit);
+
+    final isLogged = Supabase.instance.client.auth.currentUser != null;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          if (_inRoom)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Chip(
+                avatar: const Icon(Icons.sports_esports, size: 18),
+                label: Text(
+                    'Комната: ${_opponentName ?? 'opponent'}${_opponentRating != null ? ' (${_opponentRating})' : ''}'),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: _AuthButton(
+              nickname:
+                  _nickname != null ? '${_nickname!} (${_myRating})' : null,
+              isLoggedIn: isLogged,
+              onTap: () => setState(() => _authOpen = !_authOpen),
+              onLogout: () async {
+                await Supabase.instance.client.auth.signOut();
+                await _leaveRoom();
+                await _leaveLobby();
+                setState(() {
+                  _authOpen = false;
+                  _nickname = null;
+                  _myRating = 1200;
+                });
+              },
+            ),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            child: Column(
+              children: [
+                const SizedBox(height: 12),
+                _buildZoomControl(),
+                const SizedBox(height: 8),
+
+                // Панель управления + навигация
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      const Text('Вы играете за:'),
+                      ToggleButtons(
+                        isSelected: [
+                          _humanColor == ch.Color.WHITE,
+                          _humanColor == ch.Color.BLACK
+                        ],
+                        onPressed: (_vsEngine || _inRoom)
+                            ? null
+                            : (i) => setState(() => _humanColor =
+                                i == 0 ? ch.Color.WHITE : ch.Color.BLACK),
+                        borderRadius: BorderRadius.circular(10),
+                        children: const [
+                          Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10),
+                              child: Text('Белые')),
+                          Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10),
+                              child: Text('Чёрные')),
+                        ],
+                      ),
+                      FilledButton.icon(
+                        onPressed:
+                            (_vsEngine || _inRoom) ? null : _startNewGame,
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Начать игру'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _vsEngine ? _stopGame : null,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Стоп ИИ'),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed:
+                            (_vsEngine || _inRoom) ? null : _continueVsEngine,
+                        icon: const Icon(Icons.smart_toy),
+                        label: const Text('Продолжить с компьютером'),
+                      ),
+
+                      if (_inRoom) ...[
+                        FilledButton.icon(
+                          onPressed: _offerDrawOnline,
+                          icon: const Icon(Icons.flag),
+                          label: const Text('Предложить ничью'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _resignOnline,
+                          icon: const Icon(Icons.flag_circle_outlined),
+                          label: const Text('Сдаться'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: _leaveRoom,
+                          icon: const Icon(Icons.logout),
+                          label: const Text('Выйти из комнаты'),
+                          style: FilledButton.styleFrom(
+                              backgroundColor: Colors.deepPurple),
+                        ),
+                      ],
+
+                      const SizedBox(width: 16),
+                      // Навигация
+                      IconButton(
+                          tooltip: 'В начало',
+                          onPressed: _plyIndex > 0 ? _goStart : null,
+                          icon: const Icon(Icons.first_page)),
+                      IconButton(
+                          tooltip: 'Назад',
+                          onPressed: _plyIndex > 0 ? _goPrev : null,
+                          icon: const Icon(Icons.chevron_left)),
+                      IconButton(
+                          tooltip: 'Вперёд',
+                          onPressed:
+                              _plyIndex < _sanMoves.length ? _goNext : null,
+                          icon: const Icon(Icons.chevron_right)),
+                      IconButton(
+                          tooltip: 'В конец',
+                          onPressed:
+                              _plyIndex < _sanMoves.length ? _goEnd : null,
+                          icon: const Icon(Icons.last_page)),
+                      if (_engineThinking)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2)),
+                              SizedBox(width: 8),
+                              Text('ИИ думает...'),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Доска + панель ходов + лобби
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildBoardWithCoords(boardSize),
+                      const SizedBox(width: 24),
+                      _MoveListPanel(
+                        san: _sanMoves,
+                        currentPly: _plyIndex,
+                        controller: _movesScroll,
+                        onCopyPGN: () {
+                          final rows = _rowsFromSan(_sanMoves);
+                          final pgn = rows.join(' ');
+                          Clipboard.setData(ClipboardData(text: pgn));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('PGN скопирован')),
+                          );
+                        },
+                        onClear: () {
+                          setState(() {
+                            _sanMoves.clear();
+                            _fens
+                              ..clear()
+                              ..add(game.fen);
+                            _plyIndex = 0;
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 24),
+                      _LobbyPanel(
+                        isLoggedIn:
+                            Supabase.instance.client.auth.currentUser != null,
+                        inLobby: _lobby != null,
+                        online: _lobby?.online ?? const [],
+                        onEnterLobby: _enterLobby,
+                        onLeaveLobby: _leaveLobby,
+                        onInvite: (id, name) => _invitePlayer(id, name),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // --- FEN + Best Move
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TextField(
+                    controller: _fenController,
+                    decoration: const InputDecoration(
+                        border: OutlineInputBorder(), labelText: 'Enter FEN'),
+                    onSubmitted: (v) {
+                      final ok = game.load(v.trim());
+                      if (ok) {
+                        setState(() {
+                          _selectedSquare = null;
+                          _legalTargets.clear();
+                          _captureTargets.clear();
+                          _sanMoves.clear();
+                          _fens
+                            ..clear()
+                            ..add(game.fen);
+                          _plyIndex = 0;
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: _loading
+                      ? null
+                      : () async {
+                          setState(() => _loading = true);
+                          final uci = await _fetchUciBestMove(
+                              _fenController.text.trim());
+                          setState(() => _loading = false);
+                          if (uci != null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Best move (UCI): $uci')),
+                            );
+                          }
+                        },
+                  child: const Text('Get Best Move'),
+                ),
+                const SizedBox(height: 24),
+
+                if (_loading)
+                  const CircularProgressIndicator()
+                else if (_result != null)
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: SelectableText(_result!,
+                        style: const TextStyle(fontSize: 14)),
+                  )
+                else
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Text('Enter a FEN and press the button.'),
+                  ),
+                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+
+          // Панель авторизации
+          if (_authOpen)
+            Positioned(
+              top: 12,
+              right: 12,
+              child: _AuthPanel(
+                isLogin: _authIsLogin,
+                passCtl: _passCtl,
+                nickCtl: _nickCtl,
+                authError: _authError,
+                onClose: () => setState(() => _authOpen = false),
+                onToggleMode: () =>
+                    setState(() => _authIsLogin = !_authIsLogin),
+                onSubmit: _submitAuth,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // --------- SAN rows utils ----------
+  List<String> _rowsFromSan(List<String> san) {
+    final out = <String>[];
+    for (int i = 0; i < san.length; i += 2) {
+      final n = i ~/ 2 + 1;
+      final w = san[i];
+      final b = (i + 1 < san.length) ? san[i + 1] : '';
+      out.add('$n. $w ${b.isEmpty ? '' : b}');
+    }
+    return out;
+  }
+
+  // --------- Главная точка входа для локального хода ----------
+  Future<void> _makeMove(String from, String to) async {
+    if (!_myTurnNow()) return;
+
+    _truncateFutureBranch();
+
+    final params = {'from': from, 'to': to};
+
+    String? promo;
+    if (_needsPromotion(from, to)) {
+      final color = game.get(from)!.color;
+      final choice = await _askPromotionPiece(context, color);
+      if (choice == null) return;
+      params['promotion'] = choice;
+      promo = choice;
+    }
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final bool ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    if (_room != null) {
+      await _room!.sendMove(from: from, to: to, promotion: promo);
+    }
+
+    if (_vsEngine && game.turn != _humanColor && !game.game_over) {
+      await _engineMove();
+    }
+  }
+
+  // ---------------- UI pieces ----------------
+  Widget _buildChessBoardGrid(double boardSize) {
+    final double cell = boardSize / 8;
+    final double pieceSize = cell * 0.85;
+
+    return SizedBox(
+      width: boardSize,
+      height: boardSize,
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate:
+            const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8),
+        itemCount: 64,
+        itemBuilder: (context, index) {
+          final square = _displayIndexToSquare(index);
+          final piece = game.get(square);
+          final row = index ~/ 8;
+          final col = index % 8;
+          final isWhiteSquare = (row + col) % 2 == 0;
+
+          final bool isSelected = _selectedSquare == square;
+          final bool isLegal = _legalTargets.contains(square);
+          final bool isCapture = _captureTargets.contains(square);
+
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (_) => _onTapDownSquare(square),
+            onTap: () => _onTapSquare(square),
+            onSecondaryTap: _onSecondaryTapSquare,
+            child: DragTarget<int>(
+              onAccept: (fromIndex) {
+                if (!_myTurnNow()) return;
+                final from = _displayIndexToSquare(fromIndex);
+                final to = square;
+                _makeMove(from, to);
+              },
+              builder: (context, _, __) => Container(
+                decoration: BoxDecoration(
+                  color: isWhiteSquare
+                      ? const Color(0xFFF0D9B5)
+                      : const Color(0xFFB58863),
+                  border: Border.all(
+                    color: isSelected ? Colors.amber : Colors.black12,
+                    width: isSelected ? 3 : 1,
+                  ),
+                ),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (isLegal && !isCapture)
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: cell * 0.3,
+                            height: cell * 0.3,
+                            decoration: const BoxDecoration(
+                              color: Color(0x5500FF00),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (isCapture)
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: cell * 0.75,
+                            height: cell * 0.75,
+                            decoration: BoxDecoration(
+                              border:
+                                  Border.all(color: Colors.redAccent, width: 3),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (piece != null)
+                      Center(
+                        child: Draggable<int>(
+                          data: index,
+                          feedback: Material(
+                            color: Colors.transparent,
+                            child: SvgPicture.asset(
+                              _assetFor(_codeFor(piece)),
+                              width: pieceSize,
+                              height: pieceSize,
+                            ),
+                          ),
+                          childWhenDragging: const SizedBox.shrink(),
+                          child: SvgPicture.asset(
+                            _assetFor(_codeFor(piece)),
+                            width: pieceSize,
+                            height: pieceSize,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildBoardWithCoords(double boardSize) {
+    const double m = 18;
+    final files = _isFlipped
+        ? ['H', 'G', 'F', 'E', 'D', 'C', 'B', 'A']
+        : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    final ranks = _isFlipped
+        ? ['1', '2', '3', '4', '5', '6', '7', '8']
+        : ['8', '7', '6', '5', '4', '3', '2', '1'];
+
+    final labelStyle = TextStyle(
+      fontSize: math.max(10, boardSize / 32),
+      color: Colors.black.withOpacity(0.7),
+    );
+
+    return SizedBox(
+      width: boardSize + m,
+      height: boardSize + m,
+      child: Stack(
+        children: [
+          Positioned(left: m, top: 0, child: _buildChessBoardGrid(boardSize)),
+          Positioned(
+            left: 0,
+            top: 0,
+            width: m,
+            height: boardSize,
+            child: Column(
+              children: List.generate(
+                8,
+                (i) => SizedBox(
+                  height: boardSize / 8,
+                  child: Align(
+                      alignment: Alignment.center,
+                      child: Text(ranks[i], style: labelStyle)),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: m,
+            top: boardSize,
+            width: boardSize,
+            height: m,
+            child: Row(
+              children: List.generate(
+                8,
+                (i) => SizedBox(
+                  width: boardSize / 8,
+                  child: Center(child: Text(files[i], style: labelStyle)),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildZoomControl() {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const Icon(Icons.zoom_in),
+          const SizedBox(width: 8),
+          Container(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: theme.dividerColor),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _bumpZoom(false),
+                    icon: const Icon(Icons.remove)),
+                const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Text('Масштаб')),
+                Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text('${_boardPercent.round()} %')),
+                IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _bumpZoom(true),
+                    icon: const Icon(Icons.add)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ----------- AUTH SUBMIT -----------
+  Future<void> _submitAuth() async {
+    setState(() => _authError = null);
+    final uname = _nickCtl.text.trim().toLowerCase();
+    final pass = _passCtl.text;
+
+    String? _validateSupabaseUrl(String url) {
+      final u = url.trim();
+      if (u.isEmpty) return 'supabaseUrl пустой.';
+      final parsed = Uri.tryParse(u);
+      if (parsed == null || !parsed.hasScheme || !u.startsWith('https://')) {
+        return 'supabaseUrl должен начинаться с https://';
+      }
+      if (!u.contains('.supabase.co') && !u.contains('.supabase.in')) {
+        return 'supabaseUrl должен содержать .supabase.co (или .supabase.in).';
+      }
+      return null;
+    }
+
+    String? _validateAnonKey(String key) {
+      final k = key.trim();
+      if (k.isEmpty) return 'supabaseAnonKey пустой.';
+      final parts = k.split('.');
+      if (parts.length < 3) {
+        return 'supabaseAnonKey должен быть JWT (три части через точку).';
+      }
+      return null;
+    }
+
+    final uErr = _validateSupabaseUrl(supabaseUrl);
+    final keyErr = _validateAnonKey(supabaseAnonKey);
+    if (uErr != null || keyErr != null) {
+      final msg = [
+        'Неверная конфигурация Supabase.',
+        if (uErr != null) '• $uErr',
+        if (keyErr != null) '• $keyErr',
+      ].join('\n');
+      setState(() => _authError = msg);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+      return;
+    }
+
+    if (pass.length < 6) {
+      setState(() => _authError = 'Пароль должен быть минимум 6 символов');
+      return;
+    }
+
+    String _synthEmailFromNick(String nick) =>
+        '${nick.trim().toLowerCase()}@noemail.local';
+
+    try {
+      if (_authIsLogin) {
+        await Supabase.instance.client.auth.signInWithPassword(
+            email: _synthEmailFromNick(uname), password: pass);
+      } else {
+        // регистрация
+        final supa = Supabase.instance.client;
+        final res = await supa.auth
+            .signUp(email: _synthEmailFromNick(uname), password: pass);
+        final uid = res.user?.id ?? supa.auth.currentUser?.id;
+        if (uid == null) {
+          throw AuthException('Регистрация не завершилась.');
+        }
+        await supa.from('profiles').upsert(
+            {'id': uid, 'nickname': uname, 'rating': 1200},
+            onConflict: 'id');
+        await supa.auth.signInWithPassword(
+            email: _synthEmailFromNick(uname), password: pass);
+      }
+
+      await _loadNickname();
+      if (mounted) setState(() => _authOpen = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  _authIsLogin ? 'Вход выполнен' : 'Регистрация выполнена')),
+        );
+      }
+    } on AuthException catch (e) {
+      setState(() => _authError = 'Ошибка авторизации: ${e.message}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка авторизации: ${e.message}')));
+      }
+    } catch (e) {
+      setState(() => _authError = e.toString());
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
+  }
+}
+
+// ---- Панель со списком ходов ----
+class _MoveListPanel extends StatelessWidget {
+  const _MoveListPanel({
+    required this.san,
+    required this.currentPly,
+    required this.controller,
+    required this.onCopyPGN,
+    required this.onClear,
+    Key? key,
+  }) : super(key: key);
+
+  final List<String> san;
+  final int currentPly; // 0..san.length
+  final ScrollController controller;
+  final VoidCallback onCopyPGN;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final rowsCount = (san.length / 2.0).ceil();
+    return SizedBox(
+      width: 300,
+      height: 480,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFFDFCF9),
+          border: Border.all(color: const Color(0xFF333333), width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Moves',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Scrollbar(
+                  controller: controller,
+                  child: ListView.builder(
+                    controller: controller,
+                    itemCount: rowsCount,
+                    itemBuilder: (_, i) {
+                      final moveNo = i + 1;
+                      final whiteIndex = i * 2;
+                      final blackIndex = whiteIndex + 1;
+
+                      final whiteShown = whiteIndex < currentPly;
+                      final blackShown = blackIndex < currentPly;
+
+                      final white = whiteIndex < san.length && whiteShown
+                          ? san[whiteIndex]
+                          : '';
+                      final black = blackIndex < san.length && blackShown
+                          ? san[blackIndex]
+                          : '';
+
+                      final isFutureRow = whiteIndex >= currentPly;
+                      final style = TextStyle(
+                        color: isFutureRow
+                            ? Colors.black.withOpacity(0.45)
+                            : Colors.black,
+                      );
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                            '$moveNo. $white ${black.isEmpty ? '' : black}',
+                            style: style),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: san.isEmpty ? null : onCopyPGN,
+                      child: const Text('Скопировать PGN'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: 'Очистить',
+                    onPressed: san.isEmpty ? null : onClear,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- Lobby UI ----------
+class _LobbyPanel extends StatelessWidget {
+  const _LobbyPanel({
+    required this.isLoggedIn,
+    required this.inLobby,
+    required this.online,
+    required this.onEnterLobby,
+    required this.onLeaveLobby,
+    required this.onInvite,
+    Key? key,
+  }) : super(key: key);
+
+  final bool isLoggedIn;
+  final bool inLobby;
+  final List<Map<String, String>> online;
+  final Future<void> Function() onEnterLobby;
+  final Future<void> Function() onLeaveLobby;
+  final void Function(String id, String name) onInvite;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 300,
+      height: 480,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFFDFCF9),
+          border: Border.all(color: const Color(0xFF333333), width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text('Лобби',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                  if (!inLobby)
+                    FilledButton.tonal(
+                      onPressed: isLoggedIn ? onEnterLobby : null,
+                      child: const Text('Войти'),
+                    )
+                  else
+                    OutlinedButton(
+                      onPressed: onLeaveLobby,
+                      child: const Text('Выйти'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: (inLobby)
+                    ? (online.isEmpty
+                        ? const Center(child: Text('Онлайн никого 😴'))
+                        : ListView.separated(
+                            itemCount: online.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 8),
+                            itemBuilder: (_, i) {
+                              final u = online[i];
+                              final me = u['id'] ==
+                                  Supabase.instance.client.auth.currentUser?.id;
+                              final name = u['username'] ?? 'player';
+                              final rating = u['rating'] ?? '1200';
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.person),
+                                title: Text(me
+                                    ? '$name (вы) — $rating'
+                                    : '$name — $rating'),
+                                trailing: FilledButton(
+                                  onPressed: me
+                                      ? null
+                                      : () => onInvite(
+                                          u['id']!, u['username'] ?? 'player'),
+                                  child: const Text('Вызвать'),
+                                ),
+                              );
+                            },
+                          ))
+                    : const Center(
+                        child: Text('Войдите в лобби, чтобы видеть игроков')),
+              ),
+              const SizedBox(height: 8),
+              Text('Онлайн: ${inLobby ? online.length : 0}',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- AUTH UI widgets ----------
+class _AuthButton extends StatelessWidget {
+  final String? nickname;
+  final bool isLoggedIn;
+  final VoidCallback onTap;
+  final Future<void> Function() onLogout;
+
+  const _AuthButton({
+    required this.nickname,
+    required this.isLoggedIn,
+    required this.onTap,
+    required this.onLogout,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isLoggedIn) {
+      return FilledButton.tonal(
+        onPressed: onTap,
+        child: const Text('Вход / Регистрация'),
+      );
+    }
+    return PopupMenuButton<String>(
+      tooltip: 'Аккаунт',
+      onSelected: (v) async {
+        if (v == 'logout') await onLogout();
+      },
+      itemBuilder: (ctx) => [
+        PopupMenuItem<String>(
+          value: 'nick',
+          enabled: false,
+          child: Text(nickname ?? 'player'),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'logout',
+          child: Text('Выйти'),
+        ),
+      ],
+      child: Chip(
+        avatar: const Icon(Icons.person, size: 18),
+        label: Text(nickname ?? 'Аккаунт'),
+      ),
+    );
+  }
+}
+
+class _AuthPanel extends StatelessWidget {
+  final bool isLogin;
+  final TextEditingController passCtl;
+  final TextEditingController nickCtl;
+  final String? authError;
+  final VoidCallback onClose;
+  final VoidCallback onToggleMode;
+  final Future<void> Function() onSubmit;
+
+  const _AuthPanel({
+    required this.isLogin,
+    required this.passCtl,
+    required this.nickCtl,
+    required this.authError,
+    required this.onClose,
+    required this.onToggleMode,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = ConstrainedBox(
+      constraints: const BoxConstraints.tightFor(width: 360),
+      child: Material(
+        elevation: 8,
+        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.surface,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Вход / Регистрация',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Закрыть',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: nickCtl,
+                decoration: const InputDecoration(
+                  labelText: 'Ник (a-z, 0-9, _)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: passCtl,
+                decoration: const InputDecoration(
+                  labelText: 'Пароль (≥ 6 символов)',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 8),
+              if (authError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    authError!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                ),
+              FilledButton(
+                onPressed: onSubmit,
+                child: Text(isLogin ? 'Войти' : 'Зарегистрироваться'),
+              ),
+              TextButton(
+                onPressed: onToggleMode,
+                child:
+                    Text(isLogin ? 'Нет аккаунта?' : 'У меня уже есть аккаунт'),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Вход по нику, e-mail не требуется (Confirm email = OFF).',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    return Stack(
+      alignment: Alignment.topRight,
+      children: [
+        IgnorePointer(
+          ignoring: true,
+          child: Container(
+            width: 380,
+            height: 260,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.12),
+                  blurRadius: 12,
+                  spreadRadius: 2,
+                ),
+              ],
+            ),
+          ),
+        ),
+        card,
+      ],
+    );
+  }
+}

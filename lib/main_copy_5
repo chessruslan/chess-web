@@ -1,0 +1,4841 @@
+// main.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:html' as html;
+import 'dart:ui' show FontFeature;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'utils.dart'; // sanitizeFenEp, stripEpField
+import 'package:http/http.dart' as http;
+import 'package:audioplayers/audioplayers.dart';
+import 'package:chess/chess.dart' as ch;
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:realtime_client/realtime_client.dart' as rt;
+
+import 'package:uuid/uuid.dart';
+import 'secrets.dart'; // supabaseUrl / supabaseAnonKey
+
+// ---------- Одноразовое удаление старого Service Worker и кэшей ----------
+Future<void> _killServiceWorkerOnce() async {
+  if (!kIsWeb) return;
+  try {
+    final ls = html.window.localStorage;
+    if (ls['sw_fix_done'] == '1') return;
+
+    final sw = html.window.navigator.serviceWorker;
+    if (sw != null) {
+      final regs = await sw.getRegistrations();
+      for (final r in regs) {
+        try {
+          await r.unregister();
+        } catch (_) {}
+      }
+    }
+
+    final cacheStorage = html.window.caches;
+    if (cacheStorage != null) {
+      final keys = await cacheStorage.keys();
+      for (final k in keys) {
+        try {
+          await cacheStorage.delete(k);
+        } catch (_) {}
+      }
+    }
+
+    ls['sw_fix_done'] = '1';
+    html.window.location.reload();
+  } catch (_) {}
+}
+
+// ------------------------------ APP ------------------------------
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  await _killServiceWorkerOnce();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Chess Online',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(title: 'Chess Online'),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+  final String title;
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
+}
+
+// ======================= LOBBY (broadcast) =======================
+class LobbyService {
+  LobbyService(
+    this.supa, {
+    required this.username,
+    required this.userId,
+    required this.myRating,
+  });
+  final SupabaseClient supa;
+  final String username;
+  final String userId;
+  int myRating;
+
+  void sendPresenceNow() {
+    final ch = _chan;
+    if (ch != null) _sendPing(ch);
+  }
+
+  // === REPLACE: LobbyService.updateMyRating ===
+  void updateMyRating(int r) {
+    myRating = r;
+
+    // 1) мгновенно обновим себя в локальном списке
+    _touch(userId, username, myRating);
+
+    // 2) сразу дернём UI (на случай, если канал ещё не готов)
+    onOnlineChanged?.call();
+
+    // 3) разошлём снапшот + пинг
+    final ch = _chan;
+    if (ch != null) {
+      _sendHello(ch); // снапшот (hello)
+      _sendPing(ch); // пульс (ping)
+    }
+  }
+
+  rt.RealtimeChannel? _chan;
+
+  void Function()? onOnlineChanged;
+  void Function(String roomId, String fromId, String fromName, String color,
+      int m, int inc, bool rated)? onInvite;
+
+  void Function(String roomId, String fromId, String fromName, String color)?
+      onAccept;
+
+  final Map<String, _Peer> _peers = {};
+  List<Map<String, String>> get online => _peers.values
+      .map((p) => {
+            'id': p.id,
+            'username': p.name,
+            'rating': '${p.rating}',
+          })
+      .toList(growable: false);
+
+  static const Duration _beat = Duration(seconds: 12);
+  Timer? _heartbeat;
+
+  Map<String, dynamic> _parsePayload(dynamic raw) {
+    Map<String, dynamic> unwrap(dynamic v) {
+      if (v is Map) {
+        final m = Map<String, dynamic>.from(v);
+        while (m['payload'] is Map) {
+          final inner = Map<String, dynamic>.from(m['payload']);
+          m
+            ..remove('payload')
+            ..addAll(inner);
+        }
+        return m;
+      }
+      return <String, dynamic>{};
+    }
+
+    return unwrap(raw);
+  }
+
+  void _touch(String id, String name, int rating) {
+    if (id.isEmpty) return;
+    final n = (name.isEmpty ? 'player' : name);
+    final p = _peers[id];
+    if (p == null) {
+      _peers[id] = _Peer(
+        id: id,
+        name: n,
+        rating: rating,
+        lastSeen: DateTime.now(),
+      );
+    } else {
+      p.name = n;
+      p.rating = rating;
+      p.lastSeen = DateTime.now();
+    }
+    onOnlineChanged?.call();
+  }
+
+  Future<void> connect() async {
+    if (_chan != null) return;
+
+    final chan =
+        supa.channel('lobby', opts: const rt.RealtimeChannelConfig(self: true));
+
+    chan.onBroadcast(
+        event: 'whois', callback: (payload, [ref]) => _sendHello(chan));
+
+    // +++ NEW: принимаем hello и обновляем список онлайн с рейтингом
+    chan.onBroadcast(
+      event: 'hello',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        final id = '${p['id'] ?? ''}';
+        final name = '${p['name'] ?? 'player'}';
+        final rating = (p['rating'] is num)
+            ? (p['rating'] as num).toInt()
+            : int.tryParse('${p['rating'] ?? '1200'}') ?? 1200;
+        if (id.isEmpty) return;
+        _touch(id, name, rating);
+
+        if (id != userId) _sendHello(chan); // <<< добавили
+      },
+    );
+
+    chan.onBroadcast(
+      event: 'ping',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        _touch(
+          '${p['id'] ?? ''}',
+          '${p['name'] ?? 'player'}',
+          (p['rating'] is num)
+              ? (p['rating'] as num).toInt()
+              : int.tryParse('${p['rating'] ?? '1200'}') ?? 1200,
+        );
+      },
+    );
+
+    chan.onBroadcast(
+      event: 'invite',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        if ('${p['to']}' == userId) {
+          onInvite?.call(
+            '${p['roomId']}',
+            '${p['from']}',
+            '${p['fromName']}',
+            '${p['color'] ?? 'white'}',
+            (p['m'] as num?)?.toInt() ?? 5, // minutes
+            (p['inc'] as num?)?.toInt() ?? 3, // increment
+            (p['rated'] as bool?) ?? true, // rated
+          );
+        }
+      },
+    );
+
+    chan.onBroadcast(
+        event: 'accept',
+        callback: (payload, [ref]) {
+          final p = _parsePayload(payload);
+          if ('${p['to']}' == userId) {
+            onAccept?.call('${p['roomId']}', '${p['from']}', '${p['fromName']}',
+                '${p['color'] ?? 'white'}');
+          }
+        });
+
+    // NEW: убрать игрока из списка, когда он уходит
+    chan.onBroadcast(
+      event: 'bye',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        final id = '${p['id'] ?? ''}';
+        if (id.isEmpty) return;
+        _peers.remove(id);
+        onOnlineChanged?.call();
+      },
+    );
+    await chan.subscribe();
+
+    // небольшой «пинок», чтобы точно увидеться в лобби на холодном коннекте
+    await Future.delayed(const Duration(milliseconds: 120));
+    _sendHello(chan);
+    _sendPing(chan);
+
+    chan.sendBroadcastMessage(event: 'whois', payload: {'from': userId});
+
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(_beat, (_) => _sendPing(chan));
+
+    _touch(userId, username, myRating);
+
+    html.window.onBeforeUnload.listen((_) {
+      chan.sendBroadcastMessage(event: 'bye', payload: {'id': userId});
+    });
+
+    _chan = chan;
+  }
+
+  void _sendHello(rt.RealtimeChannel ch) => ch.sendBroadcastMessage(
+        event: 'hello',
+        payload: {'id': userId, 'name': username, 'rating': myRating},
+      );
+
+  void _sendPing(rt.RealtimeChannel ch) => ch.sendBroadcastMessage(
+        event: 'ping',
+        payload: {'id': userId, 'name': username, 'rating': myRating},
+      );
+
+  Future<void> disconnect() async {
+    _heartbeat?.cancel();
+    final ch = _chan;
+    if (ch != null) {
+      await ch.sendBroadcastMessage(event: 'bye', payload: {'id': userId});
+      await ch.unsubscribe();
+    }
+    _chan = null;
+  }
+
+  Future<void> sendInvite({
+    required String toUserId,
+    required String toName,
+    required String roomId,
+    required String color, // 'white' | 'black'
+    required int minutes,
+    required int increment,
+    required bool rated,
+  }) async {
+    _chan?.sendBroadcastMessage(event: 'invite', payload: {
+      'roomId': roomId,
+      'from': userId,
+      'fromName': username,
+      'to': toUserId,
+      'toName': toName,
+      'color': color,
+      'm': minutes,
+      'inc': increment,
+      'rated': rated,
+    });
+  }
+
+  Future<void> sendAccept({
+    required String toUserId,
+    required String toName,
+    required String roomId,
+    required String color, // цвет принимающего
+  }) async {
+    _chan?.sendBroadcastMessage(event: 'accept', payload: {
+      'roomId': roomId,
+      'from': userId,
+      'fromName': username,
+      'to': toUserId,
+      'toName': toName,
+      'color': color,
+    });
+  }
+}
+
+class _Peer {
+  _Peer({
+    required this.id,
+    required this.name,
+    required this.rating,
+    required this.lastSeen,
+  });
+  final String id;
+  String name;
+  int rating;
+  DateTime lastSeen;
+}
+
+// ======================= ROOM (moves/chat/control) =======================
+class RoomService {
+  RoomService(this.supa, {required this.roomId});
+  final SupabaseClient supa;
+  final String roomId;
+
+  Future<void> sendChat({
+    required String text,
+    required String fromName,
+    required String from,
+  }) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'chat', payload: {
+      'roomId': roomId,
+      'type': 'chat',
+      'msg': text,
+      'fromName': fromName,
+      'from': from,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  void Function(Map<String, dynamic> msg)? onChat;
+
+  rt.RealtimeChannel? _chan;
+  final Completer<void> _ready = Completer<void>();
+
+  // callbacks
+  void Function(Map<String, dynamic> move)? onMove;
+  void Function(Map<String, dynamic> evt)?
+      onCtrl; // draw/resign/rematch/clock/chat/tc
+
+  // +++ НОВОЕ: колбэки на отдельные события
+  void Function(Map<String, dynamic> evt)? onDrawOffer; // {from, roomId}
+  void Function(Map<String, dynamic> evt)?
+      onDrawAnswer; // {from, roomId, accepted}
+  void Function(Map<String, dynamic> evt)? onResign; // {from, roomId}
+
+  Map<String, dynamic> _parsePayload(dynamic raw) {
+    Map<String, dynamic> unwrap(dynamic v) {
+      if (v is Map) {
+        final m = Map<String, dynamic>.from(v);
+        while (m['payload'] is Map) {
+          final inner = Map<String, dynamic>.from(m['payload']);
+          m
+            ..remove('payload')
+            ..addAll(inner);
+        }
+        return m;
+      }
+      return <String, dynamic>{};
+    }
+
+    return unwrap(raw);
+  }
+
+  Future<void> connect() async {
+    if (_chan != null) return;
+    _chan = supa.channel('room:$roomId',
+        opts: const rt.RealtimeChannelConfig(self: true));
+
+    _chan!.onBroadcast(
+        event: 'move',
+        callback: (payload, [ref]) {
+          onMove?.call(_parsePayload(payload));
+        });
+
+    _chan!.onBroadcast(
+        event: 'ctrl',
+        callback: (payload, [ref]) {
+          onCtrl?.call(_parsePayload(payload));
+        });
+
+    _chan!.onBroadcast(
+      event: 'draw_offer',
+      callback: (payload, [ref]) {
+        onDrawOffer?.call(_parsePayload(payload));
+      },
+    );
+
+    _chan!.onBroadcast(
+      event: 'draw_answer',
+      callback: (payload, [ref]) {
+        onDrawAnswer?.call(_parsePayload(payload));
+      },
+    );
+
+    _chan!.onBroadcast(
+      event: 'resign',
+      callback: (payload, [ref]) {
+        onResign?.call(_parsePayload(payload));
+      },
+    );
+
+    _chan!.onBroadcast(
+      event: 'chat',
+      callback: (payload, [ref]) {
+        onChat?.call(_parsePayload(payload));
+      },
+    );
+
+    await _chan!.subscribe();
+    if (!_ready.isCompleted) _ready.complete();
+  }
+
+  Future<void> disconnect() async {
+    await _chan?.unsubscribe();
+    _chan = null;
+    if (!_ready.isCompleted) _ready.completeError(StateError('disconnected'));
+  }
+
+  Future<void> sendMove({
+    required String from,
+    required String to,
+    String? promotion,
+  }) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'move', payload: {
+      'roomId': roomId,
+      'from': from,
+      'to': to,
+      if (promotion != null) 'promotion': promotion,
+      'ts': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<void> sendCtrl(Map<String, dynamic> data) async {
+    await _ready.future;
+    final payload = Map<String, dynamic>.from(data);
+    payload['roomId'] = roomId;
+    _chan?.sendBroadcastMessage(event: 'ctrl', payload: payload);
+  }
+
+  Future<void> sendDrawOffer({
+    required String fromUserId,
+    required String fromName,
+  }) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'draw_offer', payload: {
+      'roomId': roomId,
+      'from': fromUserId,
+      'fromName': fromName,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> sendDrawAnswer({
+    required String fromUserId,
+    required String fromName,
+    required bool accepted,
+  }) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'draw_answer', payload: {
+      'roomId': roomId,
+      'from': fromUserId,
+      'fromName': fromName,
+      'accepted': accepted,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> sendResign({
+    required String fromUserId,
+    required String fromName,
+  }) async {
+    await _ready.future;
+    _chan?.sendBroadcastMessage(event: 'resign', payload: {
+      'roomId': roomId,
+      'from': fromUserId,
+      'fromName': fromName,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+}
+
+// ========================= STATE / UI  1/2    =========================
+class _MyHomePageState extends State<MyHomePage> {
+  // ---- chess core ----
+  final TextEditingController _fenController = TextEditingController(
+    text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+  );
+
+  int _engineDuelDelayMs = 2000; // по умолчанию 2 сек
+  late final TextEditingController _duelDelayCtl;
+
+  Future<Map<String, int>> _loadProfileStats(String uid) async {
+    final supa = Supabase.instance.client;
+    final row = await supa
+        .from('profiles')
+        .select('rating, games_played')
+        .eq('id', uid)
+        .maybeSingle();
+
+    final rating = (row?['rating'] as int?) ?? 1200;
+    final games = (row?['games_played'] as int?) ?? 0;
+    return {'rating': rating, 'games_played': games};
+  }
+
+  // уникальный ID вкладки/клиента (защита от эха)
+  final String _clientId = const Uuid().v4();
+
+  final ch.Chess game = ch.Chess();
+  String? _result;
+  bool _loading = false;
+  bool _engineDuel = false;
+  // engine
+  bool _vsEngine = false;
+  bool _engineThinking = false;
+  ch.Color _humanColor = ch.Color.WHITE;
+
+// --- Board Editor state ---
+  bool _editMode = false; // включён ли редактор
+  List<List<String>> _editBoard =
+      List.generate(8, (_) => List.filled(8, '.')); // 8×8, '.' = пусто
+  ch.Color _editTurn = ch.Color.WHITE; // чей ход в редакторе
+  bool _castleK = false, _castleQ = false, _castlek = false, _castleq = false;
+
+  String? _dragFromSquare;
+
+  /// из кода палитры ('wK','wQ','wR','wB','wN','wP','bK','bQ','bR','bB','bN','bP')
+  /// в символ FEN ('K','Q','R','B','N','P','k','q','r','b','n','p')
+
+  /// из FEN-символа обратно в код палитры (нужно, чтобы тащить фигуру С ДОСКИ)
+
+  int _fileIndex(String s) =>
+      s.codeUnitAt(0) - 'a'.codeUnitAt(0); // a..h -> 0..7
+  int _rankIndex(String s) => 8 - int.parse(s[1]); // '8'..'1' -> 0..7
+
+  List<List<String>> _fenToBoard(String fen) {
+    final board = List.generate(8, (_) => List.filled(8, '.'));
+    final rows = fen.split(' ')[0].split('/');
+    for (int r = 0; r < 8; r++) {
+      int c = 0;
+      for (final chx in rows[r].split('')) {
+        final d = int.tryParse(chx);
+        if (d != null) {
+          for (int k = 0; k < d; k++) board[r][c++] = '.';
+        } else {
+          board[r][c++] = chx;
+        }
+      }
+    }
+    return board;
+  }
+
+  String _boardToFen() {
+    final ranks = <String>[];
+    for (int r = 0; r < 8; r++) {
+      int empties = 0;
+      final row = StringBuffer();
+      for (int c = 0; c < 8; c++) {
+        final p = _editBoard[r][c];
+        if (p == '.') {
+          empties++;
+        } else {
+          if (empties > 0) {
+            row.write(empties);
+            empties = 0;
+          }
+          row.write(p);
+        }
+      }
+      if (empties > 0) row.write(empties);
+      ranks.add(row.toString());
+    }
+    final castle = [
+      if (_castleK) 'K',
+      if (_castleQ) 'Q',
+      if (_castlek) 'k',
+      if (_castleq) 'q',
+    ].join();
+    final castleStr = castle.isEmpty ? '-' : castle;
+    final turnStr = _editTurn == ch.Color.WHITE ? 'w' : 'b';
+    return '${ranks.join('/')} $turnStr $castleStr - 0 1';
+  }
+
+  String? _assetForFenChar(String ch) {
+    if (ch == '.') return null;
+    final isWhite = ch.toUpperCase() == ch;
+    final letter = ch.toUpperCase(); // KQRBNP
+    return _assetFor('${isWhite ? 'w' : 'b'}$letter');
+  }
+
+  bool get _isFlipped => _humanColor == ch.Color.BLACK;
+
+  int _engineEpoch = 0; // счётчик для отмены "висящих" ответов движка
+
+  // history
+  final List<String> _sanMoves = [];
+  final List<String> _fens = [];
+  int _plyIndex = 0;
+
+  // tap-to-move
+  String? _selectedSquare;
+  Set<String> _legalTargets = {};
+  Set<String> _captureTargets = {};
+  final ScrollController _movesScroll = ScrollController();
+
+  // board scale
+  static const double _baseAt100 = 480.0;
+  static const double _minPercent = 50.0;
+  static const double _maxPercent = 200.0;
+  static const double _stepPercent = 10.0;
+  double _boardPercent = 100.0;
+
+  void _saveBoardPercent() {
+    try {
+      html.window.localStorage['board_percent'] =
+          _boardPercent.toStringAsFixed(0);
+    } catch (_) {}
+  }
+
+  void _setBoardPercent(double p) {
+    setState(() {
+      _boardPercent = p.clamp(_minPercent, _maxPercent);
+    });
+    _saveBoardPercent();
+  }
+
+  void _changeBoardPercent(double delta) {
+    _setBoardPercent(_boardPercent + delta);
+  }
+
+  void _resetBoardPercent() {
+    _setBoardPercent(100.0);
+  }
+
+  // audio
+  final AudioPlayer _player = AudioPlayer();
+
+  // auth panel
+  bool _authOpen = false;
+  bool _authIsLogin = true;
+  final _passCtl = TextEditingController();
+  final _nickCtl = TextEditingController();
+  String? _authError;
+  String? _nickname;
+
+  // realtime
+  LobbyService? _lobby;
+  RoomService? _room;
+  String? _roomId;
+  String? _opponentId;
+  String? _opponentName;
+  bool get _inRoom => _roomId != null;
+  bool _isSpectator = false;
+
+  // room chat
+  final List<_ChatMsg> _chat = [];
+  final TextEditingController _chatCtl = TextEditingController();
+
+  // draw/resign/rematch state
+  bool _drawOfferedByMe = false;
+  bool _drawOfferedToMe = false;
+  bool _rematchOfferedByMe = false;
+  bool _rematchOfferedToMe = false;
+  bool _gameTerminated = false;
+
+  // time control
+  int _tcMinutes = 5;
+  int _tcIncrement = 3;
+  int _whiteMs = 0;
+  int _blackMs = 0;
+  Timer? _tick;
+  DateTime? _lastTickAt;
+  DateTime? _lastClockCastAt; // для редкой рассылки clock снапшота
+  bool _rated = true;
+  bool _matchRated = true; // фиксируем режим для матча при старте онлайна
+  bool _clocksStarted = false; // до первого хода false
+
+  // «владелец тика» — только он шлёт снапшоты clock
+  bool get _iAmClockAuthority =>
+      _inRoom && !_isSpectator && (game.turn == _humanColor);
+
+  // ratings
+  int _myRating = 1200;
+  int _oppRating = 1200;
+  int _myGames = 0;
+  int _oppGames = 0;
+
+  // autorc
+  static const _LS_ROOM = 'room_restore';
+
+  // ================== lifecycle ==================
+  @override
+  void initState() {
+    super.initState();
+
+    try {
+      final s = html.window.localStorage['board_percent'];
+      if (s != null) {
+        final p = double.tryParse(s);
+        if (p != null) {
+          _boardPercent = p.clamp(_minPercent, _maxPercent);
+        }
+      }
+    } catch (_) {}
+
+    _fens.add(game.fen);
+    _plyIndex = 0;
+    _loadNickname().then((_) => _tryRestoreRoom());
+    _duelDelayCtl = TextEditingController(text: _engineDuelDelayMs.toString());
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    _movesScroll.dispose();
+    _chatCtl.dispose();
+    _stopTick();
+    _room?.disconnect();
+    _lobby?.disconnect();
+    _duelDelayCtl.dispose();
+    super.dispose();
+  }
+
+  // ================== helpers & services ==================
+  String _opposite(String c) => c.toLowerCase() == 'white' ? 'black' : 'white';
+
+  Future<void> _playSound({required bool capture}) async {
+    try {
+      final name = capture ? 'sfx/capture.mp3' : 'sfx/move.mp3';
+      await _player.play(AssetSource(name));
+    } catch (_) {}
+  }
+
+  String _assetFor(String code) => 'assets/pieces/cburnett/$code.svg';
+  String _codeFor(ch.Piece p) {
+    final c = p.color == ch.Color.WHITE ? 'w' : 'b';
+    switch (p.type) {
+      case ch.PieceType.PAWN:
+        return '${c}P';
+      case ch.PieceType.KNIGHT:
+        return '${c}N';
+      case ch.PieceType.BISHOP:
+        return '${c}B';
+      case ch.PieceType.ROOK:
+        return '${c}R';
+      case ch.PieceType.QUEEN:
+        return '${c}Q';
+      case ch.PieceType.KING:
+        return '${c}K';
+      default:
+        return '${c}P';
+    }
+  }
+
+  String? _unicodeForFen(String ch) {
+    switch (ch) {
+      case 'K':
+        return '♔';
+      case 'Q':
+        return '♕';
+      case 'R':
+        return '♖';
+      case 'B':
+        return '♗';
+      case 'N':
+        return '♘';
+      case 'P':
+        return '♙';
+      case 'k':
+        return '♚';
+      case 'q':
+        return '♛';
+      case 'r':
+        return '♜';
+      case 'b':
+        return '♝';
+      case 'n':
+        return '♞';
+      case 'p':
+        return '♟';
+      default:
+        return null; // пусто
+    }
+  }
+
+// fen -> код для ассета, и обратно
+  String? _pieceCodeFromFen(String fenCh) {
+    if (fenCh == '.') return null;
+    final isWhite = fenCh.toUpperCase() == fenCh;
+    final letter = fenCh.toUpperCase(); // KQRBNP
+    return '${isWhite ? 'w' : 'b'}$letter'; // напр. wK, bP
+  }
+
+  String _fenFromPieceCode(String code) {
+    // code: 'wK','bQ', ... 'wP','bP'
+    final isWhite = code[0] == 'w';
+    final letter = code[1].toUpperCase();
+    return isWhite ? letter : letter.toLowerCase();
+  }
+
+  // ============ Auth / profiles ============
+  String? _validateSupabaseUrl(String url) {
+    final u = url.trim();
+    if (u.isEmpty) return 'supabaseUrl пустой.';
+    final parsed = Uri.tryParse(u);
+    if (parsed == null || !parsed.hasScheme || !u.startsWith('https://')) {
+      return 'supabaseUrl должен начинаться с https://';
+    }
+    if (!u.contains('.supabase.co') && !u.contains('.supabase.in')) {
+      return 'supabaseUrl должен содержать .supabase.co (или .supabase.in).';
+    }
+    return null;
+  }
+
+  String? _validateAnonKey(String key) {
+    final k = key.trim();
+    if (k.isEmpty) return 'supabaseAnonKey пустой.';
+    final parts = k.split('.');
+    if (parts.length < 3) return 'supabaseAnonKey должен быть JWT.';
+    return null;
+  }
+
+  String _diagnoseError(Object e) {
+    final s = e.toString();
+    if (s.contains('XMLHttpRequest') && s.contains('Invalid URL')) {
+      final urlErr = _validateSupabaseUrl(supabaseUrl);
+      final keyErr = _validateAnonKey(supabaseAnonKey);
+      final hints = <String>[
+        'Неверная конфигурация Supabase.',
+        if (urlErr != null) '• $urlErr',
+        if (keyErr != null) '• $keyErr',
+      ];
+      return hints.join('\n');
+    }
+    if (s.contains('AuthApiError') || s.contains('AuthException')) {
+      return 'Ошибка авторизации: ${s.replaceAll(RegExp(r'^(Exception: )?'), '')}';
+    }
+    return s;
+  }
+
+  Future<void> _continueVsEngine() async {
+    // в онлайне/для зрителя не включаем ИИ
+    if (_inRoom || _isSpectator) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сначала выйдите из онлайна (комнаты)')),
+        );
+      }
+      return;
+    }
+
+    // если уже включён — просто подсказка и выходим
+    if (_vsEngine) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Режим против компьютера уже включён')),
+        );
+      }
+      return;
+    }
+
+    // включаем ИИ, позицию НЕ трогаем
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+    });
+
+    // если смотрим не последний полуход — перейдём в конец истории
+    if (_plyIndex != _sanMoves.length) {
+      _goEnd();
+    }
+
+    // если сейчас очередь ИИ — пусть он подумает и сделает ход
+    if (!game.game_over && game.turn != _humanColor) {
+      await _engineMove();
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Режим против компьютера включён')),
+      );
+    }
+  }
+
+  Future<void> _continueVsHuman() async {
+    // в онлайне/для зрителя не включаем пас-энд-плей
+    if (_inRoom || _isSpectator) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сначала выйдите из онлайна (комнаты)')),
+        );
+      }
+      return;
+    }
+
+    // если ИИ уже выключен — подсказка и выходим
+    if (!_vsEngine) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Режим против компьютера уже выключен')),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _vsEngine = false; // выключили ИИ
+      _engineThinking = false; // сброс индикатора
+      _engineEpoch++; // отменяем любой «висящий» ответ движка
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Игра с человеком на одном устройстве')),
+      );
+    }
+  }
+
+  Future<void> _loadNickname() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null) {
+      setState(() => _nickname = null);
+      return;
+    }
+    try {
+      final row = await supa
+          .from('profiles')
+          .select('nickname, rating, games_played')
+          .eq('id', uid)
+          .maybeSingle();
+      setState(() {
+        _nickname = (row?['nickname'] as String?) ?? 'player';
+        _myRating = (row?['rating'] as int?) ?? 1200;
+        _myGames = (row?['games_played'] as int?) ?? 0;
+      });
+    } catch (_) {}
+  }
+
+  String _synthEmailFromNick(String nick) =>
+      '${nick.trim().toLowerCase()}@noemail.local';
+  final RegExp _nickRx = RegExp(r'^[a-z0-9_]{3,20}$');
+
+  Future<bool> _isNickAvailable(SupabaseClient supa, String nick) async {
+    final row = await supa
+        .from('profiles')
+        .select('nickname')
+        .ilike('nickname', nick)
+        .maybeSingle();
+    return row == null;
+  }
+
+  Future<void> _signUpWithNick(
+      {required String nickname, required String password}) async {
+    final supa = Supabase.instance.client;
+    final nick = nickname.trim().toLowerCase();
+
+    if (!_nickRx.hasMatch(nick)) {
+      throw AuthException('Ник: 3–20 символов, латиница/цифры/_ .');
+    }
+    if (!await _isNickAvailable(supa, nick)) {
+      throw AuthException('Ник уже занят.');
+    }
+
+    final email = _synthEmailFromNick(nick);
+    final res = await supa.auth.signUp(email: email, password: password);
+    final uid = res.user?.id ?? supa.auth.currentUser?.id;
+    if (uid == null) throw AuthException('Регистрация не завершилась.');
+    await supa.from('profiles').upsert(
+        {'id': uid, 'nickname': nick, 'rating': 1200, 'games_played': 0},
+        onConflict: 'id');
+  }
+
+  Future<void> _signInWithNick(
+      {required String nickname, required String password}) async {
+    final supa = Supabase.instance.client;
+    final email = _synthEmailFromNick(nickname);
+    await supa.auth.signInWithPassword(email: email, password: password);
+  }
+
+  Future<void> _submitAuth() async {
+    setState(() => _authError = null);
+    final uname = _nickCtl.text.trim().toLowerCase();
+    final pass = _passCtl.text;
+
+    final uErr = _validateSupabaseUrl(supabaseUrl);
+    final keyErr = _validateAnonKey(supabaseAnonKey);
+    if (uErr != null || keyErr != null) {
+      final msg = [
+        'Неверная конфигурация Supabase.',
+        if (uErr != null) '• $uErr',
+        if (keyErr != null) '• $keyErr',
+      ].join('\n');
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      return;
+    }
+    if (pass.length < 6) {
+      setState(() => _authError = 'Пароль должен быть минимум 6 символов');
+      return;
+    }
+
+    try {
+      if (_authIsLogin) {
+        await _signInWithNick(nickname: uname, password: pass);
+      } else {
+        await _signUpWithNick(nickname: uname, password: pass);
+        await _signInWithNick(nickname: uname, password: pass);
+      }
+      await _loadNickname();
+      if (mounted) setState(() => _authOpen = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  _authIsLogin ? 'Вход выполнен' : 'Регистрация выполнена')),
+        );
+      }
+    } on AuthException catch (e) {
+      final msg = _diagnoseError(e);
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      final msg = _diagnoseError(e);
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
+  // ============ Engine ============
+  String? _extractUci(dynamic obj) {
+    if (obj == null) return null;
+    String? pick(dynamic v) {
+      if (v is String) return v;
+      if (v is Map && v['uci'] is String) return v['uci'] as String;
+      if (v is Map && v['move'] is String) return v['move'] as String;
+      return null;
+    }
+
+    for (final k in ['bestMove', 'best_move', 'bestmove', 'move', 'uci']) {
+      if (obj is Map && obj[k] != null) {
+        final s = pick(obj[k]);
+        if (s != null) return s;
+      }
+    }
+    if (obj is Map &&
+        obj['variants'] is List &&
+        (obj['variants'] as List).isNotEmpty) {
+      final v0 = (obj['variants'] as List).first;
+      final s = pick(v0);
+      if (s != null) return s;
+      if (v0 is Map && v0['line'] is List && v0['line'].isNotEmpty) {
+        final first = v0['line'].first;
+        if (first is String) return first;
+      }
+    }
+    if (obj is Map && obj['pv'] is String) {
+      final pv = (obj['pv'] as String).trim().split(RegExp(r'\s+'));
+      if (pv.isNotEmpty && pv.first.length >= 4) return pv.first;
+    }
+    final rx = RegExp(r'\b[a-h][1-8][a-h][1-8][qrbn]?\b', caseSensitive: false);
+    final text = const JsonEncoder().convert(obj);
+    final m = rx.firstMatch(text);
+    return m?.group(0);
+  }
+
+  Future<String?> _fetchUciBestMove(String fen) async {
+    final saneFen = sanitizeFenEp(fen);
+    final fenForApi = stripEpField(saneFen);
+
+    final url = Uri.parse('https://chess-api.com/v1');
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'fen': fenForApi,
+          'variants': 3,
+          'depth': 18,
+          'maxThinkingTime': 2000,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final obj = jsonDecode(response.body);
+        final uci = _extractUci(obj);
+        setState(
+            () => _result = const JsonEncoder.withIndent('  ').convert(obj));
+        return uci;
+      } else {
+        setState(
+            () => _result = 'Error ${response.statusCode}: ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      setState(() => _result = 'Exception: $e');
+      return null;
+    }
+  }
+
+  Future<void> _engineMove() async {
+    if (!_vsEngine || _engineThinking) return;
+    if (game.game_over) return;
+    if (_plyIndex != _sanMoves.length) return;
+
+    setState(() => _engineThinking = true);
+    final int epoch = _engineEpoch; // запомним «эпоху» на стартe запроса
+
+    final uci = await _fetchUciBestMove(game.fen);
+
+    // если за это время ИИ выключили/эпоха сменилась — игнорируем ответ
+    if (!_vsEngine || epoch != _engineEpoch) {
+      setState(() => _engineThinking = false);
+      return;
+    }
+
+    if (uci != null) {
+      await _applyUciMove(uci);
+      _checkGameOver();
+    }
+    setState(() => _engineThinking = false);
+  }
+
+  Future<void> _engineMoveSafe({bool stopIfHighUsage = true}) async {
+    try {
+      await _engineMoveSafe(stopIfHighUsage: true);
+    } catch (e) {
+      final msg = e.toString();
+      final hitLimit =
+          msg.contains('HIGH_USAGE') || msg.contains('Too high daily usage');
+
+      if (hitLimit) {
+        if (stopIfHighUsage && _engineDuel) {
+          setState(() => _engineDuel = false); // останавливаем ТОЛЬКО дуэль
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Лимит движка (HIGH_USAGE). Дуэль остановлена. '
+                'Попробуйте позже или увеличьте задержку.',
+              ),
+            ),
+          );
+        }
+        return; // не бросаем дальше
+      }
+
+      // прочие ошибки — как раньше
+      rethrow;
+    }
+  }
+
+  // ============ History helpers ============
+  void _resetToFen(String fen) {
+    game.load(fen);
+    _fenController.text = game.fen;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+  }
+
+  void _setPly(int n) {
+    _plyIndex = n.clamp(0, _sanMoves.length);
+    _resetToFen(_fens[_plyIndex]);
+    setState(() {});
+  }
+
+  void _goStart() => _setPly(0);
+  void _goEnd() => _setPly(_sanMoves.length);
+  void _goPrev() => _setPly(_plyIndex - 1);
+  void _goNext() => _setPly(_plyIndex + 1);
+
+  void _truncateFutureBranch() {
+    if (_plyIndex < _sanMoves.length) {
+      _sanMoves.removeRange(_plyIndex, _sanMoves.length);
+      _fens.removeRange(_plyIndex + 1, _fens.length);
+    }
+  }
+
+  // ============ Board helpers ============
+  String _displayIndexToSquare(int index) {
+    final row = index ~/ 8; // 0..7 сверху вниз
+    final col = index % 8; // 0..7 слева направо
+    if (_isFlipped) {
+      final file = String.fromCharCode('h'.codeUnitAt(0) - col); // h..a
+      final rank = row + 1; // 1..8
+      return '$file$rank';
+    } else {
+      final file = String.fromCharCode('a'.codeUnitAt(0) + col); // a..h
+      final rank = 8 - row; // 8..1
+      return '$file$rank';
+    }
+  }
+
+  bool _needsPromotion(String from, String to) {
+    final p = game.get(from);
+    if (p == null || p.type != ch.PieceType.PAWN) return false;
+    final toRank = int.tryParse(to.substring(1)) ?? 0;
+    if (p.color == ch.Color.WHITE && toRank == 8) return true;
+    if (p.color == ch.Color.BLACK && toRank == 1) return true;
+    return false;
+  }
+
+  Future<String?> _askPromotionPiece(
+      BuildContext context, ch.Color color) async {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выберите фигуру для превращения'),
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final entry in {
+              'q': color == ch.Color.WHITE ? '♕' : '♛',
+              'r': color == ch.Color.WHITE ? '♖' : '♜',
+              'b': color == ch.Color.WHITE ? '♗' : '♝',
+              'n': color == ch.Color.WHITE ? '♘' : '♞',
+            }.entries)
+              IconButton(
+                icon: Text(entry.value, style: const TextStyle(fontSize: 32)),
+                onPressed: () => Navigator.of(context).pop(entry.key),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _willBeCapture(String from, String to) {
+    try {
+      final ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      final m = ms.firstWhere((m) => m['to'] == to, orElse: () => {});
+      if (m.isEmpty) return false;
+      final flags = (m['flags'] as String?) ?? '';
+      return flags.contains('c') ||
+          flags.contains('e') ||
+          m['captured'] != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _sanFor(String from, String to, {String? promotion}) {
+    try {
+      final List<Map<String, dynamic>> ms = List<Map<String, dynamic>>.from(
+        game.moves({'square': from, 'verbose': true}),
+      );
+      for (final m in ms) {
+        if (m['to'] == to) {
+          final pr = m['promotion'] as String?;
+          if (promotion == null || promotion == pr) return m['san'] as String?;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  bool _myTurnNow() {
+    if (_gameTerminated) return false;
+    if (!_vsEngine && !_inRoom) return true;
+    return game.turn == _humanColor;
+  }
+
+  Future<void> _applyUciMove(String uci) async {
+    _truncateFutureBranch();
+    final from = uci.substring(0, 2);
+    final to = uci.substring(2, 4);
+    final promo = uci.length >= 5 ? uci[4].toLowerCase() : null;
+
+    final bool isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final params = {
+      'from': from,
+      'to': to,
+      if (promo != null) 'promotion': promo
+    };
+    final ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+  }
+
+  void _afterHumanMoveCommon(String san, bool isCapture) {
+    _sanMoves.add(san);
+    _fens.add(game.fen);
+    _plyIndex = _sanMoves.length;
+
+    setState(() {
+      _fenController.text = game.fen;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _playSound(capture: isCapture);
+    _scrollMovesToEnd();
+
+    _onLocalMoveAffectClocks();
+    _broadcastClockSnapshot();
+  }
+
+  void _scrollMovesToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_movesScroll.hasClients) {
+        _movesScroll.animateTo(
+          _movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _checkGameOver() {
+    if (game.in_checkmate) {
+      final winner = game.turn == ch.Color.WHITE ? "Чёрные" : "Белые";
+      _finishGameWithResult(
+          game.turn == ch.Color.WHITE ? '0-1' : '1-0', 'Мат: $winner победили');
+      return;
+    }
+    if (game.in_stalemate) {
+      _finishGameWithResult('1/2-1/2', 'Пат — ничья');
+      return;
+    }
+    if (game.in_threefold_repetition) {
+      _finishGameWithResult('1/2-1/2', 'Троекратное повторение — ничья');
+      return;
+    }
+    if (game.in_draw) {
+      _finishGameWithResult('1/2-1/2', 'Ничья по правилам');
+      return;
+    }
+  }
+
+  void _showInfo(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'))
+        ],
+      ),
+    );
+  }
+
+  // возможно убрать
+//  3/4
+  // ================== TIME CONTROL ==================
+  void _applyTimeControl({
+    required int minutes,
+    required int increment,
+    required bool rated,
+    bool broadcast = false,
+  }) {
+    setState(() {
+      _tcMinutes = minutes;
+      _tcIncrement = increment;
+      _rated = rated;
+      _matchRated = rated;
+    });
+
+    _resetClocks();
+    if (broadcast) _broadcastTimeControl();
+    _broadcastClockSnapshot();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Контроль: $minutes+${increment}${rated ? " (рейтинговая)" : ""}')),
+      );
+    }
+  }
+
+  void _resetClocks() {
+    final ms = _tcMinutes * 60 * 1000;
+    _whiteMs = ms;
+    _blackMs = ms;
+    _lastTickAt = null;
+    _lastClockCastAt = _lastClockCastAt = null;
+    _clocksStarted = false; // ещё не идут до первого хода
+    _stopTick();
+    // не запускаем тик до первого хода
+  }
+
+  void _startTickForActiveSide() {
+    _stopTick();
+    if (!_inRoom) return;
+    if (_gameTerminated) return;
+    _lastTickAt = DateTime.now();
+    _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final now = DateTime.now();
+      final delta = now.difference(_lastTickAt!).inMilliseconds;
+      _lastTickAt = now;
+
+      setState(() {
+        if (game.turn == ch.Color.WHITE) {
+          _whiteMs = (_whiteMs - delta).clamp(0, 1 << 31);
+          if (_whiteMs <= 0) _onFlagFall(ch.Color.WHITE);
+        } else {
+          _blackMs = (_blackMs - delta).clamp(0, 1 << 31);
+          if (_blackMs <= 0) _onFlagFall(ch.Color.BLACK);
+        }
+      });
+    });
+  }
+
+  void _stopTick() {
+    _tick?.cancel();
+    _tick = null;
+    _lastTickAt = null;
+  }
+
+  void _switchTurnAndApplyIncrement(ch.Color movedColor) {
+    if (_tcIncrement > 0) {
+      if (movedColor == ch.Color.WHITE) {
+        _whiteMs += _tcIncrement * 1000;
+      } else {
+        _blackMs += _tcIncrement * 1000;
+      }
+    }
+    _startTickForActiveSide();
+  }
+
+  void _onFlagFall(ch.Color flagSide) {
+    final result = (flagSide == ch.Color.WHITE) ? '0-1' : '1-0';
+    final reason =
+        (flagSide == ch.Color.WHITE) ? 'Победа черных' : 'Победа белых';
+    _finishGameWithResult(result, reason);
+  }
+
+  String _fmtMs(int ms) {
+    final s = (ms / 1000).floor();
+    final m = s ~/ 60;
+    final sec = s % 60;
+    final pad = (sec < 10) ? '0$sec' : '$sec';
+    return '$m:$pad';
+  }
+
+  // ================== ONLINE: Lobby & Room ==================
+  Future<void> _enterLobby() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null || _nickname == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала войдите в аккаунт')),
+      );
+      return;
+    }
+
+    if (_lobby == null) {
+      final lobby = LobbyService(
+        supa,
+        username: _nickname!,
+        userId: uid,
+        myRating: _myRating,
+      );
+
+      lobby.onOnlineChanged = () => setState(() {});
+      lobby.onInvite =
+          (roomId, fromId, fromName, inviterColor, m, inc, rated) async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Вызов на игру'),
+            content: Text(
+                '$fromName приглашает вас сыграть\nКонтроль: $m+${inc}${rated ? " (рейтинговая)" : ""}'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отклонить')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Принять')),
+            ],
+          ),
+        );
+        if (ok == true) {
+          _applyTimeControl(
+              minutes: m, increment: inc, rated: rated, broadcast: false);
+          _matchRated = rated;
+
+          final myColor = _opposite(inviterColor);
+          await lobby.sendAccept(
+              toUserId: fromId,
+              toName: fromName,
+              roomId: roomId,
+              color: myColor);
+
+          await _openRoom(
+            roomId,
+            opponentId: fromId,
+            opponentName: fromName,
+            myColor: myColor,
+            spectator: false,
+          );
+        }
+      };
+
+      lobby.onAccept = (roomId, fromId, fromName, acceptorColor) {
+        final myColor = _opposite(acceptorColor);
+        _openRoom(roomId,
+            opponentId: fromId,
+            opponentName: fromName,
+            myColor: myColor,
+            spectator: false);
+      };
+
+      _lobby = lobby;
+    }
+
+    await _lobby!.connect();
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Вы в лобби')));
+    }
+  }
+
+  Future<void> _leaveLobby() async {
+    await _lobby?.disconnect();
+    setState(() {});
+  }
+
+  Future<void> _invitePlayer(String id, String name) async {
+    if (_lobby == null) {
+      await _enterLobby();
+      if (_lobby == null) return;
+    }
+
+    // 1) выбор цвета
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выбор цвета'),
+        content: const Text('Кем хотите играть?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'random'),
+              child: const Text('Случайный')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'white'),
+              child: const Text('Белыми')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'black'),
+              child: const Text('Чёрными')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+
+    String myColor = choice;
+    if (myColor == 'random') {
+      myColor = (math.Random().nextBool()) ? 'white' : 'black';
+    }
+
+    // 2) контроль времени до инвайта
+    final pickedTc = await showDialog<_TcChoice>(
+      context: context,
+      builder: (_) => _TcDialog(
+        initialMinutes: _tcMinutes,
+        initialIncrement: _tcIncrement,
+        initialRated: _matchRated,
+      ),
+    );
+    if (pickedTc == null) return;
+
+    _applyTimeControl(
+      minutes: pickedTc.minutes,
+      increment: pickedTc.increment,
+      rated: pickedTc.rated,
+      broadcast: false,
+    );
+    _matchRated = pickedTc.rated;
+
+    final roomId = const Uuid().v4();
+
+    // 3) отправляем инвайт
+    await _lobby!.sendInvite(
+      toUserId: id,
+      toName: name,
+      roomId: roomId,
+      color: myColor,
+      minutes: pickedTc.minutes,
+      increment: pickedTc.increment,
+      rated: pickedTc.rated,
+    );
+
+    if (mounted) {
+      final colorLabel = (myColor == 'white') ? 'белые' : 'чёрные';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Приглашение отправлено: $name ($colorLabel), контроль ${pickedTc.minutes}+${pickedTc.increment}${pickedTc.rated ? " рейтинговая" : ""}')),
+      );
+    }
+  }
+
+  Future<void> _openRoom(
+    String roomId, {
+    required String opponentId,
+    required String opponentName,
+    required String myColor, // 'white' | 'black'
+    required bool spectator,
+  }) async {
+    _room?.disconnect();
+    final supa = Supabase.instance.client;
+
+    _room = RoomService(supa, roomId: roomId);
+
+    _room!.onMove = (m) {
+      final rid = m['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+      _applyRemoteMove(
+        '${m['from']}',
+        '${m['to']}',
+        m['promotion']?.toString(),
+      );
+    };
+
+    _room!.onChat = (msg) {
+      final rid = msg['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final text = (msg['msg'] ?? '') as String;
+      if (text.isEmpty) return;
+
+      final fromName = (msg['fromName'] ?? 'player').toString();
+      final from = (msg['from'] ?? '').toString();
+      final myId = Supabase.instance.client.auth.currentUser?.id;
+
+      final mine = (from.isNotEmpty && myId != null && from == myId);
+
+      setState(() {
+        _chat.add(_ChatMsg(from: fromName, text: text, mine: mine));
+      });
+    };
+
+    _room!.onCtrl = (evt) => _onRemoteCtrl(evt);
+
+    _room!.onDrawOffer = (evt) async {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      setState(() {
+        _drawOfferedByMe = false;
+        _drawOfferedToMe = true;
+      });
+      _maybeAskDrawDialog();
+    };
+
+    _room!.onDrawAnswer = (evt) {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      final accepted = evt['accepted'] == true;
+
+      if (accepted) {
+        setState(() {
+          _drawOfferedByMe = false;
+          _drawOfferedToMe = false;
+        });
+        _finishGameWithResult('1/2-1/2', 'Ничья по соглашению');
+      } else {
+        setState(() {
+          _drawOfferedByMe = false;
+          _drawOfferedToMe = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Соперник отклонил ничью')),
+        );
+      }
+    };
+
+    _room!.onResign = (evt) {
+      final rid = evt['roomId'] as String?;
+      if (rid != null && _roomId != null && rid != _roomId) return;
+
+      final from = (evt['from'] ?? '') as String;
+      final me = Supabase.instance.client.auth.currentUser?.id;
+      if (me != null && from == me) return;
+
+      final result = (_humanColor == ch.Color.WHITE) ? '1-0' : '0-1';
+      _finishGameWithResult(result, 'Соперник сдался');
+    };
+
+    await _room!.connect();
+
+    setState(() {
+      _roomId = roomId;
+      _opponentId = opponentId;
+      _opponentName = opponentName;
+      _vsEngine = false;
+      _engineThinking = false;
+      _humanColor =
+          (myColor.toLowerCase() == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
+      _isSpectator = spectator;
+      _chat.clear();
+      _drawOfferedByMe = _drawOfferedToMe = false;
+      _rematchOfferedByMe = _rematchOfferedToMe = false;
+      _gameTerminated = false;
+    });
+
+    try {
+      final row = await supa
+          .from('profiles')
+          .select('rating, games_played, nickname')
+          .eq('id', opponentId)
+          .maybeSingle();
+      setState(() {
+        _oppRating = (row?['rating'] as int?) ?? 1200;
+        _oppGames = (row?['games_played'] as int?) ?? 0;
+        _opponentName = (row?['nickname'] as String?) ?? opponentName;
+      });
+    } catch (_) {}
+
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves..clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+
+    _resetClocks();
+
+    html.window.localStorage[_LS_ROOM] = jsonEncode({
+      'roomId': roomId,
+      'opponentId': opponentId,
+      'opponentName': _opponentName,
+      'myColor': (myColor.toLowerCase()),
+      'spectator': spectator,
+    });
+
+    _broadcastTimeControl();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Игра против $_opponentName (${myColor == 'white' ? 'белыми' : 'чёрными'})')),
+      );
+    }
+  }
+
+  Future<void> _leaveRoom() async {
+    await _room?.disconnect();
+    _stopTick();
+    setState(() {
+      _room = null;
+      _roomId = null;
+      _opponentId = null;
+      _opponentName = null;
+      _isSpectator = false;
+    });
+
+    _matchRated = _rated;
+    html.window.localStorage.remove(_LS_ROOM);
+  }
+
+  Future<void> _tryRestoreRoom() async {
+    final s = html.window.localStorage[_LS_ROOM];
+    if (s == null) return;
+    try {
+      final map = jsonDecode(s) as Map<String, dynamic>;
+      final roomId = map['roomId'] as String?;
+      final oppId = map['opponentId'] as String?;
+      final oppName = map['opponentName'] as String? ?? 'opponent';
+      final myColor = map['myColor'] as String? ?? 'white';
+      final spectator = (map['spectator'] as bool?) ?? false;
+      if (roomId != null && oppId != null) {
+        final supa = Supabase.instance.client;
+        if (supa.auth.currentUser == null) return;
+        await _openRoom(roomId,
+            opponentId: oppId,
+            opponentName: oppName,
+            myColor: myColor,
+            spectator: spectator);
+      }
+    } catch (_) {}
+  }
+
+  // ================== PGN / Result / Ratings ==================
+  List<String> _rowsFromSan(List<String> san) {
+    final out = <String>[];
+    for (int i = 0; i < san.length; i += 2) {
+      final n = i ~/ 2 + 1;
+      final w = san[i];
+      final b = (i + 1 < san.length) ? san[i + 1] : '';
+      out.add('$n. $w ${b.isEmpty ? '' : b}');
+    }
+    return out;
+  }
+
+  String _makePGN(String result) {
+    final rows = _rowsFromSan(_sanMoves).join(' ');
+    return '$rows $result'.trim();
+  }
+
+  int _kFactor(int rating, int games) {
+    if (games < 30) return 40;
+    if (rating >= 2400) return 10;
+    return 20;
+  }
+
+  Map<String, int> _eloDelta({
+    required int rA,
+    required int rB,
+    required double sA,
+    required int gA,
+    required int gB,
+  }) {
+    double expA = 1.0 / (1 + math.pow(10, (rB - rA) / 400.0));
+    final kA = _kFactor(rA, gA);
+    final kB = _kFactor(rB, gB);
+    final dA = (kA * (sA - expA)).round();
+    final dB = -dA * kB ~/ kA;
+    return {'da': dA, 'db': dB};
+  }
+
+  Future<void> _storeGameAndRatings(String result) async {
+    final supa = Supabase.instance.client;
+    final me = supa.auth.currentUser?.id;
+    if (me == null) return;
+
+    final bool ratedGame = _inRoom && !_isSpectator && _matchRated;
+
+    final String? whiteId = (_humanColor == ch.Color.WHITE) ? me : _opponentId;
+    final String? blackId = (_humanColor == ch.Color.WHITE) ? _opponentId : me;
+
+    try {
+      final pgn = _rowsFromSan(_sanMoves).join(' ');
+      await supa.from('games').insert({
+        'white_id': whiteId,
+        'black_id': blackId,
+        'pgn': pgn,
+        'result': result,
+        'rated': ratedGame,
+      });
+    } catch (e) {
+      debugPrint('games.insert failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось сохранить партию: $e')),
+        );
+      }
+    }
+
+    if (!ratedGame) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Нерейтинговая партия — рейтинг не изменён')),
+        );
+      }
+      // не выходим, но рейтинг не трогаем
+    }
+
+    try {
+      final myStats = await _loadProfileStats(me);
+      final int myOld = myStats['rating']!;
+      final int myPlayed = myStats['games_played']!;
+
+      int oppOld = _oppRating;
+      int oppPlayed = _oppGames;
+      if ((_opponentId ?? '').isNotEmpty) {
+        final oppStats = await _loadProfileStats(_opponentId!);
+        oppOld = oppStats['rating']!;
+        oppPlayed = oppStats['games_played']!;
+      }
+
+      double sMy;
+      if (result == '1-0') {
+        sMy = (_humanColor == ch.Color.WHITE) ? 1.0 : 0.0;
+      } else if (result == '0-1') {
+        sMy = (_humanColor == ch.Color.BLACK) ? 1.0 : 0.0;
+      } else {
+        sMy = 0.5;
+      }
+
+      final deltas = _eloDelta(
+        rA: myOld,
+        rB: oppOld,
+        sA: sMy,
+        gA: myPlayed,
+        gB: oppPlayed,
+      );
+      final int dMy = deltas['da']!;
+      final int dOpp = deltas['db']!;
+      final int myNew = myOld + dMy;
+      final int oppNew = oppOld + dOpp;
+
+      await supa
+          .from('profiles')
+          .update({'rating': myNew, 'games_played': myPlayed + 1}).eq('id', me);
+
+      setState(() {
+        _myRating = myNew;
+        _myGames = myPlayed + 1;
+        _oppRating = oppNew;
+        _oppGames = oppPlayed + 1;
+      });
+
+      _lobby?.updateMyRating(_myRating);
+      _lobby?.sendPresenceNow();
+
+      if (mounted) {
+        final sign = (dMy >= 0) ? '+$dMy' : '$dMy';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Рейтинг обновлён: $myOld → $myNew ($sign)')),
+        );
+      }
+    } catch (e) {
+      debugPrint('profiles.update failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось обновить рейтинг: $e')),
+        );
+      }
+    }
+  }
+
+  void _finishGameWithResult(String result, String reason,
+      {bool broadcast = true}) {
+    setState(() => _gameTerminated = true);
+    _stopTick();
+
+    if (broadcast && _room != null) {
+      _room!.sendCtrl({
+        'type': 'result',
+        'result': result,
+        'reason': reason,
+        'clientId': _clientId,
+        'roomId': _roomId,
+      });
+    }
+
+    _storeGameAndRatings(result).whenComplete(() {
+      final showCompact = reason.toLowerCase().startsWith('победа ');
+      final message =
+          showCompact ? '$reason  $result' : '$reason — результат $result';
+      _showInfo('Игра окончена', message);
+    });
+
+    html.window.localStorage.remove(_LS_ROOM);
+  }
+
+  // ================== CHAT / CTRL HANDLERS ==================
+  void _onRemoteCtrl(Map<String, dynamic> evt) {
+    final senderCid = evt['clientId'] as String?;
+    if (senderCid != null && senderCid == _clientId) return;
+
+    final String? evtRoom = evt['roomId'] as String?;
+    if (_roomId != null && evtRoom != null && evtRoom != _roomId) return;
+
+    switch ((evt['type'] as String?) ?? '') {
+      case 'result':
+        if (_gameTerminated) break;
+        final result = (evt['result'] as String?) ?? '';
+        final reason = (evt['reason'] as String?) ?? 'Игра окончена';
+        if (result.isEmpty) break;
+        _finishGameWithResult(result, reason, broadcast: false);
+        break;
+
+      case 'tc':
+        {
+          final hasRated = evt.containsKey('rated') && evt['rated'] is bool;
+          final newRated = hasRated ? (evt['rated'] as bool) : _matchRated;
+          _applyTimeControl(
+            minutes: (evt['m'] as num?)?.toInt() ?? _tcMinutes,
+            increment: (evt['inc'] as num?)?.toInt() ?? _tcIncrement,
+            rated: newRated,
+            broadcast: false,
+          );
+          _matchRated = newRated;
+          break;
+        }
+
+      case 'clock':
+        final w = (evt['w'] as num?)?.toInt();
+        final b = (evt['b'] as num?)?.toInt();
+        final turn = (evt['turn'] as String?) ?? '';
+        if (w != null && b != null) {
+          setState(() {
+            _whiteMs = w;
+            _blackMs = b;
+            _clocksStarted = true;
+          });
+        }
+        _startTickForActiveSide();
+        break;
+
+      case 'rematch_offer':
+        setState(() => _rematchOfferedToMe = true);
+        _maybeAskRematchDialog();
+        break;
+
+      case 'rematch_accept':
+        setState(() => _rematchOfferedToMe = false);
+        _startRematch(modeFromOpponent: (evt['mode'] as String?) ?? 'same');
+        break;
+
+      case 'rematch_decline':
+        setState(() => _rematchOfferedToMe = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Реванш отклонён')));
+        break;
+    }
+  }
+
+  // ================== MOVES (local & remote) ==================
+  void _onLocalMoveAffectClocks() {
+    if (!_inRoom) return;
+    final movedColor =
+        (game.turn == ch.Color.WHITE) ? ch.Color.BLACK : ch.Color.WHITE;
+    _switchTurnAndApplyIncrement(movedColor);
+  }
+
+  void _applyRemoteMove(String from, String to, String? promo) {
+    if (_plyIndex != _sanMoves.length) _goEnd();
+    if (_gameTerminated) return;
+    final isCapture = _willBeCapture(from, to);
+    final san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+    final ok = game
+        .move({'from': from, 'to': to, if (promo != null) 'promotion': promo});
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    _broadcastClockSnapshot();
+  }
+
+  // ================== UI: actions ==================
+  Future<void> _makeMove(String from, String to) async {
+    if (_gameTerminated) return;
+    if (_vsEngine && game.turn != _humanColor) return;
+    if (_isSpectator) return;
+
+    _truncateFutureBranch();
+
+    final Map<String, dynamic> params = {'from': from, 'to': to};
+
+    String? promo;
+    if (_needsPromotion(from, to)) {
+      final color = game.get(from)!.color;
+      final choice = await _askPromotionPiece(context, color);
+      if (choice == null) return;
+      params['promotion'] = choice;
+      promo = choice;
+    }
+
+    final bool isCapture = _willBeCapture(from, to);
+    final String san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
+
+    final bool ok = game.move(params);
+    if (!ok) return;
+
+    _afterHumanMoveCommon(san, isCapture);
+    _checkGameOver();
+
+    if (_room != null) {
+      await _room!.sendMove(from: from, to: to, promotion: promo);
+    }
+
+    if (_vsEngine && game.turn != _humanColor && !game.game_over) {
+      await _engineMove();
+    }
+  }
+
+  void _broadcastClockSnapshot() {
+    if (_room == null) return;
+    _room!.sendCtrl({
+      'type': 'clock',
+      'w': _whiteMs,
+      'b': _blackMs,
+      'turn': (game.turn == ch.Color.WHITE) ? 'w' : 'b',
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  void _broadcastTimeControl() {
+    if (_room == null) return;
+    _room!.sendCtrl({
+      'type': 'tc',
+      'm': _tcMinutes,
+      'inc': _tcIncrement,
+      'rated': _matchRated,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _offerDrawOnline() async {
+    if (!_inRoom || game.game_over || _isSpectator) return;
+
+    setState(() {
+      _drawOfferedByMe = true;
+      _drawOfferedToMe = false;
+    });
+
+    await _room!.sendDrawOffer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Предложение ничьей отправлено')),
+    );
+  }
+
+  Future<void> _acceptDrawOnline() async {
+    if (!_inRoom || !_drawOfferedToMe) return;
+
+    await _room!.sendDrawAnswer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+      accepted: true,
+    );
+
+    setState(() {
+      _drawOfferedByMe = false;
+      _drawOfferedToMe = false;
+    });
+
+    _finishGameWithResult('1/2-1/2', 'Ничья по соглашению');
+  }
+
+  Future<void> _declineDrawOnline() async {
+    if (!_inRoom || !_drawOfferedToMe) return;
+
+    await _room!.sendDrawAnswer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+      accepted: false,
+    );
+
+    setState(() {
+      _drawOfferedByMe = false;
+      _drawOfferedToMe = false;
+    });
+  }
+
+  Future<void> _resignOnline() async {
+    if (!_inRoom || game.game_over || _isSpectator) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: const Text('Подтвердите сдачу.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Сдаться'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _room!.sendResign(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'me',
+    );
+
+    final result = (_humanColor == ch.Color.WHITE) ? '0-1' : '1-0';
+    _finishGameWithResult(result, 'Сдача');
+  }
+
+  void _maybeAskDrawDialog() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Ничья?'),
+        content: const Text('Соперник предлагает ничью. Принять?'),
+        actions: [
+          TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _declineDrawOnline();
+              },
+              child: const Text('Отклонить')),
+          FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _acceptDrawOnline();
+              },
+              child: const Text('Принять')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _offerRematch() async {
+    if (!_inRoom || _isSpectator) return;
+    final mode = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Реванш'),
+        content: const Text('Как сыграть реванш?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'same'),
+              child: const Text('Те же цвета')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'flip'),
+              child: const Text('Поменять цвета')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'random'),
+              child: const Text('Случайно')),
+        ],
+      ),
+    );
+    if (mode == null) return;
+    setState(() => _rematchOfferedByMe = true);
+    await _room!.sendCtrl({
+      'type': 'rematch_offer',
+      'mode': mode,
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _acceptRematch() async {
+    if (!_rematchOfferedToMe) return;
+    setState(() => _rematchOfferedToMe = false);
+    await _room!.sendCtrl({
+      'type': 'rematch_accept',
+      'mode': 'same',
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  Future<void> _declineRematch() async {
+    if (!_rematchOfferedToMe) return;
+    setState(() => _rematchOfferedToMe = false);
+    await _room!.sendCtrl({
+      'type': 'rematch_decline',
+      'from': Supabase.instance.client.auth.currentUser?.id,
+      'fromName': _nickname,
+      'clientId': _clientId,
+      'roomId': _roomId,
+    });
+  }
+
+  void _maybeAskRematchDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Реванш?'),
+        content: const Text('Соперник предлагает реванш. Принять?'),
+        actions: [
+          TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _declineRematch();
+              },
+              child: const Text('Отклонить')),
+          FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _acceptRematch();
+              },
+              child: const Text('Принять')),
+        ],
+      ),
+    );
+  }
+
+  void _startRematch({required String modeFromOpponent}) {
+    String myColor = (_humanColor == ch.Color.WHITE) ? 'white' : 'black';
+    if (modeFromOpponent == 'flip') {
+      myColor = (myColor == 'white') ? 'black' : 'white';
+    } else if (modeFromOpponent == 'random') {
+      myColor = (math.Random().nextBool()) ? 'white' : 'black';
+    }
+    setState(() {
+      _humanColor = (myColor == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
+    });
+
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves..clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+    _resetClocks();
+
+    _broadcastTimeControl();
+  }
+
+// ------- ДОБАВЬ этот метод в _MyHomePageState -------
+  Widget _buildMainContent(double boardSize, bool isLogged, bool isMobile) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _buildTopBar(),
+          const SizedBox(height: 8),
+          if (isMobile) ...[
+            // Мобильная раскладка — всё в столбик
+            _buildLeftColumn(boardSize),
+            const SizedBox(height: 16),
+            _MoveListPanel(
+              san: _sanMoves,
+              currentPly: _plyIndex,
+              controller: _movesScroll,
+              onCopyPGN: () {
+                final rows = _rowsFromSan(_sanMoves);
+                Clipboard.setData(ClipboardData(text: rows.join(' ')));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('PGN скопирован')),
+                );
+              },
+              onClear: () {
+                setState(() {
+                  _sanMoves.clear();
+                  _fens
+                    ..clear()
+                    ..add(game.fen);
+                  _plyIndex = 0;
+                });
+              },
+            ),
+            const SizedBox(height: 16),
+            _LobbyPanel(
+              isLoggedIn: isLogged,
+              inLobby: _lobby != null,
+              online: _lobby?.online ?? const [],
+              myId: Supabase.instance.client.auth.currentUser?.id,
+              myRating: _myRating,
+              onEnterLobby: _enterLobby,
+              onLeaveLobby: _leaveLobby,
+              onInvite: (id, name) => _invitePlayer(id, name),
+            ),
+          ] else ...[
+            // Десктопная раскладка — три колонки
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildLeftColumn(boardSize),
+                const SizedBox(width: 24),
+                _MoveListPanel(
+                  san: _sanMoves,
+                  currentPly: _plyIndex,
+                  controller: _movesScroll,
+                  onCopyPGN: () {
+                    final rows = _rowsFromSan(_sanMoves);
+                    Clipboard.setData(ClipboardData(text: rows.join(' ')));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('PGN скопирован')),
+                    );
+                  },
+                  onClear: () {
+                    setState(() {
+                      _sanMoves.clear();
+                      _fens
+                        ..clear()
+                        ..add(game.fen);
+                      _plyIndex = 0;
+                    });
+                  },
+                ),
+                const SizedBox(width: 24),
+                _LobbyPanel(
+                  isLoggedIn: isLogged,
+                  inLobby: _lobby != null,
+                  online: _lobby?.online ?? const [],
+                  myId: Supabase.instance.client.auth.currentUser?.id,
+                  myRating: _myRating,
+                  onEnterLobby: _enterLobby,
+                  onLeaveLobby: _leaveLobby,
+                  onInvite: (id, name) => _invitePlayer(id, name),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 16),
+          _buildBottomTools(),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  // ================== BUILD (адаптив) ==================
+  @override
+  Widget build(BuildContext context) {
+    // Эти значения нужны для кнопок в AppBar (решаем, показывать ли масштаб)
+    final media = MediaQuery.of(context);
+    final double screenW = media.size.width;
+    final bool isMobile = screenW < 900;
+    final bool isLogged = Supabase.instance.client.auth.currentUser != null;
+
+    return SafeArea(
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.title),
+          actions: [
+            if (_inRoom)
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Chip(
+                  avatar: const Icon(Icons.sports_esports, size: 18),
+                  label: Text('Комната: ${_opponentName ?? 'opponent'}'),
+                ),
+              ),
+
+            // «Новая игра»
+            IconButton(
+              tooltip: 'Новая игра',
+              onPressed: _onNewGameUniversal,
+              icon: const Icon(Icons.fiber_new),
+            ),
+
+            // Кнопки масштаба — только на десктопе/широких экранах
+            if (!isMobile)
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Уменьшить (-10%)',
+                    onPressed: () => _changeBoardPercent(-_stepPercent),
+                    icon: const Icon(Icons.remove),
+                  ),
+                  Text('${_boardPercent.toStringAsFixed(0)}%'),
+                  IconButton(
+                    tooltip: 'Увеличить (+10%)',
+                    onPressed: () => _changeBoardPercent(_stepPercent),
+                    icon: const Icon(Icons.add),
+                  ),
+                  PopupMenuButton<double>(
+                    tooltip: 'Выбрать масштаб',
+                    onSelected: (value) => _setBoardPercent(value),
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 60, child: Text('60%')),
+                      PopupMenuItem(value: 80, child: Text('80%')),
+                      PopupMenuItem(value: 100, child: Text('100%')),
+                      PopupMenuItem(value: 120, child: Text('120%')),
+                      PopupMenuItem(value: 140, child: Text('140%')),
+                    ],
+                  ),
+                  OutlinedButton(
+                    onPressed: _resetBoardPercent,
+                    child: const Text('100%'),
+                  ),
+                ],
+              ),
+
+            // Кнопка аккаунта
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: _AuthButton(
+                nickname: _nickname,
+                isLoggedIn: isLogged,
+                onTap: () => setState(() => _authOpen = !_authOpen),
+                onLogout: () async {
+                  await Supabase.instance.client.auth.signOut();
+                  await _leaveRoom();
+                  await _leaveLobby();
+                  setState(() {
+                    _authOpen = false;
+                    _nickname = null;
+                  });
+                },
+              ),
+            ),
+          ],
+        ),
+
+        // Весь контент прокручиваемый, форма логина — поверх, но не блокирует клики вне себя
+        body: _withAuthOverlay(
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // Считаем размеры ДЛЯ КОНТЕНТА (адаптив — мобильный/десктоп)
+              final media = MediaQuery.of(context);
+              final w = media.size.width;
+              final h = media.size.height;
+              final bool isMobile = w < 900;
+
+              final double desired = _baseAt100 * (_boardPercent / 100.0);
+              final double sizeLimit = (isMobile ? w : math.min(w, h)) - 32;
+              final double boardSize = desired.clamp(120.0, sizeLimit);
+
+              final bool isLogged =
+                  Supabase.instance.client.auth.currentUser != null;
+
+              // Прокрутка на всю страницу + чтобы низ не обрезался
+              return SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                  child: _buildMainContent(boardSize, isLogged, isMobile),
+                ),
+              );
+            },
+          ),
+        ),
+
+        resizeToAvoidBottomInset: true,
+      ),
+    );
+  }
+
+  /// Единый контент страницы (адаптивный для мобильного/десктопа)
+
+  /// Обёртка, которая накладывает форму логина поверх контента
+// Положи это внутри _MyHomePageState
+  Widget _withAuthOverlay(Widget child) {
+    return Stack(
+      clipBehavior: Clip.none, // чтобы панель могла выходить за границы
+      children: [
+        // НИЧЕГО НЕ ПЕРЕКРЫВАЕТ: просто контент
+        child,
+
+        // Только когда _authOpen == true — рисуем панель.
+        if (_authOpen)
+          Positioned(
+            top: 12,
+            right: 12,
+            child: _AuthPanel(
+              isLogin: _authIsLogin,
+              passCtl: _passCtl,
+              nickCtl: _nickCtl,
+              authError: _authError,
+              onClose: () => setState(() => _authOpen = false),
+              onToggleMode: () => setState(() => _authIsLogin = !_authIsLogin),
+              onSubmit: _submitAuth,
+            ),
+          ),
+      ],
+    );
+  }
+
+// Палетка фигур + "корзина"
+  Widget _editorPalette({
+    required bool white, // true = белые, false = чёрные
+    required double cellSize, // размер клетки (boardSize / 8)
+  }) {
+    final codes = white
+        ? const ['wK', 'wQ', 'wR', 'wB', 'wN', 'wP']
+        : const ['bK', 'bQ', 'bR', 'bB', 'bN', 'bP'];
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      child: Row(
+        children: [
+          // сами фигуры
+          for (final code in codes) ...[
+            Draggable<String>(
+              data: code,
+              feedback: Material(
+                color: Colors.transparent,
+                child: SvgPicture.asset(_assetFor(code),
+                    width: cellSize * 0.9, height: cellSize * 0.9),
+              ),
+              childWhenDragging: const SizedBox(width: 8, height: 8),
+              child: SvgPicture.asset(_assetFor(code),
+                  width: cellSize * 0.9, height: cellSize * 0.9),
+            ),
+            const SizedBox(width: 8),
+          ],
+
+          const Spacer(),
+
+          // "корзина" — перетащи сюда с доски чтобы удалить
+          DragTarget<String>(
+            onWillAccept: (_) =>
+                _dragFromSquare != null, // принимаем только "с доски"
+            onAccept: (_) {
+              if (_dragFromSquare != null) {
+                final r0 = _rankIndex(_dragFromSquare!);
+                final f0 = _fileIndex(_dragFromSquare!);
+                setState(() => _editBoard[r0][f0] = '.');
+                _dragFromSquare = null;
+              }
+            },
+            builder: (_, __, ___) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black12,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.black26),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.delete_forever, size: 22),
+                  SizedBox(width: 6),
+                  Text('Удалить', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopBody(double boardSize, bool isLogged) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ← панель с кнопками вернулась
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          child: _buildTopBar(),
+        ),
+        const SizedBox(height: 10),
+
+        // основной контент как и был: доска + ходы + лобби
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Левая колонка с доской — ВСЕГДА
+              _buildLeftColumn(boardSize),
+
+              const SizedBox(width: 24),
+
+              // Список ходов
+              _MoveListPanel(
+                san: _sanMoves,
+                currentPly: _plyIndex,
+                controller: _movesScroll,
+                onCopyPGN: () {
+                  final rows = _rowsFromSan(_sanMoves);
+                  Clipboard.setData(ClipboardData(text: rows.join(' ')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('PGN скопирован')),
+                  );
+                },
+                onClear: () {
+                  setState(() {
+                    _sanMoves.clear();
+                    _fens
+                      ..clear()
+                      ..add(game.fen);
+                    _plyIndex = 0;
+                  });
+                },
+              ),
+
+              const SizedBox(width: 24),
+
+              // Лобби
+              _LobbyPanel(
+                isLoggedIn: isLogged,
+                inLobby: _lobby != null,
+                online: _lobby?.online ?? const [],
+                myId: Supabase.instance.client.auth.currentUser?.id,
+                myRating: _myRating,
+                onEnterLobby: _enterLobby,
+                onLeaveLobby: _leaveLobby,
+                onInvite: (id, name) => _invitePlayer(id, name),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMobileBody(double boardSize, bool isLogged) {
+    final isLoggedIn = Supabase.instance.client.auth.currentUser != null;
+
+    Future<void> _pickTimeControl() async {
+      final res = await showDialog<_TcChoice>(
+        context: context,
+        builder: (_) => _TcDialog(
+          initialMinutes: _tcMinutes,
+          initialIncrement: _tcIncrement,
+          initialRated: _inRoom ? _matchRated : _rated,
+        ),
+      );
+      if (res != null) {
+        _applyTimeControl(
+          minutes: res.minutes,
+          increment: res.increment,
+          rated: res.rated,
+          broadcast: _inRoom,
+        );
+      }
+    }
+
+    Widget _icon(String label, IconData icon, VoidCallback? onTap,
+        {bool active = false}) {
+      final color = active ? Theme.of(context).colorScheme.primary : null;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: label,
+            onPressed: onTap,
+            icon: Icon(icon, color: color),
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+            splashRadius: 22,
+          ),
+          Text(label, style: const TextStyle(fontSize: 11)),
+        ],
+      );
+    }
+
+    // высота области с вкладками под доской (адаптивно)
+    final vh = MediaQuery.of(context).size.height;
+    final double tabsHeight = (vh * 0.55).clamp(360.0, 620.0);
+
+    return DefaultTabController(
+      length: 3,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ---------- Ряд иконок (без «В лобби») ----------
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              alignment: WrapAlignment.center,
+              children: [
+                _icon('Новая', Icons.fiber_new, _onNewGameUniversal),
+                _icon(
+                    'Сдаться',
+                    Icons.flag,
+                    (!_inRoom && !game.game_over && !_gameTerminated)
+                        ? _resignOffline
+                        : null),
+                _icon('ИИ', Icons.smart_toy,
+                    (_inRoom) ? null : _startNewGameVsEngine),
+                _icon('С человеком', Icons.group,
+                    (_vsEngine && !_inRoom) ? _continueVsHuman : null),
+                _icon('Продолжить', Icons.play_circle,
+                    (!_inRoom && !_vsEngine) ? _continueVsEngine : null),
+                _icon('Контроль', Icons.timer, _pickTimeControl),
+                _icon('Рейтинг', Icons.emoji_events,
+                    _inRoom ? null : () => setState(() => _rated = !_rated),
+                    active: _inRoom ? _matchRated : _rated),
+                _icon(_editMode ? 'Редактор (вкл)' : 'Редактор', Icons.edit,
+                    !_inRoom ? (_editMode ? _applyEditor : _enterEditor) : null,
+                    active: _editMode),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            // ---------- Доска (часы + чат внутри) ----------
+            _buildLeftColumn(boardSize),
+
+            const SizedBox(height: 10),
+
+            // ---------- Кнопка «В лобби / Выйти» под доской ----------
+            SizedBox(
+              height: 44,
+              child: FilledButton.tonal(
+                onPressed: () async {
+                  if (!isLoggedIn) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Сначала войдите в аккаунт')),
+                    );
+                    return;
+                  }
+                  if (_lobby == null) {
+                    await _enterLobby();
+                  } else {
+                    await _leaveLobby();
+                  }
+                  setState(() {});
+                },
+                child: Text((_lobby == null) ? 'В лобби' : 'Выйти из лобби'),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            // ---------- Вкладки под доской ----------
+            const TabBar(
+              labelPadding: EdgeInsets.symmetric(horizontal: 8),
+              tabs: [
+                Tab(icon: Icon(Icons.sports_esports), text: 'Игра'),
+                Tab(icon: Icon(Icons.list_alt), text: 'Ходы'),
+                Tab(icon: Icon(Icons.people_alt), text: 'Лобби'),
+              ],
+            ),
+
+            // ограничиваем высоту: всё остальное прокручивается сверху
+            SizedBox(
+              height: tabsHeight,
+              child: TabBarView(
+                children: [
+                  // === ТАБ 1: Игра — инструменты (FEN/BestMove) ===
+                  SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(0, 10, 0, 16),
+                    child: _buildBottomTools(),
+                  ),
+
+                  // === ТАБ 2: Ходы ===
+                  Center(
+                    child: SizedBox(
+                      width: 320,
+                      height: tabsHeight - 20,
+                      child: _MoveListPanel(
+                        san: _sanMoves,
+                        currentPly: _plyIndex,
+                        controller: _movesScroll,
+                        onCopyPGN: () {
+                          final rows = _rowsFromSan(_sanMoves);
+                          Clipboard.setData(
+                              ClipboardData(text: rows.join(' ')));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('PGN скопирован')),
+                          );
+                        },
+                        onClear: () {
+                          setState(() {
+                            _sanMoves.clear();
+                            _fens
+                              ..clear()
+                              ..add(game.fen);
+                            _plyIndex = 0;
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+
+                  // === ТАБ 3: Лобби ===
+                  Center(
+                    child: SizedBox(
+                      width: 320,
+                      height: tabsHeight - 20,
+                      child: _LobbyPanel(
+                        isLoggedIn: isLoggedIn,
+                        inLobby: _lobby != null,
+                        online: _lobby?.online ?? const [],
+                        myId: Supabase.instance.client.auth.currentUser?.id,
+                        myRating: _myRating,
+                        onEnterLobby: _enterLobby,
+                        onLeaveLobby: _leaveLobby,
+                        onInvite: (id, name) => _invitePlayer(id, name),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------- UI parts ----------
+  Widget _buildTopBar() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          const Text('Вы играете за:'),
+
+          // Цвет игрока
+          ToggleButtons(
+            isSelected: [
+              _humanColor == ch.Color.WHITE,
+              _humanColor == ch.Color.BLACK,
+            ],
+            onPressed: (_vsEngine || _inRoom)
+                ? null
+                : (i) => setState(() =>
+                    _humanColor = (i == 0) ? ch.Color.WHITE : ch.Color.BLACK),
+            borderRadius: BorderRadius.circular(10),
+            children: const [
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text('Белые'),
+              ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text('Чёрные'),
+              ),
+            ],
+          ),
+
+          // вместо "Контроль" и "Рейтинг" — просто заглушка
+          const SizedBox.shrink(),
+
+          // Игра с ИИ (старт)
+          FilledButton.icon(
+            onPressed: (_vsEngine || _inRoom) ? null : _startNewGameVsEngine,
+            icon: const Icon(Icons.smart_toy),
+            label: const Text('Игра с ИИ'),
+          ),
+
+          // Продолжить с компьютером (если есть незавершённая)
+          FilledButton.tonalIcon(
+            onPressed: (!_inRoom && !_vsEngine) ? _continueVsEngine : null,
+            icon: const Icon(Icons.smart_toy),
+            label: const Text('Продолжить с компьютером'),
+          ),
+
+          // Продолжить с человеком (локально)
+          FilledButton.tonalIcon(
+            onPressed: (_vsEngine && !_inRoom) ? _continueVsHuman : null,
+            icon: const Icon(Icons.group),
+            label: const Text('Продолжить с человеком'),
+          ),
+
+          // Новая игра (универсальная)
+          FilledButton.icon(
+            onPressed: _onNewGameUniversal,
+            icon: const Icon(Icons.fiber_new),
+            label: const Text('Новая игра'),
+          ),
+
+          // === ЗАДЕРЖКА ДЛЯ ДУЭЛИ ДВИЖКОВ: минус — поле — плюс ===
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.remove),
+                tooltip: '−250 мс',
+                onPressed: () {
+                  setState(() {
+                    _engineDuelDelayMs =
+                        (_engineDuelDelayMs - 250).clamp(100, 60000).toInt();
+                    _duelDelayCtl.text = '$_engineDuelDelayMs';
+                  });
+                },
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: SizedBox(
+                  width: 130,
+                  child: TextField(
+                    controller: _duelDelayCtl,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: const InputDecoration(
+                      labelText: 'Задержка, мс',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                    ),
+                    onChanged: (v) {
+                      final parsed = int.tryParse(v);
+                      setState(() {
+                        _engineDuelDelayMs =
+                            (parsed ?? 2000).clamp(100, 60000).toInt();
+                      });
+                    },
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add),
+                tooltip: '+250 мс',
+                onPressed: () {
+                  setState(() {
+                    _engineDuelDelayMs =
+                        (_engineDuelDelayMs + 250).clamp(100, 60000).toInt();
+                    _duelDelayCtl.text = '$_engineDuelDelayMs';
+                  });
+                },
+              ),
+            ],
+          ),
+          const SizedBox(width: 8), // отступ перед кнопкой
+
+          // КОМПЬЮТЕР vs КОМПЬЮТЕР
+          FilledButton.icon(
+            onPressed: _engineDuel ? _stopEngineDuel : _startEngineDuel,
+            icon: const Icon(Icons.smart_toy),
+            label: Text(
+              _engineDuel
+                  ? 'Стоп: Компьютер vs Компьютер'
+                  : 'Компьютер vs Компьютер',
+            ),
+          ),
+
+          // Редактор позиции
+          FilledButton.tonalIcon(
+            onPressed:
+                _inRoom ? null : (_editMode ? _applyEditor : _enterEditor),
+            icon: const Icon(Icons.edit),
+            label: Text(_editMode ? 'Выйти из редактора' : 'Редактор'),
+          ),
+
+          // Сдаться (в онлайне вызывает онлайн-сдачу, иначе — офлайн)
+          OutlinedButton.icon(
+            onPressed: (!_gameTerminated)
+                ? (_inRoom ? _resignOnline : _resignOffline)
+                : null,
+            icon: const Icon(Icons.flag),
+            label: const Text('Сдаться'),
+          ),
+
+          const SizedBox(width: 16),
+
+          // Навигация по ходам
+          IconButton(
+            tooltip: 'В начало',
+            onPressed: _plyIndex > 0 ? _goStart : null,
+            icon: const Icon(Icons.first_page),
+          ),
+          IconButton(
+            tooltip: 'Назад',
+            onPressed: _plyIndex > 0 ? _goPrev : null,
+            icon: const Icon(Icons.chevron_left),
+          ),
+          IconButton(
+            tooltip: 'Вперёд',
+            onPressed: _plyIndex < _sanMoves.length ? _goNext : null,
+            icon: const Icon(Icons.chevron_right),
+          ),
+          IconButton(
+            tooltip: 'В конец',
+            onPressed: _plyIndex < _sanMoves.length ? _goEnd : null,
+            icon: const Icon(Icons.last_page),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEngineDuelDelayField() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: SizedBox(
+        width: 130,
+        child: TextField(
+          controller: _duelDelayCtl,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            labelText: 'Задержка, мс',
+            isDense: true,
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          ),
+          onChanged: (v) {
+            final parsed = int.tryParse(v);
+            setState(() {
+              _engineDuelDelayMs = (parsed ?? 2000).clamp(100, 60000);
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLeftColumn(double boardSize) {
+    // Ширина «коробки» под доску: сама доска + подписи по 18px слева/снизу
+    // (см. m=18 в _buildBoardWithCoords). Делаем одинаковую ширину для ВСЕГО столбца.
+    final double totalSize = boardSize + 36.0;
+    final cell = boardSize / 8;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center, // <-- было start
+      children: [
+        _buildClockRow(playerIsTop: true, maxWidth: totalSize),
+        const SizedBox(height: 6),
+
+        if (_editMode)
+          ConstrainedBox(
+            // палетка не шире totalSize
+            constraints: BoxConstraints(maxWidth: totalSize),
+            child:
+                _editorPalette(white: false, cellSize: cell), // ЧЁРНЫЕ СВЕРХУ
+          ),
+
+        // Доску тоже жёстко ограничим одной шириной, внутри — она уже центрирована
+        SizedBox(
+            width: totalSize,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // доступная ширина под доску (в этой колонке/контейнере)
+                double w = constraints.maxWidth;
+                if (!w.isFinite || w <= 0) {
+                  w = MediaQuery.of(context).size.width;
+                }
+
+                // учтём симметричную рамку m с каждой стороны
+                const double m = 18.0;
+                final double rawInner = (w - m * 2).clamp(120.0, w);
+
+                // 👇 ключ: размер клетки целым числом пикселей
+                final double cell = (rawInner / 8).floorToDouble();
+                final double boardSize = cell * 8;
+
+                return _buildBoardWithCoords(boardSize);
+              },
+            )),
+
+        if (_editMode)
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: totalSize),
+            child: _editorPalette(white: true, cellSize: cell), // БЕЛЫЕ СНИЗУ
+          ),
+
+        const SizedBox(height: 6),
+        _buildClockRow(playerIsTop: false, maxWidth: totalSize),
+        const SizedBox(height: 12),
+        _buildChat(maxWidth: totalSize), // чат той же ширины
+      ],
+    );
+  }
+
+  Widget _deleteZone({required Widget child}) {
+    return DragTarget<String>(
+      onWillAccept: (_) => _editMode, // только в редакторе
+      onAccept: (code) {
+        // Удаляем фигуру из исходной клетки, если тянули с доски
+        final from = _dragFromSquare;
+        if (from != null) {
+          final ri = _rankIndex(from);
+          final fi = _fileIndex(from);
+          setState(() {
+            _editBoard[ri][fi] = '.';
+          });
+        }
+        _dragFromSquare = null;
+      },
+      builder: (_, __, ___) => child,
+    );
+  }
+
+  Widget _buildEditorToolbar() {
+    // Кнопка-клетка палетки
+    Widget paletteItem(String code) {
+      final sz = 38.0;
+      return Opacity(
+        opacity: 1,
+        child: Draggable<String>(
+          data: code, // тащим КОД фигуры 'wK'/'bQ'...
+          onDragStarted: () => _dragFromSquare = null, // тянем из палетки
+          feedback: Material(
+            color: Colors.transparent,
+            child: SvgPicture.asset(_assetFor(code), width: sz, height: sz),
+          ),
+          childWhenDragging: SvgPicture.asset(_assetFor(code),
+              width: sz, height: sz, color: Colors.black26),
+          child: SvgPicture.asset(_assetFor(code), width: sz, height: sz),
+        ),
+      );
+    }
+
+    // Ряд палетки
+    Widget row(List<String> codes) => Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
+          children: codes.map(paletteItem).toList(),
+        );
+
+    // «Корзина»: перетащи сюда фигуру С ДОСКИ, чтобы удалить
+    final trash = DragTarget<String>(
+      onWillAccept: (_) => true,
+      onAccept: (data) {
+        if (_dragFromSquare != null) {
+          final ri = _rankIndex(_dragFromSquare!);
+          final fi = _fileIndex(_dragFromSquare!);
+          setState(() => _editBoard[ri][fi] = '.');
+        }
+        _dragFromSquare = null;
+      },
+      builder: (context, _, __) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.red.shade50,
+          border: Border.all(color: Colors.red.shade300),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.delete_outline),
+            SizedBox(width: 8),
+            Text('Корзина (перетащите сюда с доски)'),
+          ],
+        ),
+      ),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Строка управления (очистить/стартовая/ход/рокировки)
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    for (int r = 0; r < 8; r++) {
+                      for (int c = 0; c < 8; c++) _editBoard[r][c] = '.';
+                    }
+                  });
+                },
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Очистить доску'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _editBoard = _fenToBoard(
+                      'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                    );
+                    _editTurn = ch.Color.WHITE;
+                    _castleK = _castleQ = _castlek = _castleq = true;
+                  });
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('Стартовая'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        // Ход / рокировки
+        Row(
+          children: [
+            const Text('Ход:'),
+            const SizedBox(width: 8),
+            ChoiceChip(
+              label: const Text('Белые'),
+              selected: _editTurn == ch.Color.WHITE,
+              onSelected: (_) => setState(() => _editTurn = ch.Color.WHITE),
+            ),
+            const SizedBox(width: 8),
+            ChoiceChip(
+              label: const Text('Чёрные'),
+              selected: _editTurn == ch.Color.BLACK,
+              onSelected: (_) => setState(() => _editTurn = ch.Color.BLACK),
+            ),
+            const Spacer(),
+            FilterChip(
+                label: const Text('K'),
+                selected: _castleK,
+                onSelected: (v) => setState(() => _castleK = v)),
+            const SizedBox(width: 6),
+            FilterChip(
+                label: const Text('Q'),
+                selected: _castleQ,
+                onSelected: (v) => setState(() => _castleQ = v)),
+            const SizedBox(width: 6),
+            FilterChip(
+                label: const Text('k'),
+                selected: _castlek,
+                onSelected: (v) => setState(() => _castlek = v)),
+            const SizedBox(width: 6),
+            FilterChip(
+                label: const Text('q'),
+                selected: _castleq,
+                onSelected: (v) => setState(() => _castleq = v)),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // ПАЛЕТКИ
+        const Text('Белые', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        row(const ['wK', 'wQ', 'wR', 'wB', 'wN', 'wP']),
+        const SizedBox(height: 10),
+        const Text('Чёрные', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        row(const ['bK', 'bQ', 'bR', 'bB', 'bN', 'bP']),
+        const SizedBox(height: 12),
+
+        // КНОПКИ Применить/Отмена + КОРЗИНА справа
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _applyEditor,
+                icon: const Icon(Icons.check),
+                label: const Text('Применить'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: !_gameTerminated ? _onResignPressed : null,
+                icon: const Icon(Icons.flag),
+                label: const Text('Сдаться'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            trash,
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildClockRow({required bool playerIsTop, double maxWidth = 560}) {
+    final name =
+        playerIsTop ? (_opponentName ?? 'opponent') : (_nickname ?? 'me');
+    final rating = playerIsTop ? _oppRating : _myRating;
+    final isMyRow = !playerIsTop;
+
+    final ms = (playerIsTop) ? _blackMsIfTop() : _whiteMsIfBottom();
+
+    final active = _inRoom &&
+        ((game.turn == (_humanColor)) == isMyRow) &&
+        !_isSpectator &&
+        !game.game_over &&
+        !_gameTerminated;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: active ? Colors.green.shade100 : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.black12),
+              ),
+              child: Row(
+                children: [
+                  Icon(playerIsTop
+                      ? Icons.arrow_drop_up
+                      : Icons.arrow_drop_down),
+                  const SizedBox(width: 6),
+                  Expanded(
+                      child: Text('$name  ($rating)',
+                          maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 12),
+                  Text(_fmtMs(ms),
+                      style: const TextStyle(
+                          fontFeatures: [FontFeature.tabularFigures()])),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  int _whiteMsIfBottom() =>
+      (_humanColor == ch.Color.WHITE) ? _whiteMs : _blackMs;
+  int _blackMsIfTop() => (_humanColor == ch.Color.WHITE) ? _blackMs : _whiteMs;
+
+  Widget _buildChat({double maxWidth = 560, double height = 220}) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: SizedBox(
+        height: height,
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Text('Чат'),
+                const Spacer(),
+                if (_roomId != null)
+                  SelectableText('Room: ${_roomId!.substring(0, 8)}...',
+                      style: const TextStyle(fontSize: 12)),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final id = await showDialog<String>(
+                      context: context,
+                      builder: (_) => _PromptDialog(
+                          title: 'Войти как зритель', label: 'roomId'),
+                    );
+                    if (id == null || id.trim().isEmpty) return;
+                    final supa = Supabase.instance.client;
+                    final me = supa.auth.currentUser;
+                    if (me == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                          content: Text('Сначала войдите в аккаунт')));
+                      return;
+                    }
+                    await _openRoom(id.trim(),
+                        opponentId: _opponentId ?? 'unknown',
+                        opponentName: _opponentName ?? 'opponent',
+                        myColor:
+                            (_humanColor == ch.Color.WHITE) ? 'white' : 'black',
+                        spectator: true);
+                  },
+                  icon: const Icon(Icons.visibility),
+                  label: const Text('Зритель'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFDFCF9),
+                  border:
+                      Border.all(color: const Color(0xFF333333), width: 1.0),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(8),
+                  itemCount: _chat.length,
+                  itemBuilder: (_, i) {
+                    final m = _chat[i];
+                    final align = m.mine
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start;
+                    final bg =
+                        m.mine ? Colors.blue.shade50 : Colors.grey.shade200;
+                    return Column(
+                      crossAxisAlignment: align,
+                      children: [
+                        Container(
+                          margin: const EdgeInsets.symmetric(vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                              color: bg,
+                              borderRadius: BorderRadius.circular(10)),
+                          child: Text(m.mine ? m.text : '${m.from}: ${m.text}'),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _chatCtl,
+                    enabled: _inRoom,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      hintText: 'Сообщение...',
+                    ),
+                    onSubmitted: (_) => _sendChat(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(onPressed: _sendChat, child: const Text('Send')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _sendChat() {
+    if (!_inRoom || _room == null) return;
+    final text = _chatCtl.text.trim();
+    if (text.isEmpty) return;
+
+    final meId = Supabase.instance.client.auth.currentUser?.id ?? '';
+    final meName = _nickname ?? 'me';
+
+    setState(() => _chat.add(_ChatMsg(from: meName, text: text, mine: true)));
+    _chatCtl.clear();
+
+    _room!.sendChat(text: text, fromName: meName, from: meId);
+  }
+
+  Future<void> _startFreshGame() async {
+    if (_inRoom) {
+      await _leaveRoom();
+    }
+    _resetBoardToInitial();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Новая партия: можно выбрать соперника или ИИ')),
+      );
+    }
+  }
+
+  Widget _buildBottomTools() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: TextField(
+            controller: _fenController,
+            decoration: const InputDecoration(
+                border: OutlineInputBorder(), labelText: 'Enter FEN'),
+            onSubmitted: (v) {
+              final ok = game.load(v.trim());
+              if (ok) {
+                setState(() {
+                  _selectedSquare = null;
+                  _legalTargets.clear();
+                  _captureTargets.clear();
+                  _sanMoves.clear();
+                  _fens
+                    ..clear()
+                    ..add(game.fen);
+                  _plyIndex = 0;
+                });
+              }
+            },
+          ),
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: _loading
+              ? null
+              : () async {
+                  setState(() => _loading = true);
+                  final uci =
+                      await _fetchUciBestMove(_fenController.text.trim());
+                  setState(() => _loading = false);
+                  if (uci != null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Best move (UCI): $uci')));
+                  }
+                },
+          child: const Text('Get Best Move'),
+        ),
+        const SizedBox(height: 16),
+        if (_loading)
+          const CircularProgressIndicator()
+        else if (_result != null)
+          Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: SelectableText(_result!,
+                  style: const TextStyle(fontSize: 14)))
+        else
+          const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16.0),
+              child: Text('Enter a FEN and press the button.')),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  // ---- Chessboard ----
+// ---- Chessboard ----
+  Widget _buildBoardWithCoords(double boardSize) {
+    const double m = 18; // толщина поля под подписи
+    final files = _isFlipped
+        ? ['H', 'G', 'F', 'E', 'D', 'C', 'B', 'A']
+        : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    final ranks = _isFlipped
+        ? ['1', '2', '3', '4', '5', '6', '7', '8']
+        : ['8', '7', '6', '5', '4', '3', '2', '1'];
+    final labelStyle = TextStyle(
+      fontSize: math.max(10, boardSize / 32),
+      color: Colors.black.withOpacity(0.7),
+    );
+
+    // Делаем симметричную рамку: сверху/слева/справа/снизу одинаковый отступ m
+    final totalSize = boardSize + m * 2;
+
+    return SizedBox(
+      width: totalSize,
+      height: totalSize,
+      child: Stack(
+        children: [
+          // Сама доска — со смещением (m, m)
+          Positioned(
+            left: m,
+            top: m,
+            child: _buildChessBoardGrid(boardSize),
+          ),
+
+          // Ранги слева (внутри рамки), вдоль доски
+          Positioned(
+            left: 0,
+            top: m,
+            width: m,
+            height: boardSize,
+            child: _editMode
+                ? _deleteZone(
+                    child: Column(
+                      children: List.generate(
+                        8,
+                        (i) => SizedBox(
+                          height: boardSize / 8,
+                          child: Align(
+                            alignment: Alignment.center,
+                            child: Text(ranks[i], style: labelStyle),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : Column(
+                    children: List.generate(
+                      8,
+                      (i) => SizedBox(
+                        height: boardSize / 8,
+                        child: Align(
+                          alignment: Alignment.center,
+                          child: Text(ranks[i], style: labelStyle),
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+
+          // Файлы снизу (внутри рамки), вдоль доски
+          Positioned(
+            left: m,
+            top: m + boardSize,
+            width: boardSize,
+            height: m,
+            child: _editMode
+                ? _deleteZone(
+                    child: Row(
+                      children: List.generate(
+                        8,
+                        (i) => SizedBox(
+                          width: boardSize / 8,
+                          child:
+                              Center(child: Text(files[i], style: labelStyle)),
+                        ),
+                      ),
+                    ),
+                  )
+                : Row(
+                    children: List.generate(
+                      8,
+                      (i) => SizedBox(
+                        width: boardSize / 8,
+                        child: Center(child: Text(files[i], style: labelStyle)),
+                      ),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChessBoardGrid(double boardSize) {
+    try {
+      final double cell = boardSize / 8;
+      final double pieceSize = cell * 0.85;
+
+      return SizedBox(
+        width: boardSize,
+        height: boardSize,
+        child: GridView.builder(
+          padding: EdgeInsets.zero, // ✅ без внутренних отступов
+          clipBehavior: Clip.hardEdge, // ✅ обрезка "лишнего" за границей
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 8,
+            childAspectRatio: 1,
+          ),
+          itemCount: 64,
+          itemBuilder: (context, index) {
+            final square = _displayIndexToSquare(index);
+            final row = index ~/ 8;
+            final col = index % 8;
+            final isWhiteSquare = (row + col) % 2 == 0;
+
+            final editing = _editMode;
+
+            // данные для игры
+            final piece = editing ? null : game.get(square);
+            final isSelected = !editing && _selectedSquare == square;
+            final isLegal = !editing && _legalTargets.contains(square);
+            final isCapture = !editing && _captureTargets.contains(square);
+
+            // данные для редактора
+            final fenChar = editing
+                ? _editBoard[_rankIndex(square)][_fileIndex(square)]
+                : '.';
+            final unicode = editing ? _unicodeForFen(fenChar) : null;
+
+            // ----- РЕЖИМ РЕДАКТОРА
+            // ----- РЕЖИМ РЕДАКТОРА (DnD как в lichess)
+// ----- РЕЖИМ РЕДАКТОРА (DnD как в lichess)
+            // ----- РЕЖИМ РЕДАКТОРА
+            // ----- РЕЖИМ РЕДАКТОРА (ПОЛНАЯ ЗАМЕНА БЛОКА, КОТОРЫЙ НАЧИНАЕТСЯ С if (editing)) -----
+            if (editing) {
+              // каждая клетка — это DragTarget, чтобы принимать перетаскиваемые фигуры
+              return DragTarget<String>(
+                onWillAccept: (data) =>
+                    data !=
+                    null, // принимаем любой код фигуры ('wK', 'bQ' и т.п.)
+                onAccept: (pieceCode) {
+                  setState(() {
+                    // ставим фигуру на цель
+                    final ri = _rankIndex(square);
+                    final fi = _fileIndex(square);
+                    _editBoard[ri][fi] = _fenFromPieceCode(pieceCode);
+
+                    // если тащили С ДОСКИ — очистим исходную клетку
+                    if (_dragFromSquare != null) {
+                      final sri = _rankIndex(_dragFromSquare!);
+                      final sfi = _fileIndex(_dragFromSquare!);
+                      _editBoard[sri][sfi] = '.';
+                      _dragFromSquare = null;
+                    }
+                  });
+                },
+                builder: (context, candidate, rejected) {
+                  final ri = _rankIndex(square);
+                  final fi = _fileIndex(square);
+                  final fenChar = _editBoard[ri][fi]; // 'K','p','.' и т.п.
+                  final pieceCode =
+                      _pieceCodeFromFen(fenChar); // 'wK','bP' или null
+
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _onSquareEdit(
+                        square), // тап по клетке — быстрый выбор фигуры
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: isWhiteSquare
+                            ? const Color(0xFFF0D9B5)
+                            : const Color(0xFFB58863),
+                        border: Border.all(color: Colors.black12, width: 1),
+                      ),
+                      child: Center(
+                          // если клетка пустая — ничего не рисуем
+                          child: (pieceCode == null)
+                              ? const SizedBox.shrink()
+                              : Draggable<String>(
+                                  data: pieceCode,
+                                  onDragStarted: () => _dragFromSquare = square,
+                                  onDragCompleted: () => _dragFromSquare = null,
+
+                                  // БЫЛО:
+                                  // onDraggableCanceled: (_, __) => _dragFromSquare = null,
+
+                                  // СТАЛО: если дроп «в молоко» — удаляем фигуру из исходной клетки
+                                  onDraggableCanceled: (_, __) {
+                                    if (_dragFromSquare != null) {
+                                      final sri = _rankIndex(_dragFromSquare!);
+                                      final sfi = _fileIndex(_dragFromSquare!);
+                                      setState(() {
+                                        _editBoard[sri][sfi] =
+                                            '.'; // удалить фигуру из исходной клетки
+                                      });
+                                      _dragFromSquare = null;
+                                    }
+                                  },
+
+                                  feedback: Material(
+                                    color: Colors.transparent,
+                                    child: SvgPicture.asset(
+                                      _assetFor(pieceCode),
+                                      width: pieceSize,
+                                      height: pieceSize,
+                                    ),
+                                  ),
+                                  childWhenDragging: const SizedBox.shrink(),
+                                  child: SvgPicture.asset(
+                                    _assetFor(pieceCode),
+                                    width: pieceSize,
+                                    height: pieceSize,
+                                  ),
+                                )),
+                    ),
+                  );
+                },
+              );
+            }
+
+            // ----- ОБЫЧНАЯ ИГРА
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (_) {
+                if (!_myTurnNow() || _isSpectator) return;
+                final p = game.get(square);
+                if (p != null && p.color == game.turn)
+                  _computeLegalTargets(square);
+              },
+              onTap: () {
+                if (!_myTurnNow() || _isSpectator) return;
+                if (_selectedSquare == null) return;
+
+                if (_legalTargets.contains(square)) {
+                  _makeMove(_selectedSquare!, square);
+                  return;
+                }
+
+                final pHere = game.get(square);
+                final pSel =
+                    _selectedSquare != null ? game.get(_selectedSquare!) : null;
+                if (pHere != null &&
+                    pSel != null &&
+                    pHere.color == pSel.color) {
+                  _computeLegalTargets(square);
+                  return;
+                }
+
+                if (square == _selectedSquare) return;
+
+                setState(() {
+                  _selectedSquare = null;
+                  _legalTargets.clear();
+                  _captureTargets.clear();
+                });
+              },
+              onSecondaryTap: () {
+                if (!_myTurnNow() || _isSpectator) return;
+                setState(() {
+                  _selectedSquare = null;
+                  _legalTargets.clear();
+                  _captureTargets.clear();
+                });
+              },
+              child: DragTarget<int>(
+                onAccept: (fromIndex) {
+                  if (!_myTurnNow() || _isSpectator) return;
+                  final from = _displayIndexToSquare(fromIndex);
+                  final to = square;
+                  _makeMove(from, to);
+                },
+                builder: (context, _, __) => Container(
+                  decoration: BoxDecoration(
+                    color: isWhiteSquare
+                        ? const Color(0xFFF0D9B5)
+                        : const Color(0xFFB58863),
+                    border: Border.all(
+                      color: isSelected ? Colors.amber : Colors.black12,
+                      width: isSelected ? 3 : 1,
+                    ),
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (isLegal && !isCapture)
+                        IgnorePointer(
+                          child: Center(
+                            child: Container(
+                              width: cell * 0.3,
+                              height: cell * 0.3,
+                              decoration: const BoxDecoration(
+                                color: Color(0x5500FF00),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (isCapture)
+                        IgnorePointer(
+                          child: Center(
+                            child: Container(
+                              width: cell * 0.75,
+                              height: cell * 0.75,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                    color: Colors.redAccent, width: 3),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (piece != null)
+                        Center(
+                          child: Draggable<int>(
+                            data: index,
+                            feedback: Material(
+                              color: Colors.transparent,
+                              child: SvgPicture.asset(
+                                _assetFor(_codeFor(piece)),
+                                width: pieceSize,
+                                height: pieceSize,
+                              ),
+                            ),
+                            childWhenDragging: const SizedBox.shrink(),
+                            child: SvgPicture.asset(
+                              _assetFor(_codeFor(piece)),
+                              width: pieceSize,
+                              height: pieceSize,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    } catch (e) {
+      return Container(
+        width: boardSize,
+        height: boardSize,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFEBEE),
+          border: Border.all(color: const Color(0xFFD32F2F), width: 2),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          'Ошибка рендера доски: $e',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFFD32F2F)),
+        ),
+      );
+    }
+  }
+
+  void _resetBoardToInitial() {
+    game.reset();
+    _fenController.text = game.fen;
+
+    _sanMoves.clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+
+    _result = null;
+
+    _drawOfferedByMe = false;
+    _drawOfferedToMe = false;
+    _rematchOfferedByMe = false;
+    _rematchOfferedToMe = false;
+
+    _stopTick();
+    _resetClocks();
+    _gameTerminated = false;
+  }
+
+  Future<void> _onNewGameUniversal() async {
+    // Онлайн (игра в комнате Supabase)
+    if (_inRoom) {
+      await _startNewGameFresh(); // у тебя уже есть
+      return;
+    }
+
+    // Против ИИ
+    if (_vsEngine == true) {
+      await _startNewGameVsEngine(); // у тебя уже есть
+      return;
+    }
+
+    // Локально (человек-человек на одном устройстве)
+    _startLocalHumanGame(); // см. ниже
+  }
+
+  Future<bool> _confirmResign() async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Сдаться?'),
+            content: const Text(
+                'Подтвердите, что вы хотите завершить партию сдачей.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отмена')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Сдаться')),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _showEndDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Единая кнопка «Сдаться» — показывает диалог и вызывает нужную реализацию
+  Future<void> _onResignPressed() async {
+    if (_gameTerminated) return;
+    final ok = await _confirmResign();
+    if (!ok) return;
+
+    if (_inRoom) {
+      await _resignOnline(); // твой онлайн-метод
+      await _showEndDialog(
+        title: 'Партия завершена',
+        message: 'Вы сдались в онлайне.',
+      );
+    } else if (_vsEngine) {
+      // против ИИ
+      setState(() {
+        _result = 'Вы сдались (ИИ победил)';
+        _gameTerminated = true;
+        _selectedSquare = null;
+        _legalTargets.clear();
+        _captureTargets.clear();
+      });
+      await _showEndDialog(
+        title: 'Партия завершена',
+        message: 'Вы сдались. Победил ИИ.',
+      );
+    } else {
+      // локальная игра человек-человек
+      await _resignOffline(); // уже покажет диалог внутри
+    }
+  }
+
+  void _startLocalHumanGame() {
+    setState(() {
+      // важно: явно выключаем режим ИИ/онлайна
+      _vsEngine = false;
+
+      game.reset();
+      _fenController.text = game.fen;
+
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+
+      _result = null;
+      _gameTerminated = false;
+
+      _stopTick();
+      _resetClocks();
+    });
+  }
+
+  Future<void> _resignOffline() async {
+    if (game.game_over || _gameTerminated) return;
+
+    final bool iPlayWhite = (_humanColor == ch.Color.WHITE);
+    final String result =
+        iPlayWhite ? '0-1 (resignation)' : '1-0 (resignation)';
+
+    _stopTick();
+    _resetClocks();
+
+    setState(() {
+      _result = result;
+      _gameTerminated = true;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    await _showEndDialog(
+      title: 'Партия завершена',
+      message: 'Вы сдались. Результат: $result',
+    );
+  }
+
+  void _resignUniversal() {
+    if (_inRoom) {
+      // Сдаёмся онлайн
+      _resignOnline();
+    } else if (_vsEngine) {
+      // Сдаёмся против ИИ
+      setState(() {
+        _result = 'Вы сдались (ИИ победил)';
+        _gameTerminated = true;
+      });
+    } else {
+      // Локальная игра (два игрока на одном устройстве)
+      setState(() {
+        _result = 'Игрок сдался';
+        _gameTerminated = true;
+      });
+    }
+  }
+
+  Future<void> _startNewGameFresh() async {
+    if (_inRoom) {
+      await _leaveRoom();
+    }
+    _resetBoardToInitial();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                'Новая игра: выберите соперника в лобби или начните с ИИ')),
+      );
+    }
+  }
+
+  void _computeLegalTargets(String fromSquare) {
+    final Set<String> legal = {};
+    final Set<String> caps = {};
+    try {
+      final moves = game.moves({'square': fromSquare, 'verbose': true});
+      for (final m in moves) {
+        final to = (m['to'] ?? '') as String;
+        if (to.isEmpty) continue;
+        legal.add(to);
+        final flags = (m['flags'] as String?) ?? '';
+        if (flags.contains('c') || flags.contains('e') || m['captured'] != null)
+          caps.add(to);
+      }
+    } catch (_) {}
+    setState(() {
+      _selectedSquare = fromSquare;
+      _legalTargets = legal;
+      _captureTargets = caps;
+    });
+  }
+
+  Future<void> _startEngineDuel() async {
+    if (_engineDuel) return;
+
+    setState(() {
+      _engineDuel = true;
+      _vsEngine = true; // движок активен
+      _gameTerminated = false;
+    });
+
+    // Полностью свежая партия
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves.clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+
+    // Автоигра: по одному ходу каждые 2 секунды
+    while (mounted && _engineDuel && !_gameTerminated) {
+      await Future.delayed(Duration(milliseconds: _engineDuelDelayMs));
+      if (!_engineDuel || _gameTerminated) break;
+
+      // твой существующий метод: делает ход за ту сторону, чей сейчас ход
+      await _engineMove();
+
+      if (_gameTerminated) break;
+    }
+  }
+
+  void _stopEngineDuel() {
+    if (!_engineDuel) return;
+    setState(() => _engineDuel = false);
+  }
+
+  // ===== VS ENGINE quick start =====
+  Future<void> _startNewGameVsEngine() async {
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+      game.reset();
+      _fenController.text = game.fen;
+
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+      _gameTerminated = false;
+    });
+
+    if (_humanColor == ch.Color.BLACK) {
+      await _engineMove();
+    }
+  }
+
+  void _enterEditor() {
+    final parts = game.fen.split(' ');
+    final cr = parts.length > 2 ? parts[2] : '-';
+    setState(() {
+      _editMode = true;
+      _editBoard = _fenToBoard(game.fen);
+      _editTurn = (parts.length > 1 && parts[1] == 'b')
+          ? ch.Color.BLACK
+          : ch.Color.WHITE;
+      _castleK = cr.contains('K');
+      _castleQ = cr.contains('Q');
+      _castlek = cr.contains('k');
+      _castleq = cr.contains('q');
+
+      // ВАЖНО: именно поле класса, а не локальная переменная!
+      _dragFromSquare = null;
+    });
+  }
+
+  void _cancelEditor() {
+    setState(() => _editMode = false);
+  }
+
+  void _applyEditor() {
+    final fen = _boardToFen();
+    final ok = game.load(fen);
+    if (ok) {
+      setState(() {
+        _fenController.text = game.fen;
+        _sanMoves.clear();
+        _fens
+          ..clear()
+          ..add(game.fen);
+        _plyIndex = 0;
+        _selectedSquare = null;
+        _legalTargets.clear();
+        _captureTargets.clear();
+        _result = null;
+        _editMode = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Позиция применена')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Некорректный FEN: $fen')),
+      );
+    }
+  }
+
+  Future<void> _onSquareEdit(String square) async {
+    if (!_editMode) return;
+    final ri = _rankIndex(square);
+    final fi = _fileIndex(square);
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (_) {
+        Widget cell(String label, String fenChar) => InkWell(
+              onTap: () => Navigator.pop(context, fenChar),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Text(label, style: const TextStyle(fontSize: 28)),
+              ),
+            );
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text('Выберите фигуру',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    cell('♔', 'K'), cell('♕', 'Q'), cell('♖', 'R'),
+                    cell('♗', 'B'), cell('♘', 'N'), cell('♙', 'P'),
+                    cell('♚', 'k'), cell('♛', 'q'), cell('♜', 'r'),
+                    cell('♝', 'b'), cell('♞', 'n'), cell('♟', 'p'),
+                    cell('Пусто', '.'), // удалить
+                  ]),
+              const SizedBox(height: 8),
+            ]),
+          ),
+        );
+      },
+    );
+
+    if (choice == null) return;
+    setState(() => _editBoard[ri][fi] = choice);
+  }
+}
+
+// ---------- Small models / widgets ----------
+class _ChatMsg {
+  _ChatMsg({required this.from, required this.text, required this.mine});
+  final String from;
+  final String text;
+  final bool mine;
+}
+
+class _PromptDialog extends StatefulWidget {
+  const _PromptDialog({required this.title, required this.label});
+  final String title;
+  final String label;
+  @override
+  State<_PromptDialog> createState() => _PromptDialogState();
+}
+
+class _PromptDialogState extends State<_PromptDialog> {
+  final ctl = TextEditingController();
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+          controller: ctl,
+          decoration: InputDecoration(labelText: widget.label)),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, ctl.text.trim()),
+            child: const Text('OK')),
+      ],
+    );
+  }
+}
+
+// ---- Time control dialog ----
+class _TcChoice {
+  _TcChoice(
+      {required this.minutes, required this.increment, required this.rated});
+  final int minutes;
+  final int increment;
+  final bool rated;
+}
+
+class _TcDialog extends StatefulWidget {
+  const _TcDialog({
+    required this.initialMinutes,
+    required this.initialIncrement,
+    required this.initialRated,
+  });
+  final int initialMinutes;
+  final int initialIncrement;
+  final bool initialRated;
+
+  @override
+  State<_TcDialog> createState() => _TcDialogState();
+}
+
+class _TcDialogState extends State<_TcDialog> {
+  late int minutes = widget.initialMinutes;
+  late int inc = widget.initialIncrement;
+  late bool rated = widget.initialRated;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Сменить контроль'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(children: [
+            const Text('Минуты:'),
+            const SizedBox(width: 8),
+            DropdownButton<int>(
+              value: minutes,
+              items: const [1, 2, 3, 5, 10, 15, 30]
+                  .map((m) => DropdownMenuItem(value: m, child: Text('$m')))
+                  .toList(),
+              onChanged: (v) => setState(() => minutes = v ?? minutes),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            const Text('Инкремент:'),
+            const SizedBox(width: 8),
+            DropdownButton<int>(
+              value: inc,
+              items: const [0, 1, 2, 3, 5, 10]
+                  .map((s) => DropdownMenuItem(value: s, child: Text('+$s')))
+                  .toList(),
+              onChanged: (v) => setState(() => inc = v ?? inc),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Text('Рейтинговая:'),
+              const SizedBox(width: 8),
+              Switch(value: rated, onChanged: (v) => setState(() => rated = v)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text('Смена контроля сбрасывает часы обоих игроков.',
+              style: TextStyle(fontSize: 12, color: Colors.black54)),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context,
+                _TcChoice(minutes: minutes, increment: inc, rated: rated)),
+            child: const Text('Применить')),
+      ],
+    );
+  }
+}
+
+// ---- Move list panel ----
+class _MoveListPanel extends StatelessWidget {
+  const _MoveListPanel({
+    required this.san,
+    required this.currentPly,
+    required this.controller,
+    required this.onCopyPGN,
+    required this.onClear,
+    this.width,
+    this.height,
+    Key? key,
+  }) : super(key: key);
+
+  final List<String> san;
+  final int currentPly;
+  final ScrollController controller;
+  final VoidCallback onCopyPGN;
+  final VoidCallback onClear;
+  final double? width;
+  final double? height;
+
+  @override
+  Widget build(BuildContext context) {
+    final rowsCount = (san.length / 2.0).ceil();
+    final w = width ?? 300;
+    final h = height ?? 480;
+    return SizedBox(
+      width: w,
+      height: h,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFFDFCF9),
+          border: Border.all(color: const Color(0xFF333333), width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Moves',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Scrollbar(
+                  controller: controller,
+                  child: ListView.builder(
+                    controller: controller,
+                    itemCount: rowsCount,
+                    itemBuilder: (_, i) {
+                      final moveNo = i + 1;
+                      final whiteIndex = i * 2;
+                      final blackIndex = whiteIndex + 1;
+
+                      final whiteShown = whiteIndex < currentPly;
+                      final blackShown = blackIndex < currentPly;
+
+                      final white = whiteIndex < san.length && whiteShown
+                          ? san[whiteIndex]
+                          : '';
+                      final black = blackIndex < san.length && blackShown
+                          ? san[blackIndex]
+                          : '';
+
+                      final isFutureRow = whiteIndex >= currentPly;
+                      final style = TextStyle(
+                          color: isFutureRow
+                              ? Colors.black.withOpacity(0.45)
+                              : Colors.black);
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                            '$moveNo. $white ${black.isEmpty ? '' : black}',
+                            style: style),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                        onPressed: san.isEmpty ? null : onCopyPGN,
+                        child: const Text('Скопировать PGN')),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                      tooltip: 'Очистить',
+                      onPressed: san.isEmpty ? null : onClear,
+                      icon: const Icon(Icons.delete_outline)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- Lobby UI ----------
+// ---------- Lobby UI ----------
+class _LobbyPanel extends StatelessWidget {
+  const _LobbyPanel({
+    required this.isLoggedIn,
+    required this.inLobby,
+    required this.online,
+    required this.onEnterLobby,
+    required this.onLeaveLobby,
+    required this.onInvite,
+    this.myId,
+    required this.myRating,
+    Key? key,
+  }) : super(key: key);
+
+  final bool isLoggedIn;
+  final bool inLobby;
+  final List<Map<String, String>> online;
+  final Future<void> Function() onEnterLobby;
+  final Future<void> Function() onLeaveLobby;
+  final void Function(String id, String name) onInvite;
+
+  // ← добавили
+  final String? myId;
+  final int myRating;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 300,
+      height: 480,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFFDFCF9),
+          border: Border.all(color: const Color(0xFF333333), width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                      child: Text('Лобби',
+                          style: TextStyle(fontWeight: FontWeight.w600))),
+                  if (!inLobby)
+                    FilledButton.tonal(
+                        onPressed: isLoggedIn ? onEnterLobby : null,
+                        child: const Text('Войти'))
+                  else
+                    OutlinedButton(
+                        onPressed: onLeaveLobby, child: const Text('Выйти')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: (inLobby)
+                    ? (online.isEmpty
+                        ? const Center(child: Text('Онлайн никого 😴'))
+                        : ListView.separated(
+                            itemCount: online.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 8),
+                            itemBuilder: (_, i) {
+                              final u = online[i];
+                              final bool isMe = (u['id'] == myId);
+
+                              final String title = isMe
+                                  ? '${u['username'] ?? 'player'} (вы)'
+                                  : (u['username'] ?? 'player');
+
+// если это мы — берём рейтинг из стейта (_myRating), иначе из лобби
+                              final String subtitle =
+                                  'Рейт: ${isMe ? myRating : (u['rating'] ?? '—')}';
+
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.person),
+                                title: Text(title),
+                                subtitle: Text(
+                                  subtitle,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                trailing: FilledButton(
+                                  onPressed: isMe
+                                      ? null
+                                      : () => onInvite(
+                                          u['id']!, u['username'] ?? 'player'),
+                                  child: const Text('Вызвать'),
+                                ),
+                              );
+                            },
+                          ))
+                    : const Center(
+                        child: Text('Войдите в лобби, чтобы видеть игроков')),
+              ),
+              const SizedBox(height: 8),
+              Text('Онлайн: ${inLobby ? online.length : 0}',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- AUTH UI widgets ----------
+class _AuthButton extends StatelessWidget {
+  final String? nickname;
+  final bool isLoggedIn;
+  final VoidCallback onTap;
+  final Future<void> Function() onLogout;
+
+  const _AuthButton(
+      {required this.nickname,
+      required this.isLoggedIn,
+      required this.onTap,
+      required this.onLogout});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isLoggedIn) {
+      return FilledButton.tonal(
+          onPressed: onTap, child: const Text('Вход / Регистрация'));
+    }
+    return PopupMenuButton<String>(
+      tooltip: 'Аккаунт',
+      onSelected: (v) async {
+        if (v == 'logout') await onLogout();
+      },
+      itemBuilder: (ctx) => [
+        PopupMenuItem<String>(
+            value: 'nick', enabled: false, child: Text(nickname ?? 'player')),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(value: 'logout', child: Text('Выйти')),
+      ],
+      child: Chip(
+          avatar: const Icon(Icons.person, size: 18),
+          label: Text(nickname ?? 'Аккаунт')),
+    );
+  }
+}
+
+class _AuthPanel extends StatelessWidget {
+  final bool isLogin;
+  final TextEditingController passCtl;
+  final TextEditingController nickCtl;
+  final String? authError;
+  final VoidCallback onClose;
+  final VoidCallback onToggleMode;
+  final Future<void> Function() onSubmit;
+
+  const _AuthPanel({
+    required this.isLogin,
+    required this.passCtl,
+    required this.nickCtl,
+    required this.authError,
+    required this.onClose,
+    required this.onToggleMode,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = ConstrainedBox(
+      constraints: const BoxConstraints.tightFor(width: 360),
+      child: Material(
+        elevation: 8,
+        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.surface,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                      child: Text('Вход / Регистрация',
+                          style: Theme.of(context).textTheme.titleMedium)),
+                  IconButton(
+                      onPressed: onClose,
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Закрыть'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                  controller: nickCtl,
+                  decoration: const InputDecoration(
+                      labelText: 'Ник (a-z, 0-9, _)',
+                      border: OutlineInputBorder())),
+              const SizedBox(height: 8),
+              TextField(
+                  controller: passCtl,
+                  decoration: const InputDecoration(
+                      labelText: 'Пароль (≥ 6 символов)',
+                      border: OutlineInputBorder()),
+                  obscureText: true),
+              const SizedBox(height: 8),
+              if (authError != null)
+                Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(authError!,
+                        style: const TextStyle(color: Colors.red))),
+              FilledButton(
+                  onPressed: onSubmit,
+                  child: Text(isLogin ? 'Войти' : 'Зарегистрироваться')),
+              TextButton(
+                  onPressed: onToggleMode,
+                  child: Text(
+                      isLogin ? 'Нет аккаунта?' : 'У меня уже есть аккаунт')),
+              const SizedBox(height: 4),
+              const Text(
+                  'Вход по нику, e-mail не требуется (Confirm email = OFF).',
+                  style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    return Stack(
+      alignment: Alignment.topRight,
+      children: [
+        IgnorePointer(
+          ignoring: true,
+          child: Container(
+            width: 380,
+            height: 260,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.12),
+                    blurRadius: 12,
+                    spreadRadius: 2)
+              ],
+            ),
+          ),
+        ),
+        card,
+      ],
+    );
+  }
+}

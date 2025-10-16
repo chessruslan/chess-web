@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:chess/chess.dart' as ch;
-import 'stockfish_service.dart';
 
 class ChessBoard extends StatefulWidget {
   const ChessBoard({super.key});
@@ -10,10 +9,98 @@ class ChessBoard extends StatefulWidget {
 }
 
 class _ChessBoardState extends State<ChessBoard> {
+  // --------- состояние партии ----------
   final ch.Chess game = ch.Chess();
   String? selectedSquare;
   final List<String> moveHistory = [];
 
+  // ===== ХЕЛПЕР ДЛЯ ПЛОТНЫХ "ПИЛЮЛЬ" =====
+  ButtonStyle _pillStyle(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return ButtonStyle(
+      backgroundColor: WidgetStateProperty.resolveWith(
+        (s) => s.contains(WidgetState.disabled)
+            ? cs.primary.withOpacity(0.5)
+            : cs.primary,
+      ),
+      foregroundColor: WidgetStatePropertyAll(cs.onPrimary),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      ),
+      shape: const WidgetStatePropertyAll(StadiumBorder()),
+      elevation: const WidgetStatePropertyAll(0),
+    );
+  }
+
+  Widget _pill(String label, IconData icon, VoidCallback? onPressed) {
+    return FilledButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: _pillStyle(context),
+    );
+  }
+
+  // ---------- PROMOTION DIALOG ----------
+  Future<String?> _pickPromotionPiece(BuildContext context) {
+    Widget btn(String label, String code, String glyph) {
+      return InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.of(context, rootNavigator: true).pop(code),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(glyph, style: const TextStyle(fontSize: 28)),
+              const SizedBox(height: 6),
+              Text(label, style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: true,
+      useRootNavigator: true,
+      builder: (dialogCtx) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Выберите фигуру для превращения',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  btn('Ферзь', 'q', '♛'),
+                  btn('Ладья', 'r', '♜'),
+                  btn('Слон', 'b', '♝'),
+                  btn('Конь', 'n', '♞'),
+                ],
+              ),
+              const SizedBox(height: 6),
+              TextButton(
+                onPressed: () =>
+                    Navigator.of(dialogCtx, rootNavigator: true).pop(null),
+                child: const Text('Отмена'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------- базовые действия ----------
   void undoMove() {
     if (moveHistory.isNotEmpty) {
       setState(() {
@@ -23,33 +110,60 @@ class _ChessBoardState extends State<ChessBoard> {
     }
   }
 
-  void onTapSquare(String square) async {
+  Future<void> onTapSquare(String square) async {
     if (selectedSquare == null) {
-      setState(() {
-        selectedSquare = square;
-      });
-    } else {
-      final move = {'from': selectedSquare!, 'to': square};
+      setState(() => selectedSquare = square);
+      return;
+    }
 
-      final legalMoves = game.moves({'square': selectedSquare!});
-      if (legalMoves.any((m) => m.contains(square))) {
-        moveHistory.add(game.fen);
-        game.move(move);
+    final from = selectedSquare!;
+    final to = square;
 
-        setState(() {
-          selectedSquare = null;
-        });
+    // Проверка легальности хода
+    final legalMoves = game.moves({'square': from});
+    if (!legalMoves.any((m) => m.contains(to))) {
+      setState(() => selectedSquare = null);
+      return;
+    }
 
-        final bestMove = await getBestMove(game.fen);
-        game.move(bestMove);
+    // Поддержка промо
+    final piece = game.get(from);
+    final bool isPawn = piece?.type == ch.PieceType.PAWN;
+    final bool isWhite = piece?.color == ch.Color.WHITE;
+    final int rankTo = int.tryParse(to.substring(1, 2)) ?? 0;
+    final bool willPromote =
+        isPawn && ((isWhite && rankTo == 8) || (!isWhite && rankTo == 1));
 
-        setState(() {});
-      } else {
-        setState(() {
-          selectedSquare = null;
-        });
+    String? promo;
+    if (willPromote) {
+      promo = await _pickPromotionPiece(context);
+      if (promo == null) {
+        setState(() => selectedSquare = null);
+        return;
       }
     }
+
+    // Сохраняем позицию для undo
+    moveHistory.add(game.fen);
+
+    // Ход (с учётом промо)
+    final move = <String, dynamic>{
+      'from': from,
+      'to': to,
+      if (promo != null) 'promotion': promo,
+    };
+
+    final result = game.move(move);
+    if (result == null || result == false) {
+      if (moveHistory.isNotEmpty) moveHistory.removeLast();
+      setState(() => selectedSquare = null);
+      return;
+    }
+
+    setState(() => selectedSquare = null);
+
+    // Здесь можно вызывать движок, если нужно.
+    // Я оставил пусто, чтобы файл собирался без внешних импортов.
   }
 
   Widget buildSquare(int index) {
@@ -99,11 +213,23 @@ class _ChessBoardState extends State<ChessBoard> {
             ),
           ),
         ),
-        const SizedBox(height: 10),
-        ElevatedButton(
-          onPressed: undoMove,
-          child: const Text('Undo'),
+        const SizedBox(height: 12),
+
+        // ===== КНОПКИ-ПИЛЮЛИ ПОД ДОСКОЙ (НЕПРОЗРАЧНЫЕ) =====
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _pill('Сдаться', Icons.flag, undoMove),               // пример
+            _pill('Предложить ничью', Icons.handshake, () {}),    // TODO: подставь свои обработчики
+            _pill('Взять лучший ход', Icons.auto_awesome, () {}),
+            _pill('Объяснить позицию', Icons.psychology, () {}),
+            _pill('Ввести FEN', Icons.input, () {}),
+            _pill('Stockfish Analysis', Icons.bolt, () {}),
+            _pill('Редактор', Icons.edit, () {}),
+          ],
         ),
+
         const SizedBox(height: 20),
       ],
     );

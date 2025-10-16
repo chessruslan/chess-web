@@ -1,0 +1,389 @@
+// ========================= STATE / UI =========================
+class _MyHomePageState extends State<MyHomePage> {
+  // ---- chess core ----
+  final TextEditingController _fenController = TextEditingController(
+    text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+  );
+
+  Future<Map<String, int>> _loadProfileStats(String uid) async {
+    final supa = Supabase.instance.client;
+    final row = await supa
+        .from('profiles')
+        .select('rating, games_played')
+        .eq('id', uid)
+        .maybeSingle();
+
+    final rating = (row?['rating'] as int?) ?? 1200;
+    final games = (row?['games_played'] as int?) ?? 0;
+    return {'rating': rating, 'games_played': games};
+  }
+
+  // уникальный ID текущей вкладки/клиента (для защиты от эха)
+  final String _clientId = const Uuid().v4();
+
+  final ch.Chess game = ch.Chess();
+  String? _result;
+  bool _loading = false;
+
+  // engine
+  bool _vsEngine = false;
+  bool _engineThinking = false;
+  ch.Color _humanColor = ch.Color.WHITE;
+  bool get _isFlipped => _humanColor == ch.Color.BLACK;
+
+  // history
+  final List<String> _sanMoves = [];
+  final List<String> _fens = [];
+  int _plyIndex = 0;
+
+  // tap-to-move
+  String? _selectedSquare;
+  Set<String> _legalTargets = {};
+  Set<String> _captureTargets = {};
+  final ScrollController _movesScroll = ScrollController();
+
+  // board scale
+  static const double _baseAt100 = 480.0;
+  static const double _minPercent = 50.0;
+  static const double _maxPercent = 200.0;
+  static const double _stepPercent = 10.0;
+  double _boardPercent = 100.0;
+
+  void _saveBoardPercent() {
+    try {
+      html.window.localStorage['board_percent'] =
+          _boardPercent.toStringAsFixed(0);
+    } catch (_) {}
+  }
+
+  void _setBoardPercent(double p) {
+    setState(() {
+      _boardPercent = p.clamp(_minPercent, _maxPercent);
+    });
+    _saveBoardPercent();
+  }
+
+  void _changeBoardPercent(double delta) {
+    _setBoardPercent(_boardPercent + delta);
+  }
+
+  void _resetBoardPercent() {
+    _setBoardPercent(100.0);
+  }
+
+  // audio
+  final AudioPlayer _player = AudioPlayer();
+
+  // auth panel
+  bool _authOpen = false;
+  bool _authIsLogin = true;
+  final _passCtl = TextEditingController();
+  final _nickCtl = TextEditingController();
+  String? _authError;
+  String? _nickname;
+
+  // realtime
+  LobbyService? _lobby;
+  RoomService? _room;
+  String? _roomId;
+  String? _opponentId;
+  String? _opponentName;
+  bool get _inRoom => _roomId != null;
+  bool _isSpectator = false;
+
+  // room chat
+  final List<_ChatMsg> _chat = [];
+  final TextEditingController _chatCtl = TextEditingController();
+
+  // draw/resign/rematch state
+  bool _drawOfferedByMe = false;
+  bool _drawOfferedToMe = false;
+  bool _rematchOfferedByMe = false;
+  bool _rematchOfferedToMe = false;
+  bool _gameTerminated = false;
+
+  // time control
+  int _tcMinutes = 5;
+  int _tcIncrement = 3;
+  int _whiteMs = 0;
+  int _blackMs = 0;
+  Timer? _tick;
+  DateTime? _lastTickAt;
+  DateTime? _lastClockCastAt;
+  bool _rated = true;
+  bool _matchRated = true;
+  bool _clocksStarted = false;
+
+  bool get _iAmClockAuthority =>
+      _inRoom && !_isSpectator && (game.turn == _humanColor);
+
+  // ratings
+  int _myRating = 1200;
+  int _oppRating = 1200;
+  int _myGames = 0;
+  int _oppGames = 0;
+
+  // autorc
+  static const _LS_ROOM = 'room_restore';
+
+  // ----------------- Режим редактора доски -----------------
+  bool _editMode = false;
+  late List<List<String>> _editBoard; // 8x8, символы FEN: 'K','q','.'
+  ch.Color _editTurn = ch.Color.WHITE;
+  bool _castleK = true, _castleQ = true, _castlek = true, _castleq = true;
+  String? _dragFromSquare; // например 'e2' — источник перетаскивания в редакторе
+
+  @override
+  void initState() {
+    super.initState();
+
+    try {
+      final s = html.window.localStorage['board_percent'];
+      if (s != null) {
+        final p = double.tryParse(s);
+        if (p != null) {
+          _boardPercent = p.clamp(_minPercent, _maxPercent);
+        }
+      }
+    } catch (_) {}
+
+    _fens.add(game.fen);
+    _plyIndex = 0;
+    _loadNickname().then((_) => _tryRestoreRoom());
+
+    // инициализация матрицы для редактора
+    _editBoard = _fenToBoard(game.fen);
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    _movesScroll.dispose();
+    _chatCtl.dispose();
+    _stopTick();
+    _room?.disconnect();
+    _lobby?.disconnect();
+    super.dispose();
+  }
+
+  // ================== helpers & services ==================
+  String _opposite(String c) => c.toLowerCase() == 'white' ? 'black' : 'white';
+
+  Future<void> _playSound({required bool capture}) async {
+    try {
+      final name = capture ? 'sfx/capture.mp3' : 'sfx/move.mp3';
+      await _player.play(AssetSource(name));
+    } catch (_) {}
+  }
+
+  String _assetFor(String code) => 'assets/pieces/cburnett/$code.svg';
+  String _codeFor(ch.Piece p) {
+    final c = p.color == ch.Color.WHITE ? 'w' : 'b';
+    switch (p.type) {
+      case ch.PieceType.PAWN:
+        return '${c}P';
+      case ch.PieceType.KNIGHT:
+        return '${c}N';
+      case ch.PieceType.BISHOP:
+        return '${c}B';
+      case ch.PieceType.ROOK:
+        return '${c}R';
+      case ch.PieceType.QUEEN:
+        return '${c}Q';
+      case ch.PieceType.KING:
+        return '${c}K';
+      default:
+        return '${c}P';
+    }
+  }
+
+  // ============ Auth / profiles (как в твоей рабочей версии) ============
+  String? _validateSupabaseUrl(String url) {
+    final u = url.trim();
+    if (u.isEmpty) return 'supabaseUrl пустой.';
+    final parsed = Uri.tryParse(u);
+    if (parsed == null || !parsed.hasScheme || !u.startsWith('https://')) {
+      return 'supabaseUrl должен начинаться с https://';
+    }
+    if (!u.contains('.supabase.co') && !u.contains('.supabase.in')) {
+      return 'supabaseUrl должен содержать .supabase.co (или .supabase.in).';
+    }
+    return null;
+  }
+
+  String? _validateAnonKey(String key) {
+    final k = key.trim();
+    if (k.isEmpty) return 'supabaseAnonKey пустой.';
+    final parts = k.split('.');
+    if (parts.length < 3) return 'supabaseAnonKey должен быть JWT.';
+    return null;
+  }
+
+  String _diagnoseError(Object e) {
+    final s = e.toString();
+    if (s.contains('XMLHttpRequest') && s.contains('Invalid URL')) {
+      final urlErr = _validateSupabaseUrl(supabaseUrl);
+      final keyErr = _validateAnonKey(supabaseAnonKey);
+      final hints = <String>[
+        'Неверная конфигурация Supabase.',
+        if (urlErr != null) '• $urlErr',
+        if (keyErr != null) '• $keyErr',
+      ];
+      return hints.join('\n');
+    }
+    if (s.contains('AuthApiError') || s.contains('AuthException')) {
+      return 'Ошибка авторизации: ${s.replaceAll(RegExp(r'^(Exception: )?'), '')}';
+    }
+    return s;
+  }
+
+  Future<void> _continueVsEngine() async {
+    if (_inRoom || _isSpectator) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сначала выйдите из онлайна (комнаты)')),
+        );
+      }
+      return;
+    }
+    if (_vsEngine) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Режим против компьютера уже включён')),
+        );
+      }
+      return;
+    }
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+    });
+    if (_plyIndex != _sanMoves.length) {
+      _goEnd();
+    }
+    if (!game.game_over && game.turn != _humanColor) {
+      await _engineMove();
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Режим против компьютера включён')),
+      );
+    }
+  }
+
+  Future<void> _loadNickname() async {
+    final supa = Supabase.instance.client;
+    final uid = supa.auth.currentUser?.id;
+    if (uid == null) {
+      setState(() => _nickname = null);
+      return;
+    }
+    try {
+      final row = await supa
+          .from('profiles')
+          .select('nickname, rating, games_played')
+          .eq('id', uid)
+          .maybeSingle();
+      setState(() {
+        _nickname = (row?['nickname'] as String?) ?? 'player';
+        _myRating = (row?['rating'] as int?) ?? 1200;
+        _myGames = (row?['games_played'] as int?) ?? 0;
+      });
+    } catch (_) {}
+  }
+
+  String _synthEmailFromNick(String nick) =>
+      '${nick.trim().toLowerCase()}@noemail.local';
+  final RegExp _nickRx = RegExp(r'^[a-z0-9_]{3,20}$');
+
+  Future<bool> _isNickAvailable(SupabaseClient supa, String nick) async {
+    final row = await supa
+        .from('profiles')
+        .select('nickname')
+        .ilike('nickname', nick)
+        .maybeSingle();
+    return row == null;
+  }
+
+  Future<void> _signUpWithNick(
+      {required String nickname, required String password}) async {
+    final supa = Supabase.instance.client;
+    final nick = nickname.trim().toLowerCase();
+
+    if (!_nickRx.hasMatch(nick)) {
+      throw AuthException('Ник: 3–20 символов, латиница/цифры/_ .');
+    }
+    if (!await _isNickAvailable(supa, nick)) {
+      throw AuthException('Ник уже занят.');
+    }
+
+    final email = _synthEmailFromNick(nick);
+    final res = await supa.auth.signUp(email: email, password: password);
+    final uid = res.user?.id ?? supa.auth.currentUser?.id;
+    if (uid == null) throw AuthException('Регистрация не завершилась.');
+    await supa.from('profiles').upsert(
+        {'id': uid, 'nickname': nick, 'rating': 1200, 'games_played': 0},
+        onConflict: 'id');
+  }
+
+  Future<void> _signInWithNick(
+      {required String nickname, required String password}) async {
+    final supa = Supabase.instance.client;
+    final email = _synthEmailFromNick(nickname);
+    await supa.auth.signInWithPassword(email: email, password: password);
+  }
+
+  Future<void> _submitAuth() async {
+    setState(() => _authError = null);
+    final uname = _nickCtl.text.trim().toLowerCase();
+    final pass = _passCtl.text;
+
+    final uErr = _validateSupabaseUrl(supabaseUrl);
+    final keyErr = _validateAnonKey(supabaseAnonKey);
+    if (uErr != null || keyErr != null) {
+      final msg = [
+        'Неверная конфигурация Supabase.',
+        if (uErr != null) '• $uErr',
+        if (keyErr != null) '• $keyErr',
+      ].join('\n');
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      return;
+    }
+    if (pass.length < 6) {
+      setState(() => _authError = 'Пароль должен быть минимум 6 символов');
+      return;
+    }
+
+    try {
+      if (_authIsLogin) {
+        await _signInWithNick(nickname: uname, password: pass);
+      } else {
+        await _signUpWithNick(nickname: uname, password: pass);
+        await _signInWithNick(nickname: uname, password: pass);
+      }
+      await _loadNickname();
+      if (mounted) setState(() => _authOpen = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  _authIsLogin ? 'Вход выполнен' : 'Регистрация выполнена')),
+        );
+      }
+    } on AuthException catch (e) {
+      final msg = _diagnoseError(e);
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      final msg = _diagnoseError(e);
+      setState(() => _authError = msg);
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }

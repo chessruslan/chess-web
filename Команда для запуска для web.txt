@@ -1,0 +1,2 @@
+flutter build web --release --web-renderer canvaskit
+cd "C:\3_3_3_s_my_new_chess_app"

@@ -1,0 +1,39 @@
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'TwinChess',
+      debugShowCheckedModeBanner: false,
+
+      // ВАЖНО: любой путь ('/' или '/play') отдаём одному и тому же Shell.
+      onGenerateRoute: (settings) {
+        final initialPath = settings.name ?? '/';
+        return MaterialPageRoute(
+          builder: (_) => AppShell(
+            initialPath: initialPath, // стартовая вкладка для внутреннего Navigator
+            playBuilder: (key) => MyHomePage(key: key, title: 'Chess Online'),
+          ),
+          settings: settings,
+        );
+      },
+    );
+  }
+}
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'TwinChess',
+      debugShowCheckedModeBanner: false,
+
+      // ВАЖНО: передаём фабрику экрана игры
+      home: AppShell(
+        playBuilder: (key) => MyHomePage(key: key, title: 'Chess Online'),
+      ),
+    );
+  }
+}
