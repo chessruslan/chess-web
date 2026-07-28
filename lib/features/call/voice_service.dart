@@ -18,19 +18,28 @@ class VoiceService {
   Object? _readySub;
 
   String? _roomId;
+  bool _mediaReady = false;
+  bool? _preparedAudioOnly;
 
   // ICE буфер до remoteDescription
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
+  final List<Map<String, dynamic>> _localIceCandidates = [];
 
   RTCVideoRenderer get localRenderer => _rtc.localRenderer;
   RTCVideoRenderer get remoteRenderer => _rtc.remoteRenderer;
 
   Future<void> init({required bool audioOnly}) async {
+    // An audio-only local stream can still participate in a video call and
+    // receive the other participant's video.
+    if (_mediaReady) return;
     await _rtc.initRenderers();
     await _rtc.getUserMedia(video: !audioOnly);
+    _mediaReady = true;
+    _preparedAudioOnly = audioOnly;
   }
 
   Future<void> _createPeer() async {
+    _localIceCandidates.clear();
     await _rtc.createPeer(
       onLocalIce: (_) {},
       onRemoteStream: (MediaStream stream) {
@@ -45,13 +54,15 @@ class VoiceService {
     pc.onIceCandidate = (RTCIceCandidate c) async {
       final rid = _roomId;
       if (rid == null || c.candidate == null) return;
+      final candidate = <String, dynamic>{
+        'candidate': c.candidate,
+        'sdpMid': c.sdpMid,
+        'sdpMLineIndex': c.sdpMLineIndex,
+      };
+      _localIceCandidates.add(candidate);
       await _sig.sendIce(
         roomId: rid,
-        candidate: {
-          'candidate': c.candidate,
-          'sdpMid': c.sdpMid,
-          'sdpMLineIndex': c.sdpMLineIndex,
-        },
+        candidate: candidate,
       );
     };
 
@@ -128,11 +139,19 @@ class VoiceService {
     _readySub ??= _sig.onReady(_roomId!, () async {
       final hasRemote = await _rtc.pc?.getRemoteDescription() != null;
       if (!hasRemote) {
-        final offer2 = await _rtc.createOffer(wantVideo: !audioOnly);
-        await _sig.sendOffer(roomId: _roomId!, sdp: offer2.sdp ?? '');
+        final existing = await _rtc.pc?.getLocalDescription();
+        final offerSdp = existing?.sdp;
+        if (offerSdp != null && offerSdp.isNotEmpty) {
+          await _sig.sendOffer(roomId: _roomId!, sdp: offerSdp);
+          for (final candidate in _localIceCandidates) {
+            await _sig.sendIce(roomId: _roomId!, candidate: candidate);
+          }
+        }
         if (kDebugMode) print('[SIG] resent offer on ready');
       }
     });
+
+    await Future.delayed(const Duration(milliseconds: 700));
 
     // первый оффер
     final offer = await _rtc.createOffer(wantVideo: !audioOnly);
@@ -176,7 +195,11 @@ class VoiceService {
       } catch (_) {}
     });
 
-    await _sig.sendReady(roomId: _roomId!);
+    await Future.delayed(const Duration(milliseconds: 700));
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await _sig.sendReady(roomId: _roomId!);
+      await Future.delayed(const Duration(milliseconds: 600));
+    }
   }
 
   Future<void> setMicEnabled(bool enabled) => _rtc.setMicEnabled(enabled);
@@ -194,20 +217,18 @@ class VoiceService {
   }
 
   Future<void> hangup() async {
-    await _cancel(_offerSub);
-    await _cancel(_answerSub);
-    await _cancel(_iceSub);
-    await _cancel(_readySub);
-
     _offerSub = null;
     _answerSub = null;
     _iceSub = null;
     _readySub = null;
 
     _pendingRemoteCandidates.clear();
+    _localIceCandidates.clear();
 
     await _sig.leaveRoom(_roomId ?? '');
     await _rtc.dispose();
+    _mediaReady = false;
+    _preparedAudioOnly = null;
     connected.value = false;
   }
 

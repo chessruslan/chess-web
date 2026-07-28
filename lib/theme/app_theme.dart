@@ -1,142 +1,122 @@
 import 'package:flutter/material.dart';
 
-/// === Единая палитра для всех кнопок и UI ===
-class AppColors {
-  static const Color buttonBg = Color(0xFF6C63FF);
-  static const Color buttonFg = Colors.white;
+/// Палитра, которую можно менять из меню "Настройки".
+class AppPalette {
+  final Color bg; // фон страниц
+  final Color card; // карточки/панели
+  final Color primary; // основные кнопки
+  final Color accent; // акцентные элементы (иконки/выделения)
+  final Color text; // основной текст
+  final Color subtext; // вторичный текст
 
-  static const Color buttonHover = Color(0xFF5B54D9);
-  static const Color buttonPressed = Color(0xFF4A45B5);
+  const AppPalette({
+    required this.bg,
+    required this.card,
+    required this.primary,
+    required this.accent,
+    required this.text,
+    required this.subtext,
+  });
 
-  static const Color buttonDisabledBg = Color(0xFFE9E6F5);
-  static const Color buttonDisabledFg = Color(0xFF9A98A6);
-
-  static const Color outline = Color(0xFFD5CFF0);
-  static const Color textButtonBg = Color(0xFFF3F0FF);
+  AppPalette copyWith({
+    Color? bg,
+    Color? card,
+    Color? primary,
+    Color? accent,
+    Color? text,
+    Color? subtext,
+  }) {
+    return AppPalette(
+      bg: bg ?? this.bg,
+      card: card ?? this.card,
+      primary: primary ?? this.primary,
+      accent: accent ?? this.accent,
+      text: text ?? this.text,
+      subtext: subtext ?? this.subtext,
+    );
+  }
 }
 
-/// === Главная тема приложения ===
-class AppTheme {
-  static ThemeData get light {
-    final base = ThemeData(
+/// Контроллер темы (подключается к Settings и дергает notifyListeners()).
+class AppTheme extends ChangeNotifier {
+  AppPalette _palette = const AppPalette(
+    bg: Color(0xFFF4ECF7), // мягкий светлый фон
+    card: Color(0xFFFFFFFF), // белые карточки
+    primary: Color(0xFF7352C7), // фиолетовая кнопка
+    accent: Color(0xFFE39A5B), // тёплый акцент (оранжево-терракотовый)
+    text: Color(0xFF221A2D), // почти-чёрный текст
+    subtext: Color(0xFF7B6E8C), // мягкий серо-фиолетовый
+  );
+
+  AppPalette get palette => _palette;
+
+  void updatePalette(AppPalette p) {
+    _palette = p;
+    notifyListeners();
+  }
+
+  /// Превращаем палитру в ThemeData.
+  ThemeData toThemeData() {
+    final cs = ColorScheme.fromSeed(
+      seedColor: _palette.primary,
+      background: _palette.bg,
+      brightness: Brightness.light,
+      primary: _palette.primary,
+      secondary: _palette.accent,
+      surface: _palette.card,
+      onSurface: _palette.text,
+      onPrimary: Colors.white,
+      onSecondary: Colors.white,
+    );
+
+    return ThemeData(
+      colorScheme: cs,
+      scaffoldBackgroundColor: _palette.bg,
       useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: AppColors.buttonBg,
-        brightness: Brightness.light,
+      textTheme: Typography.blackMountainView.apply(
+        bodyColor: _palette.text,
+        displayColor: _palette.text,
       ),
-    );
-
-    final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(14),
-    );
-
-    // Универсальные функции для состояний
-    Color _resolveBg(Set<WidgetState> s, Color baseColor) {
-      if (s.contains(WidgetState.disabled)) return AppColors.buttonDisabledBg;
-      if (s.contains(WidgetState.pressed)) return AppColors.buttonPressed;
-      if (s.contains(WidgetState.hovered) || s.contains(WidgetState.focused)) {
-        return AppColors.buttonHover;
-      }
-      return baseColor;
-    }
-
-    Color _resolveFg(Set<WidgetState> s, Color baseColor) {
-      if (s.contains(WidgetState.disabled)) return AppColors.buttonDisabledFg;
-      return baseColor;
-    }
-
-    return base.copyWith(
-      // ===== TextButton (плоские кнопки, вкладки меню и т.п.) =====
-      textButtonTheme: TextButtonThemeData(
-        style: ButtonStyle(
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveBg(s, AppColors.textButtonBg),
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveFg(s, Colors.black87),
-          ),
-          overlayColor: const WidgetStatePropertyAll(Colors.black12),
-          padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          ),
-          shape: WidgetStatePropertyAll(shape),
-        ),
+      appBarTheme: AppBarTheme(
+        backgroundColor: _palette.bg,
+        foregroundColor: _palette.text,
+        elevation: 0,
       ),
-
-      // ===== FilledButton (основные фиолетовые) =====
       filledButtonTheme: FilledButtonThemeData(
-        style: ButtonStyle(
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveBg(s, AppColors.buttonBg),
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveFg(s, AppColors.buttonFg),
-          ),
-          padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-          shape: WidgetStatePropertyAll(shape),
-          elevation: const WidgetStatePropertyAll(0),
+        style: FilledButton.styleFrom(
+          backgroundColor: _palette.primary,
+          foregroundColor: Colors.white,
+          shape: const StadiumBorder(),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         ),
       ),
-
-      // ===== ElevatedButton (если где-то используется) =====
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ButtonStyle(
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveBg(s, AppColors.buttonBg),
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveFg(s, AppColors.buttonFg),
-          ),
-          padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-          shape: WidgetStatePropertyAll(shape),
-          elevation: const WidgetStatePropertyAll(2),
-          shadowColor: const WidgetStatePropertyAll(Colors.black26),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: _palette.card,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _palette.subtext.withOpacity(.25)),
         ),
-      ),
-
-      // ===== OutlinedButton (контурные кнопки / “пилюли”) =====
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: ButtonStyle(
-          side: const WidgetStatePropertyAll(
-            BorderSide(color: AppColors.outline),
-          ),
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveBg(s, Colors.white),
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (s) => _resolveFg(s, Colors.black87),
-          ),
-          overlayColor: const WidgetStatePropertyAll(Colors.black12),
-          padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-          shape: WidgetStatePropertyAll(shape),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _palette.subtext.withOpacity(.25)),
         ),
-      ),
-
-      // ===== IconButton (чтобы не был прозрачным) =====
-      iconButtonTheme: IconButtonThemeData(
-        style: ButtonStyle(
-          backgroundColor: const WidgetStatePropertyAll(Colors.white),
-          overlayColor: const WidgetStatePropertyAll(Colors.black12),
-          shape: WidgetStatePropertyAll(shape),
-          padding: const WidgetStatePropertyAll(EdgeInsets.all(8)),
-          foregroundColor: const WidgetStatePropertyAll(Colors.black87),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _palette.accent, width: 1.6),
         ),
+        labelStyle: TextStyle(color: _palette.subtext),
       ),
-
-      // ===== Chips =====
-      chipTheme: base.chipTheme.copyWith(
-        backgroundColor: AppColors.textButtonBg,
-        selectedColor: AppColors.buttonBg,
-        labelStyle: const TextStyle(color: Colors.black87),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        shape: shape,
+      cardTheme: CardThemeData(
+        color: _palette.card,
+        elevation: 1,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
+      dividerColor: _palette.subtext.withOpacity(.2),
+      iconTheme: IconThemeData(color: _palette.accent),
     );
   }
 }

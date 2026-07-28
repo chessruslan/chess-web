@@ -7,7 +7,7 @@ class GptExplainService {
   /// ПРОСТОЙ ВАРИАНТ БЕЗ JWT:
   /// используем .functions.supabase.co (Verify JWT в Supabase выключен).
   static const String _endpoint =
-      'https://chmebxirnmqgvdpwskhw.functions.supabase.co/gpt-explain';
+      'https://api.111-88-227-25.sslip.io/functions/v1/gpt-explain';
 
   /// Таймаут сети
   static const Duration _timeout = Duration(seconds: 30);

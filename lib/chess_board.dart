@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:chess/chess.dart' as ch;
 
+import 'ui/app_controls.dart';
+
 class ChessBoard extends StatefulWidget {
   const ChessBoard({super.key});
 
@@ -16,20 +18,7 @@ class _ChessBoardState extends State<ChessBoard> {
 
   // ===== ХЕЛПЕР ДЛЯ ПЛОТНЫХ "ПИЛЮЛЬ" =====
   ButtonStyle _pillStyle(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return ButtonStyle(
-      backgroundColor: WidgetStateProperty.resolveWith(
-        (s) => s.contains(WidgetState.disabled)
-            ? cs.primary.withOpacity(0.5)
-            : cs.primary,
-      ),
-      foregroundColor: WidgetStatePropertyAll(cs.onPrimary),
-      padding: const WidgetStatePropertyAll(
-        EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      ),
-      shape: const WidgetStatePropertyAll(StadiumBorder()),
-      elevation: const WidgetStatePropertyAll(0),
-    );
+    return AppControls.pillButton();
   }
 
   Widget _pill(String label, IconData icon, VoidCallback? onPressed) {
@@ -220,8 +209,9 @@ class _ChessBoardState extends State<ChessBoard> {
           spacing: 10,
           runSpacing: 10,
           children: [
-            _pill('Сдаться', Icons.flag, undoMove),               // пример
-            _pill('Предложить ничью', Icons.handshake, () {}),    // TODO: подставь свои обработчики
+            _pill('Сдаться', Icons.flag, undoMove), // пример
+            _pill('Предложить ничью', Icons.handshake,
+                () {}), // TODO: подставь свои обработчики
             _pill('Взять лучший ход', Icons.auto_awesome, () {}),
             _pill('Объяснить позицию', Icons.psychology, () {}),
             _pill('Ввести FEN', Icons.input, () {}),

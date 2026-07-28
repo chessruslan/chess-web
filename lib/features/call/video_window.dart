@@ -1,0 +1,176 @@
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+/// Плавающее окно: перетаскивание, сворачивание, ресайз, закрытие.
+class VideoWindow extends StatefulWidget {
+  const VideoWindow({
+    super.key,
+    required this.title,
+    required this.renderer,
+    this.mirror = false,
+    this.initialLeft = 100,
+    this.initialTop = 100,
+    this.initialWidth = 380,
+    this.initialHeight = 240,
+    this.onClose,
+    this.waitingMessage,
+  });
+
+  final String title;
+  final RTCVideoRenderer renderer;
+  final bool mirror;
+  final double initialLeft;
+  final double initialTop;
+  final double initialWidth;
+  final double initialHeight;
+  final VoidCallback? onClose;
+  final String? waitingMessage;
+
+  @override
+  State<VideoWindow> createState() => _VideoWindowState();
+}
+
+class _VideoWindowState extends State<VideoWindow> {
+  late double _left = widget.initialLeft;
+  late double _top = widget.initialTop;
+  late double _width = widget.initialWidth;
+  late double _height = widget.initialHeight;
+  bool _minimized = false;
+
+  static const double _minW = 240;
+  static const double _minH = 160;
+  static const double _titleBarH = 32;
+
+  Offset? _dragStart;
+  Size? _dragStartSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Positioned(
+      left: _left,
+      top: _top,
+      width: _width,
+      height: _minimized ? _titleBarH + 8 : _height,
+      child: Material(
+        elevation: 18,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        color: theme.colorScheme.surface.withOpacity(0.95),
+        child: Stack(
+          children: [
+            if (!_minimized)
+              Positioned.fill(
+                top: _titleBarH,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: ColoredBox(
+                    color: Colors.black,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        RTCVideoView(
+                          widget.renderer,
+                          mirror: widget.mirror,
+                          objectFit: RTCVideoViewObjectFit
+                              .RTCVideoViewObjectFitContain,
+                        ),
+                        if (widget.waitingMessage != null)
+                          ColoredBox(
+                            color: Colors.black87,
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const CircularProgressIndicator(),
+                                    const SizedBox(height: 18),
+                                    Text(
+                                      widget.waitingMessage!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            // Тайтлбар (перетаскивание)
+            GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanStart: (d) => _dragStart = d.globalPosition,
+              onPanUpdate: (d) {
+                if (_dragStart == null) return;
+                final delta = d.globalPosition - _dragStart!;
+                setState(() {
+                  _left += delta.dx;
+                  _top += delta.dy;
+                });
+                _dragStart = d.globalPosition;
+              },
+              child: Container(
+                height: _titleBarH,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                color:
+                    theme.colorScheme.surfaceContainerHighest.withOpacity(0.9),
+                child: Row(
+                  children: [
+                    Text(widget.title, style: theme.textTheme.labelLarge),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: _minimized ? 'Развернуть' : 'Свернуть',
+                      icon:
+                          Icon(_minimized ? Icons.crop_square : Icons.minimize),
+                      onPressed: () => setState(() => _minimized = !_minimized),
+                    ),
+                    IconButton(
+                      tooltip: 'Закрыть',
+                      icon: const Icon(Icons.close),
+                      onPressed: widget.onClose,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            // Уголок ресайза
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onPanStart: (d) {
+                  _dragStart = d.globalPosition;
+                  _dragStartSize = Size(_width, _height);
+                },
+                onPanUpdate: (d) {
+                  if (_dragStart == null || _dragStartSize == null) return;
+                  final delta = d.globalPosition - _dragStart!;
+                  setState(() {
+                    _width = max(_minW, _dragStartSize!.width + delta.dx);
+                    _height = max(_minH, _dragStartSize!.height + delta.dy);
+                  });
+                },
+                child: const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Icon(Icons.drag_handle, size: 16),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

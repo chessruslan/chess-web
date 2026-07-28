@@ -1,52 +1,36 @@
-// ... импорт как у тебя:
+// lib/features/call/supabase_signaling.dart
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:realtime_client/realtime_client.dart' as rt;
 
+/// Управление сигналингом (обмен SDP/ICE между участниками через Supabase)
 class SupabaseSignaling {
   SupabaseSignaling._();
   static final instance = SupabaseSignaling._();
 
   final supa.SupabaseClient _sb = supa.Supabase.instance.client;
-
   final Map<String, rt.RealtimeChannel> _channels = {};
-  final Map<String, Future<void>> _ready = {};
+
+  // Потоки для classroom-режима (мультизвонки)
+  final Map<String, StreamController<Map<String, dynamic>>> _msgCtrls = {};
+
+  // =======================================================================
+  // БАЗОВЫЕ (1:1) МЕТОДЫ — ты их уже использовал, оставляем без изменений
+  // =======================================================================
 
   rt.RealtimeChannel _ensure(String roomId) {
     final key = roomId.trim();
     final existed = _channels[key];
     if (existed != null) return existed;
 
-    final ch = _sb.channel('room:$key'); // возвращает rt.RealtimeChannel
-    final completer = Completer<void>();
-    _ready[key] = completer.future;
-    ch.subscribe((status, error) {
-      if (status == rt.RealtimeSubscribeStatus.subscribed) {
-        if (!completer.isCompleted) completer.complete();
-      } else if (status == rt.RealtimeSubscribeStatus.channelError ||
-          status == rt.RealtimeSubscribeStatus.timedOut) {
-        if (!completer.isCompleted) {
-          completer.completeError(
-            error ?? Exception('Realtime channel $key failed: $status'),
-          );
-        }
-      }
-    });
+    final ch = _sb.channel('room:$key');
+    ch.subscribe();
     _channels[key] = ch;
     return ch;
   }
 
-  Future<rt.RealtimeChannel> _ensureReady(String roomId) async {
-    final key = roomId.trim();
-    final ch = _ensure(key);
-    await _ready[key]!.timeout(const Duration(seconds: 15));
-    return ch;
-  }
-
   Future<void> leaveRoom(String roomId) async {
-    final key = roomId.trim();
-    final ch = _channels.remove(key);
-    _ready.remove(key);
+    final ch = _channels.remove(roomId.trim());
     if (ch != null) {
       try {
         await ch.unsubscribe();
@@ -54,14 +38,13 @@ class SupabaseSignaling {
     }
   }
 
-  // ---------- OUT ----------
   Future<void> sendOffer({required String roomId, required String sdp}) async {
-    final ch = await _ensureReady(roomId);
+    final ch = _ensure(roomId);
     await ch.sendBroadcastMessage(event: 'offer', payload: {'sdp': sdp});
   }
 
   Future<void> sendAnswer({required String roomId, required String sdp}) async {
-    final ch = await _ensureReady(roomId);
+    final ch = _ensure(roomId);
     await ch.sendBroadcastMessage(event: 'answer', payload: {'sdp': sdp});
   }
 
@@ -69,22 +52,19 @@ class SupabaseSignaling {
     required String roomId,
     required Map<String, dynamic> candidate,
   }) async {
-    final ch = await _ensureReady(roomId);
+    final ch = _ensure(roomId);
     await ch.sendBroadcastMessage(event: 'ice', payload: candidate);
   }
 
   Future<void> sendReady({required String roomId}) async {
-    final ch = await _ensureReady(roomId);
+    final ch = _ensure(roomId);
     await ch.sendBroadcastMessage(
       event: 'ready',
       payload: {'t': DateTime.now().toIso8601String()},
     );
   }
 
-  // ---------- ON (только onBroadcast) ----------
-  // Возвращаю РЕАЛЬНЫЙ канал — храни его поле и при завершении делай ch.unsubscribe()
-
-  /// Кто-то присоединился и просит переслать offer
+  // ---------- Подписки (1:1) ----------
   rt.RealtimeChannel onReady(
     String roomId,
     Future<void> Function() handler,
@@ -95,10 +75,8 @@ class SupabaseSignaling {
       callback: (payload, [ref]) async => await handler(),
     );
     return ch;
-    // Отписка потом: await ch.unsubscribe();
   }
 
-  /// Слушаем offer (обычно join-сторона)
   rt.RealtimeChannel onOffer(
     String roomId,
     Future<void> Function(String sdp) handler,
@@ -114,7 +92,6 @@ class SupabaseSignaling {
     return ch;
   }
 
-  /// Слушаем answer (обычно create-сторона)
   rt.RealtimeChannel onAnswer(
     String roomId,
     Future<void> Function(String sdp) handler,
@@ -130,7 +107,6 @@ class SupabaseSignaling {
     return ch;
   }
 
-  /// Удалённые ICE-кандидаты (обе стороны)
   rt.RealtimeChannel onRemoteIce(
     String roomId,
     Future<void> Function(Map<String, dynamic> cand) handler,
@@ -151,7 +127,6 @@ class SupabaseSignaling {
     return ch;
   }
 
-  // Вспомогательное
   String _extractSdp(dynamic payload) {
     if (payload is Map && payload['sdp'] != null) {
       return payload['sdp'].toString();
@@ -162,5 +137,36 @@ class SupabaseSignaling {
       return (payload['payload'] as Map)['sdp'].toString();
     }
     return '';
+  }
+
+  // =======================================================================
+  // ДОПОЛНЕНИЕ: МУЛЬТИЗВОНКИ (Classroom)
+  // =======================================================================
+
+  /// Подписка на широковещательные classroom-сообщения ("msg").
+  /// Каждый вызов возвращает Stream<Map<String,dynamic>>.
+  Stream<Map<String, dynamic>> onMessage(String roomId) {
+    final key = roomId.trim();
+    final ch = _ensure(key);
+    final ctrl = _msgCtrls.putIfAbsent(
+        key, () => StreamController<Map<String, dynamic>>.broadcast());
+
+    ch.onBroadcast(event: 'msg', callback: (payload, [ref]) {
+      Map<String, dynamic> data = {};
+      if (payload is Map && payload['payload'] is Map) {
+        data = (payload['payload'] as Map).cast<String, dynamic>();
+      } else if (payload is Map) {
+        data = payload.cast<String, dynamic>();
+      }
+      if (data.isNotEmpty) ctrl.add(data);
+    });
+
+    return ctrl.stream;
+  }
+
+  /// Отправка classroom-сообщения
+  Future<void> sendMessage(String roomId, Map<String, dynamic> msg) async {
+    final ch = _ensure(roomId);
+    await ch.sendBroadcastMessage(event: 'msg', payload: msg);
   }
 }

@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:html' as html;
+import 'platform/web_compat.dart';
 import 'dart:ui' show FontFeature;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -13,7 +13,7 @@ import 'package:http/http.dart' as http;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:chess/chess.dart' as ch;
 import 'services/gpt_explain_service.dart';
-import 'landing_page.dart';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:realtime_client/realtime_client.dart' as rt;
 import 'ui/common_top_bar.dart';
@@ -47,6 +47,43 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:my_new_chess_app/stockfish_service.dart' as sf;
+import 'stockfish_service.dart' as sf;
+import 'dart:convert'; // для JsonEncoder в модалке
+import 'dart:math' as math; // если используется math.exp
+import 'features/call/room_selection.dart'; // путь подстрой, если другой
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'classroom/school_dialog_new.dart';
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'classroom/school_dialog_new.dart';
+import 'classroom/classroom_signaling.dart' as cls;
+import 'classroom/classroom_call_service.dart';
+
+import 'ui/start_modal.dart';
+
+import 'ui/play_layout.dart';
+import 'ui/app_behavior.dart';
+import 'app_root.dart';
+import 'services/lobby_service.dart';
+import 'services/room_service.dart';
+import 'ui/panels/move_list_panel.dart';
+import 'ui/panels/lobby_panel.dart';
+import 'ui/panels/puzzle_types_panel.dart';
+import 'ui/panels/learn_panel.dart';
+import 'ui/panels/puzzle_task.dart';
+import 'ui/panels/puzzle_settings_dialog.dart';
+import 'ui/panels/puzzle_file_saver.dart';
+import 'ui/panels/game_mode_panel.dart';
+import 'ui/panels/right_sidebar_panel.dart';
+import 'ui/panels/room_chat_panel.dart';
+import 'ui/panels/auth_widgets.dart';
+import 'ui/app_style.dart';
+import 'profile/personal_cabinet_store.dart';
+
+import '../ui/board_theme_controller.dart';
+import 'widgets/eval_bar.dart';
 
 class BackgroundView extends StatelessWidget {
   const BackgroundView({super.key});
@@ -74,59 +111,10 @@ class BackgroundView extends StatelessWidget {
   }
 }
 
-class BgController extends ChangeNotifier {
-  BgController._(); // приватный конструктор
-  static final BgController instance = BgController._(); // синглтон
-
-  static const _kKey = 'bg_image_base64';
-
-  Uint8List? _bgBytes;
-  Uint8List? get bgBytes => _bgBytes; // <-- геттер ОДИН: bgBytes
-
-  Future<void> load() async {
-    final sp = await SharedPreferences.getInstance();
-    final b64 = sp.getString(_kKey);
-    if (b64 == null || b64.isEmpty) return;
-    try {
-      _bgBytes = base64Decode(b64);
-      notifyListeners();
-    } catch (_) {}
-  }
-
-  Future<void> setBg(Uint8List? bytes) async {
-    _bgBytes = bytes;
-    final sp = await SharedPreferences.getInstance();
-    if (bytes == null) {
-      await sp.remove(_kKey);
-    } else {
-      await sp.setString(_kKey, base64Encode(bytes));
-    }
-    notifyListeners();
-  }
-
-  Future<void> reset() => setBg(null);
-}
-
 // Глобально убираем bounce/overscroll и даём нормальный drag мышью/тачем.
-class _NoBounceScrollBehavior extends MaterialScrollBehavior {
-  const _NoBounceScrollBehavior();
-
-  @override
-  Set<PointerDeviceKind> get dragDevices => {
-        PointerDeviceKind.touch,
-        PointerDeviceKind.mouse,
-        PointerDeviceKind.stylus,
-        PointerDeviceKind.unknown,
-      };
-
-  @override
-  ScrollPhysics getScrollPhysics(BuildContext context) {
-    // Clamping вместо Bouncing — без «резинового» подскока
-    return const ClampingScrollPhysics();
-  }
-}
 
 void main() async {
+  final boardTheme = BoardThemeController();
   WidgetsFlutterBinding.ensureInitialized();
 
   // 1) Инициализация Supabase (как было у тебя)
@@ -139,75 +127,26 @@ void main() async {
   await BgController.instance.load();
 
   // 3) Старт приложения
-  runApp(const MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    // 1) один раз создаём схему цветов
-    final cs = ColorScheme.fromSeed(seedColor: const Color(0xFF7C4DFF));
-
-    return MaterialApp(
-      title: 'TwinChess',
-      debugShowCheckedModeBanner: false,
-      scrollBehavior: const _NoBounceScrollBehavior(),
-
-      // 2) тема приложения
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: cs,
-
-        // все OutlinedButton — плотные (с фоном)
-        outlinedButtonTheme: OutlinedButtonThemeData(
-          style: ButtonStyle(
-            backgroundColor: WidgetStateProperty.resolveWith((states) {
-              // disabled — полупрозрачный, иначе — обычный
-              return states.contains(WidgetState.disabled)
-                  ? cs.primary.withValues(alpha: 0.5) // вместо withOpacity
-                  : cs.primary;
-            }),
-            foregroundColor: WidgetStatePropertyAll(cs.onPrimary),
-            side: const WidgetStatePropertyAll(
-                BorderSide(color: Colors.transparent)),
-            shape: const WidgetStatePropertyAll(StadiumBorder()),
-            padding: const WidgetStatePropertyAll(
-              EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            ),
-            elevation: const WidgetStatePropertyAll(0),
-          ),
-        ),
-
-        // все FilledButton — такие же по виду
-        filledButtonTheme: FilledButtonThemeData(
-          style: ButtonStyle(
-            backgroundColor: WidgetStateProperty.resolveWith((states) {
-              return states.contains(WidgetState.disabled)
-                  ? cs.primary.withValues(alpha: 0.5)
-                  : cs.primary;
-            }),
-            foregroundColor: WidgetStatePropertyAll(cs.onPrimary),
-            shape: const WidgetStatePropertyAll(StadiumBorder()),
-            padding: const WidgetStatePropertyAll(
-              EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            ),
-            elevation: const WidgetStatePropertyAll(0),
-          ),
-        ),
+  runApp(
+    AppRoot(
+      playBuilder: (key, boardTheme) => MyHomePage(
+        key: key,
+        title: 'Chess Online',
+        boardTheme: boardTheme,
       ),
-
-      home: AppShell(
-        playBuilder: (key) => MyHomePage(key: key, title: 'Chess Online'),
-      ),
-    );
-  }
+    ),
+  );
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  const MyHomePage({
+    super.key,
+    required this.title,
+    required this.boardTheme,
+  });
+
   final String title;
+  final BoardThemeController boardTheme;
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
@@ -252,10 +191,15 @@ class LobbyService {
 
   void Function()? onOnlineChanged;
   void Function(String roomId, String fromId, String fromName, String color,
-      int m, int inc, bool rated)? onInvite;
+      int m, int inc, bool rated, String inviteKind)? onInvite;
 
   void Function(String roomId, String fromId, String fromName, String color)?
       onAccept;
+
+  /// Точечная команда интерфейса конкретному пользователю.
+  /// Использует тот же lobby-канал, по которому уже надёжно приходят
+  /// приглашения в учебную партию.
+  void Function(Map<String, dynamic> event)? onLearningUiControl;
 
   final Map<String, _Peer> _peers = {};
   List<Map<String, String>> get online => _peers.values
@@ -312,18 +256,50 @@ class LobbyService {
     final chan =
         supa.channel('lobby', opts: const rt.RealtimeChannelConfig(self: true));
 
+    // Кто-то спрашивает "кто онлайн?" — отвечаем своим hello
     chan.onBroadcast(
-        event: 'whois', callback: (payload, [ref]) => _sendHello(chan));
+      event: 'whois',
+      callback: (payload, [ref]) => _sendHello(chan),
+    );
 
-    // +++ NEW: принимаем hello и обновляем список онлайн с рейтингом
+    chan.onBroadcast(
+      event: 'hello',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        _touch(
+          '${p['id'] ?? ''}',
+          '${p['name'] ?? 'player'}',
+          (p['rating'] is num)
+              ? (p['rating'] as num).toInt()
+              : int.tryParse('${p['rating'] ?? '1200'}') ?? 1200,
+        );
+      },
+    );
+
+    // Пульс/присутствие игрока
+    chan.onBroadcast(
+      event: 'ping',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        _touch(
+          '${p['id'] ?? ''}',
+          '${p['name'] ?? 'player'}',
+          (p['rating'] is num)
+              ? (p['rating'] as num).toInt()
+              : int.tryParse('${p['rating'] ?? '1200'}') ?? 1200,
+        );
+      },
+    );
+
+    // Приглашение в игру
     chan.onBroadcast(
       event: 'invite',
       callback: (payload, [ref]) {
         final p = _parsePayload(payload);
 
-        // Строго приводим адресата к строке
         final String to =
             (p['to'] is String) ? (p['to'] as String) : '${p['to'] ?? ''}';
+
         if (to.isEmpty) {
           debugPrint('[INVITE RECV] Пропуск: to пустой. payload=$p');
           return;
@@ -340,54 +316,40 @@ class LobbyService {
             (p['m'] as num?)?.toInt() ?? 5,
             (p['inc'] as num?)?.toInt() ?? 3,
             (p['rated'] is bool) ? (p['rated'] as bool) : true,
+            '${p['kind'] ?? 'play'}',
           );
         }
       },
     );
 
+    // Принятие приглашения
     chan.onBroadcast(
-      event: 'ping',
-      callback: (payload, [ref]) {
-        final p = _parsePayload(payload);
-        _touch(
-          '${p['id'] ?? ''}',
-          '${p['name'] ?? 'player'}',
-          (p['rating'] is num)
-              ? (p['rating'] as num).toInt()
-              : int.tryParse('${p['rating'] ?? '1200'}') ?? 1200,
-        );
-      },
-    );
-
-    chan.onBroadcast(
-      event: 'invite',
+      event: 'accept',
       callback: (payload, [ref]) {
         final p = _parsePayload(payload);
         if ('${p['to']}' == userId) {
-          onInvite?.call(
-            '${p['roomId']}',
-            '${p['from']}',
-            '${p['fromName']}',
+          onAccept?.call(
+            '${p['roomId'] ?? ''}',
+            '${p['from'] ?? ''}',
+            '${p['fromName'] ?? 'player'}',
             '${p['color'] ?? 'white'}',
-            (p['m'] as num?)?.toInt() ?? 5, // minutes
-            (p['inc'] as num?)?.toInt() ?? 3, // increment
-            (p['rated'] as bool?) ?? true, // rated
           );
         }
       },
     );
 
+    // Удалённое управление интерфейсом ученика.
+    // Команда принимается только тем аккаунтом, чей ID указан в `to`.
     chan.onBroadcast(
-        event: 'accept',
-        callback: (payload, [ref]) {
-          final p = _parsePayload(payload);
-          if ('${p['to']}' == userId) {
-            onAccept?.call('${p['roomId']}', '${p['from']}', '${p['fromName']}',
-                '${p['color'] ?? 'white'}');
-          }
-        });
+      event: 'learning_ui_control',
+      callback: (payload, [ref]) {
+        final p = _parsePayload(payload);
+        if ('${p['to'] ?? ''}' != userId) return;
+        onLearningUiControl?.call(p);
+      },
+    );
 
-    // NEW: убрать игрока из списка, когда он уходит
+    // Игрок вышел
     chan.onBroadcast(
       event: 'bye',
       callback: (payload, [ref]) {
@@ -398,23 +360,19 @@ class LobbyService {
         onOnlineChanged?.call();
       },
     );
+
     await chan.subscribe();
 
-    // небольшой «пинок», чтобы точно увидеться в лобби на холодном коннекте
+    // Холодный старт: объявим себя и спросим остальных
     await Future.delayed(const Duration(milliseconds: 120));
     _sendHello(chan);
     _sendPing(chan);
-
     chan.sendBroadcastMessage(event: 'whois', payload: {'from': userId});
 
     _heartbeat?.cancel();
     _heartbeat = Timer.periodic(_beat, (_) => _sendPing(chan));
 
     _touch(userId, username, myRating);
-
-    html.window.onBeforeUnload.listen((_) {
-      chan.sendBroadcastMessage(event: 'bye', payload: {'id': userId});
-    });
 
     _chan = chan;
   }
@@ -447,6 +405,7 @@ class LobbyService {
     required int minutes,
     required int increment,
     required bool rated,
+    String kind = 'play',
   }) async {
     _chan?.sendBroadcastMessage(event: 'invite', payload: {
       'roomId': roomId,
@@ -458,6 +417,7 @@ class LobbyService {
       'm': minutes,
       'inc': increment,
       'rated': rated,
+      'kind': kind,
     });
   }
 
@@ -475,6 +435,28 @@ class LobbyService {
       'toName': toName,
       'color': color,
     });
+  }
+
+  Future<void> sendLearningUiControl({
+    required String toUserId,
+    required String command,
+    Map<String, dynamic> data = const <String, dynamic>{},
+  }) async {
+    final channel = _chan;
+    if (channel == null) {
+      throw StateError('Лобби не подключено');
+    }
+
+    await channel.sendBroadcastMessage(
+      event: 'learning_ui_control',
+      payload: <String, dynamic>{
+        'from': userId,
+        'to': toUserId,
+        'command': command,
+        ...data,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      },
+    );
   }
 }
 
@@ -529,6 +511,11 @@ class RoomService {
       onDrawAnswer; // {from, roomId, accepted}
   void Function(Map<String, dynamic> evt)? onResign; // {from, roomId}
 
+  // Служебные события школьной партии вынесены в отдельные события
+  // Realtime. Так они не смешиваются с обычным игровым управлением.
+  void Function(Map<String, dynamic> evt)? onLearningStudentEvaluation;
+  void Function(Map<String, dynamic> evt)? onLearningReset;
+
   Map<String, dynamic> _parsePayload(dynamic raw) {
     Map<String, dynamic> unwrap(dynamic v) {
       if (v is Map) {
@@ -563,6 +550,20 @@ class RoomService {
         callback: (payload, [ref]) {
           onCtrl?.call(_parsePayload(payload));
         });
+
+    _chan!.onBroadcast(
+      event: 'learning_student_eval',
+      callback: (payload, [ref]) {
+        onLearningStudentEvaluation?.call(_parsePayload(payload));
+      },
+    );
+
+    _chan!.onBroadcast(
+      event: 'learning_reset',
+      callback: (payload, [ref]) {
+        onLearningReset?.call(_parsePayload(payload));
+      },
+    );
 
     _chan!.onBroadcast(
       event: 'draw_offer',
@@ -621,7 +622,72 @@ class RoomService {
     await _ready.future;
     final payload = Map<String, dynamic>.from(data);
     payload['roomId'] = roomId;
-    _chan?.sendBroadcastMessage(event: 'ctrl', payload: payload);
+    final channel = _chan;
+    if (channel == null) {
+      throw StateError('Комната $roomId отключена');
+    }
+    await channel.sendBroadcastMessage(event: 'ctrl', payload: payload);
+  }
+
+  /// Служебные команды учебной партии идут по тому же событию `move`,
+  /// по которому уже надёжно передаются реальные ходы между учителем
+  /// и учеником. Поле `kind` позволяет не путать команду с шахматным ходом.
+  Future<void> sendLearningControl(Map<String, dynamic> data) async {
+    await _ready.future;
+    final payload = Map<String, dynamic>.from(data);
+    payload['roomId'] = roomId;
+    payload['kind'] = 'learning_ctrl';
+    final channel = _chan;
+    if (channel == null) {
+      throw StateError('Комната $roomId отключена');
+    }
+    await channel.sendBroadcastMessage(event: 'move', payload: payload);
+  }
+
+  Future<void> sendLearningStudentEvaluation({
+    required bool enabled,
+    required String clientId,
+    required String studentId,
+  }) async {
+    await _ready.future;
+    final channel = _chan;
+    if (channel == null) return;
+    await channel.sendBroadcastMessage(
+      event: 'learning_student_eval',
+      payload: <String, dynamic>{
+        'roomId': roomId,
+        'enabled': enabled,
+        'studentId': studentId,
+        'clientId': clientId,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      },
+    );
+  }
+
+  Future<void> sendLearningReset({
+    required String fen,
+    required String teacherColor,
+    required int whiteMs,
+    required int blackMs,
+    required String clientId,
+    required String resetBy,
+  }) async {
+    await _ready.future;
+    final channel = _chan;
+    if (channel == null) return;
+    await channel.sendBroadcastMessage(
+      event: 'learning_reset',
+      payload: <String, dynamic>{
+        'roomId': roomId,
+        'fen': fen,
+        'teacherColor': teacherColor,
+        'w': whiteMs,
+        'b': blackMs,
+        'clientId': clientId,
+        'resetBy': resetBy,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      },
+    );
   }
 
   Future<void> sendDrawOffer({
@@ -666,9 +732,99 @@ class RoomService {
   }
 }
 
+// ================== LEARNING: INDEPENDENT GAME SESSIONS ==================
+class _PendingLearningGameInvite {
+  const _PendingLearningGameInvite({
+    required this.student,
+    required this.myColor,
+    required this.minutes,
+    required this.increment,
+    required this.rated,
+  });
+
+  final LearningStudent student;
+  final String myColor;
+  final int minutes;
+  final int increment;
+  final bool rated;
+}
+
+class _LearningGameSession {
+  _LearningGameSession({
+    required this.student,
+    required this.roomId,
+    required this.myColor,
+    required this.minutes,
+    required this.increment,
+    required this.rated,
+    required this.room,
+  })  : game = ch.Chess(),
+        whiteMs = minutes * 60 * 1000,
+        blackMs = minutes * 60 * 1000 {
+    fens.add(game.fen);
+  }
+
+  final LearningStudent student;
+  final String roomId;
+  String myColor;
+  final int minutes;
+  final int increment;
+  final bool rated;
+  final RoomService room;
+  final ch.Chess game;
+
+  final List<String> sanMoves = <String>[];
+  final List<String> fens = <String>[];
+  final ScrollController movesScroll = ScrollController();
+  int plyIndex = 0;
+
+  String? selectedSquare;
+  final Set<String> legalTargets = <String>{};
+  final Set<String> captureTargets = <String>{};
+
+  String? result;
+  String? resultReason;
+  bool terminated = false;
+
+  // Оценка Stockfish хранится отдельно для каждой ученической партии.
+  // У учителя шкала видна всегда, а ученику её видимость включает учитель.
+  bool studentEvaluationEnabled = false;
+  double engineEval = 0.0;
+  bool loadingEval = false;
+  int evalRequestEpoch = 0;
+  String? lastEvalFen;
+
+  int whiteMs;
+  int blackMs;
+  bool clocksStarted = false;
+  DateTime? lastTickAt;
+  Timer? tick;
+
+  bool get isFlipped => myColor.toLowerCase() == 'black';
+
+  void dispose() {
+    tick?.cancel();
+    tick = null;
+    movesScroll.dispose();
+    unawaited(room.disconnect());
+  }
+}
+
 // ========================= STATE / UI  1/2    =========================
 class _MyHomePageState extends State<MyHomePage> {
+  Widget _buildLeftColumnPlaceholder() {
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildCenterColumnPlaceholder() {
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildRightColumnPlaceholder() {
+    return const SizedBox.shrink();
+  }
   // ---- chess core ----
+
   final bgController = BgController.instance;
 
   static const double _leftColWidth = 360; // ширина левой колонки в пикселях
@@ -721,9 +877,2754 @@ class _MyHomePageState extends State<MyHomePage> {
   final ch.Chess game = ch.Chess();
   String? _result;
 
+  bool _showPuzzlePanel = false;
+  bool _showLearningPanel = false;
+
+  // На телефоне при первом открытии показываем только доску.
+  // Остальные зоны открываются из меню с тремя полосками.
+  String _mobilePanel = 'none';
+
+  LearningPanelRole _learningRole = LearningPanelRole.none;
+  bool _learningStudentEvaluationEnabled = false;
+  PuzzleType _selectedPuzzleType = PuzzleType.blunders;
+
+  String _puzzleDraftTitle = 'Новая задача';
+  int _puzzleDraftNumber = 1;
+  String? _puzzleDraftTypeTitle;
+  String? _puzzleDraftStartFen;
+  final List<List<String>> _puzzleDraftLines = [];
+  final List<String> _puzzleCurrentLine = [];
+  bool _puzzleRecordingLine = false;
+  bool _puzzleDraftPublished = false;
+  OverlayEntry? _puzzleSettingsOverlay;
+
+  final List<PuzzleTask> _publishedPuzzleTasks = [];
+  int _activePublishedPuzzleIndex = -1;
+  bool _loadingPublishedPuzzleTasks = false;
+
+  // Контур тренера: эталонные стрелки/кружки из окна «Настройка».
+  String? _activeAnalysisArrowKey;
+  String? _pendingAnalysisArrowFrom;
+  Offset? _analysisPointerPosition;
+  bool _showPuzzleAnswerArrows = false;
+  final List<_PuzzleBoardArrow> _puzzleBoardArrows = [];
+  final Set<String> _hiddenPuzzleAnalysisKinds = <String>{};
+  String _teacherAnalysisSide = 'white'; // white | black
+
+  // Контур ученика: ответ в окне «Задачи».
+  // Эти кнопки и элементы НЕ связаны напрямую с окном «Настройка».
+  String? _studentAnalysisArrowKey;
+  String? _studentPendingAnalysisArrowFrom;
+  Offset? _studentAnalysisPointerPosition;
+  bool _studentShowPuzzleAnswer = false;
+  final List<_PuzzleBoardArrow> _studentBoardArrows = [];
+  final Set<String> _studentHiddenAnalysisKinds = <String>{};
+  String _studentAnalysisSide = 'white'; // white | black
+
+  // Полностью независимый контур панели «Учиться».
+  // Он не использует состояние панели «Задачи», поэтому обе панели
+  // можно дальше развивать независимо друг от друга.
+  String? _learningAnalysisArrowKey;
+  String? _learningPendingAnalysisArrowFrom;
+  Offset? _learningAnalysisPointerPosition;
+  bool _learningDrawingEnabled = false;
+  bool _learningShowAnswer = false;
+  final List<_PuzzleBoardArrow> _learningBoardArrows = [];
+  final Set<String> _learningHiddenAnalysisKinds = <String>{};
+  String _learningAnalysisSide = 'white'; // white | black
+
+  // Реальные ученики и состояние приглашения на урок.
+  final List<LearningStudent> _learningStudents = <LearningStudent>[];
+  String? _selectedLearningStudentId;
+  final Set<String> _selectedVideoStudentIds = <String>{};
+
+  // До восьми настоящих независимых партий учителя с учениками.
+  final Map<String, _LearningGameSession> _learningGameSessions =
+      <String, _LearningGameSession>{};
+  final Map<String, _PendingLearningGameInvite> _pendingLearningGameInvites =
+      <String, _PendingLearningGameInvite>{};
+  bool _learningShowAllBoards = false;
+  String? _learningFocusedStudentId;
+
+  // Отдельное присутствие школы. Обычный игровой лобби-режим сюда не входит.
+  rt.RealtimeChannel? _learningPresenceChannel;
+  Timer? _learningPresenceHeartbeat;
+  Timer? _learningPresenceCleanup;
+  final Map<String, DateTime> _learningStudentLastSeen = <String, DateTime>{};
+
+  String? _confirmedLearningStudentId;
+  String? _learningInvitationStatus;
+  String? _pendingLearningLessonId;
+  String? _learningLessonId;
+  String? _learningTeacherId;
+  String? _learningTeacherName;
+  StreamSubscription<cls.LessonInvitationResponse>? _lessonResponseSub;
+  ClassroomCallService? _classroomVideoCall;
+  String? _classroomVideoLessonId;
+  String? _classroomVideoClassroomId;
+
+  // Ходы ученика для решения текущей задачи.
+  // Правая колонка уже показывает SAN-ходы, а для проверки сохраняем UCI-ходы
+  // в том же формате, в котором учитель записывает ветки: e2e4, e7e8q и т.п.
+  final List<String> _studentPuzzleMoveLine = [];
+  bool _puzzleMoveChecked = false;
+  bool? _puzzleMoveCorrect;
+  int _shownSolutionLineIndex = 0;
+
+  static const Set<String> _circleAnalysisKeys = {
+    'weakness',
+    'r2',
+    'r4',
+  };
+
+  // Режим рисования стрелок включён ТОЛЬКО когда нажата одна из кнопок анализа.
+  // Просто открытая панель задач НЕ включает рисование и НЕ подставляет красную угрозу.
+  static const Set<String> _validAnalysisArrowKeys = {
+    'threat',
+    'pin',
+    'xray',
+    'weakness',
+    'r1',
+    'r2',
+    'r3',
+    'r4',
+  };
+
+  bool get _puzzleSettingsIsOpen => _puzzleSettingsOverlay != null;
+
+  bool get _teacherPuzzleArrowDrawMode =>
+      _activeAnalysisArrowKey != null &&
+      _validAnalysisArrowKeys.contains(_activeAnalysisArrowKey);
+
+  bool get _studentPuzzleArrowDrawMode =>
+      _studentAnalysisArrowKey != null &&
+      _validAnalysisArrowKeys.contains(_studentAnalysisArrowKey);
+
+  bool get _learningArrowDrawMode =>
+      _showLearningPanel &&
+      _learningDrawingEnabled &&
+      _learningAnalysisArrowKey != null &&
+      _validAnalysisArrowKeys.contains(_learningAnalysisArrowKey);
+
+  bool get _puzzleArrowDrawMode {
+    if (_puzzleSettingsIsOpen) return _teacherPuzzleArrowDrawMode;
+    if (_showLearningPanel) return _learningArrowDrawMode;
+    return _studentPuzzleArrowDrawMode;
+  }
+
+  String get _effectivePuzzleArrowKey {
+    if (_puzzleSettingsIsOpen) {
+      return _activeAnalysisArrowKey ?? 'threat';
+    }
+    if (_showLearningPanel) {
+      return _learningAnalysisArrowKey ?? 'threat';
+    }
+    return _studentAnalysisArrowKey ?? 'threat';
+  }
+
+  String? get _currentAnalysisPreviewFrom {
+    if (_puzzleSettingsIsOpen) return _pendingAnalysisArrowFrom;
+    if (_showLearningPanel) return _learningPendingAnalysisArrowFrom;
+    return _studentPendingAnalysisArrowFrom;
+  }
+
+  Offset? get _currentAnalysisPreviewTo {
+    if (_puzzleSettingsIsOpen) return _analysisPointerPosition;
+    if (_showLearningPanel) return _learningAnalysisPointerPosition;
+    return _studentAnalysisPointerPosition;
+  }
+
+  Map<String, Map<String, int>> get _analysisElementCounts {
+    Map<String, int> emptyCounts() => <String, int>{
+          'threat': 0,
+          'pin': 0,
+          'xray': 0,
+          'weakness': 0,
+          'r1': 0,
+          'r2': 0,
+          'r3': 0,
+          'r4': 0,
+        };
+
+    final result = <String, Map<String, int>>{
+      'white': emptyCounts(),
+      'black': emptyCounts(),
+    };
+
+    for (final arrow in _puzzleBoardArrows) {
+      final side = arrow.side == 'black' ? 'black' : 'white';
+      final counts = result[side]!;
+      if (counts.containsKey(arrow.kind)) {
+        counts[arrow.kind] = counts[arrow.kind]! + 1;
+      }
+    }
+
+    return result;
+  }
+
+  int get _analysisTotalElementCount {
+    var total = 0;
+    for (final sideCounts in _analysisElementCounts.values) {
+      total += sideCounts.values.fold<int>(0, (a, b) => a + b);
+    }
+    return total;
+  }
+
+  List<PuzzleTask> get _visiblePublishedPuzzleTasks {
+    final selectedTypeKey = _selectedPuzzleType.name;
+    final selectedTypeTitle = _selectedPuzzleType.title;
+    final tasks = _publishedPuzzleTasks
+        .where((task) =>
+            task.type == selectedTypeKey || task.typeTitle == selectedTypeTitle)
+        .toList();
+
+    tasks.sort((a, b) {
+      final byNumber = a.number.compareTo(b.number);
+      if (byNumber != 0) return byNumber;
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+
+    return tasks;
+  }
+
+  void _refreshPuzzleSettingsOverlay() {
+    _puzzleSettingsOverlay?.markNeedsBuild();
+  }
+
+  void _closePuzzleSettingsOverlay() {
+    _puzzleSettingsOverlay?.remove();
+    _puzzleSettingsOverlay = null;
+  }
+
+  String _puzzleTypeKeyFromTitle(String typeTitle) {
+    switch (typeTitle) {
+      case 'Задачи на зевки':
+        return PuzzleType.blunders.name;
+      case 'Мат':
+        return PuzzleType.mate.name;
+      case 'Найти лучший ход':
+        return PuzzleType.bestMove.name;
+      default:
+        return _selectedPuzzleType.name;
+    }
+  }
+
+  Map<String, List<PuzzleAnalysisArrow>> _buildPuzzleAnalysisArrows() {
+    final result = <String, List<PuzzleAnalysisArrow>>{};
+    for (final element in _puzzleBoardArrows) {
+      final list =
+          result.putIfAbsent(element.kind, () => <PuzzleAnalysisArrow>[]);
+      list.add(
+        PuzzleAnalysisArrow(
+          id: '${element.side}_${element.kind}_${list.length + 1}_${DateTime.now().microsecondsSinceEpoch}',
+          from: element.from,
+          to: element.to,
+          side: element.side,
+        ),
+      );
+    }
+    return result;
+  }
+
+  PuzzleTask _buildPuzzleDraft({
+    required String title,
+    required int number,
+    required String typeTitle,
+  }) {
+    final cleanTitle = title.trim().isEmpty ? 'Новая задача' : title.trim();
+    final cleanTypeTitle = typeTitle.trim().isEmpty
+        ? (_selectedPuzzleType.title.isEmpty
+            ? 'Задача'
+            : _selectedPuzzleType.title)
+        : typeTitle.trim();
+
+    return PuzzleTask(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      type: _puzzleTypeKeyFromTitle(cleanTypeTitle),
+      typeTitle: cleanTypeTitle,
+      title: cleanTitle,
+      number: number < 1 ? 1 : number,
+      startFen: _puzzleDraftStartFen ?? game.fen,
+      solutionLines: _puzzleDraftLines
+          .map((line) => PuzzleLine(
+                id: DateTime.now().microsecondsSinceEpoch.toString(),
+                moves: List<String>.from(line),
+              ))
+          .toList(),
+      description: _selectedPuzzleType.description,
+      analysisArrows: _buildPuzzleAnalysisArrows(),
+    );
+  }
+
+  void _puzzleSetInitialPosition() {
+    setState(() {
+      _puzzleDraftStartFen = game.fen;
+      _puzzleCurrentLine.clear();
+      _puzzleRecordingLine = false;
+      _puzzleDraftPublished = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Начальная позиция задачи записана')),
+    );
+  }
+
+  void _puzzleStartRecordingLine() {
+    final startFen = _puzzleDraftStartFen;
+    if (startFen == null || startFen.trim().isEmpty) {
+      _puzzleSetInitialPosition();
+    }
+
+    final fen = _puzzleDraftStartFen ?? game.fen;
+    final ok = game.load(fen);
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось загрузить начальную позицию')),
+      );
+      return;
+    }
+
+    setState(() {
+      _fenController.text = game.fen;
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+      _puzzleCurrentLine.clear();
+      _puzzleRecordingLine = true;
+      _puzzleDraftPublished = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('Запись ветки началась. Делайте ходы на доске')),
+    );
+  }
+
+  void _puzzleFinishRecordingLine() {
+    if (_puzzleCurrentLine.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ветка пустая. Сначала сделайте ходы')),
+      );
+      return;
+    }
+
+    setState(() {
+      _puzzleDraftLines.add(List<String>.from(_puzzleCurrentLine));
+      _puzzleCurrentLine.clear();
+      _puzzleRecordingLine = false;
+      _puzzleDraftPublished = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Ветка решения записана')),
+    );
+  }
+
+  void _puzzleClearDraft() {
+    setState(() {
+      _puzzleDraftTitle = 'Новая задача';
+      _puzzleDraftNumber = 1;
+      _puzzleDraftTypeTitle = _selectedPuzzleType.title;
+      _puzzleDraftStartFen = null;
+      _puzzleDraftLines.clear();
+      _puzzleCurrentLine.clear();
+      _puzzleRecordingLine = false;
+      _puzzleDraftPublished = false;
+      _puzzleBoardArrows.clear();
+      _hiddenPuzzleAnalysisKinds.clear();
+      _teacherAnalysisSide = 'white';
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+      _studentBoardArrows.clear();
+      _studentHiddenAnalysisKinds.clear();
+      _studentAnalysisSide = 'white';
+      _resetStudentPuzzleMoveCheck();
+    });
+  }
+
+  void _puzzleNewTask() {
+    setState(() {
+      _puzzleDraftTitle = 'Новая задача';
+      _puzzleDraftNumber = _puzzleDraftNumber + 1;
+      _puzzleDraftTypeTitle = _selectedPuzzleType.title;
+      _puzzleDraftStartFen = null;
+      _puzzleDraftLines.clear();
+      _puzzleCurrentLine.clear();
+      _puzzleRecordingLine = false;
+      _puzzleDraftPublished = false;
+      _puzzleBoardArrows.clear();
+      _hiddenPuzzleAnalysisKinds.clear();
+      _teacherAnalysisSide = 'white';
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+      _studentBoardArrows.clear();
+      _studentHiddenAnalysisKinds.clear();
+      _studentAnalysisSide = 'white';
+      _resetStudentPuzzleMoveCheck();
+    });
+  }
+
+  void _puzzleMarkPublished() {
+    setState(() {
+      _puzzleDraftPublished = true;
+      _puzzleRecordingLine = false;
+    });
+  }
+
+  Future<void> _openPublishedPuzzlesFolder() async {
+    if (_loadingPublishedPuzzleTasks) return;
+
+    setState(() => _loadingPublishedPuzzleTasks = true);
+
+    try {
+      await choosePuzzleFolder();
+      final files = await loadPuzzleTextFilesFromFolder();
+      final parsedTasks = <PuzzleTask>[];
+      var failed = 0;
+
+      for (final file in files) {
+        try {
+          final task = PuzzleTask.fromJsonString(file.content);
+          if (task.startFen.trim().isNotEmpty) {
+            parsedTasks.add(task);
+          }
+        } catch (_) {
+          failed++;
+        }
+      }
+
+      final byId = <String, PuzzleTask>{};
+      for (final task in parsedTasks) {
+        final key = task.id.trim().isEmpty
+            ? '${task.type}_${task.number}_${task.title}_${task.startFen}'
+            : task.id;
+        byId[key] = task;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _publishedPuzzleTasks
+          ..clear()
+          ..addAll(byId.values);
+        _activePublishedPuzzleIndex = -1;
+      });
+
+      final visibleCount = _visiblePublishedPuzzleTasks.length;
+      final message = failed == 0
+          ? 'Загружено задач: ${parsedTasks.length}. В текущем типе: $visibleCount.'
+          : 'Загружено задач: ${parsedTasks.length}. Пропущено файлов: $failed. В текущем типе: $visibleCount.';
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось открыть задачи: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _loadingPublishedPuzzleTasks = false);
+      }
+    }
+  }
+
+  void _activatePublishedPuzzle(int index) {
+    final tasks = _visiblePublishedPuzzleTasks;
+    if (index < 0 || index >= tasks.length) return;
+
+    final task = tasks[index];
+    final ok = game.load(task.startFen);
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось загрузить FEN задачи')),
+      );
+      return;
+    }
+
+    setState(() {
+      _activePublishedPuzzleIndex = index;
+      _fenController.text = game.fen;
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+      _result = null;
+      _editMode = false;
+      _vsEngine = false;
+      _engineThinking = false;
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _showPuzzleAnswerArrows = false;
+      _puzzleBoardArrows.clear();
+      _hiddenPuzzleAnalysisKinds.clear();
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+      _studentBoardArrows.clear();
+      _studentHiddenAnalysisKinds.clear();
+      _studentAnalysisSide = 'white';
+      _resetStudentPuzzleMoveCheck();
+    });
+
+    _syncSendFen();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Открыта задача: №${task.number} ${task.title}')),
+    );
+  }
+
+  void _activatePreviousPublishedPuzzle() {
+    final tasks = _visiblePublishedPuzzleTasks;
+    if (tasks.isEmpty) return;
+    final nextIndex = _activePublishedPuzzleIndex <= 0
+        ? tasks.length - 1
+        : _activePublishedPuzzleIndex - 1;
+    _activatePublishedPuzzle(nextIndex);
+  }
+
+  void _activateNextPublishedPuzzle() {
+    final tasks = _visiblePublishedPuzzleTasks;
+    if (tasks.isEmpty) return;
+    final nextIndex = _activePublishedPuzzleIndex < 0
+        ? 0
+        : (_activePublishedPuzzleIndex + 1) % tasks.length;
+    _activatePublishedPuzzle(nextIndex);
+  }
+
+  Color _analysisArrowColor(String key) {
+    switch (key) {
+      case 'threat':
+        return const Color(0x99FF2D2D); // красный
+      case 'pin':
+        return const Color(0x996A35FF); // фиолетовый
+      case 'xray':
+        return const Color(0x99FF00C8); // розовый
+      case 'weakness':
+        return const Color(0x994CFF2E); // зелёный
+      case 'r1':
+        return const Color(0x99FFB07A); // P1
+      case 'r2':
+        return const Color(0x990057FF); // P2
+      case 'r3':
+        return const Color(0x9940F7F7); // P3
+      case 'r4':
+        return const Color(0x99FF5F93); // P4
+      default:
+        return const Color(0x9900CFFF);
+    }
+  }
+
+  bool _isCircleAnalysisKey(String key) => _circleAnalysisKeys.contains(key);
+
+  List<_PuzzleBoardArrow> get _visibleTeacherPuzzleBoardArrows {
+    if (_showPuzzleAnswerArrows) {
+      return List<_PuzzleBoardArrow>.from(_puzzleBoardArrows);
+    }
+    return _puzzleBoardArrows
+        .where((element) =>
+            element.side == _teacherAnalysisSide &&
+            !_hiddenPuzzleAnalysisKinds.contains(element.kind))
+        .toList(growable: false);
+  }
+
+  List<_PuzzleBoardArrow> get _visibleStudentPuzzleBoardArrows {
+    return _studentBoardArrows
+        .where((element) =>
+            element.side == _studentAnalysisSide &&
+            !_studentHiddenAnalysisKinds.contains(element.kind))
+        .toList(growable: false);
+  }
+
+  List<_PuzzleBoardArrow> get _visibleLearningBoardArrows {
+    final arrows = _learningBoardArrows
+        .where((element) => element.side == _learningAnalysisSide);
+
+    if (_learningShowAnswer) {
+      return arrows.toList(growable: false);
+    }
+
+    return arrows
+        .where(
+          (element) => !_learningHiddenAnalysisKinds.contains(element.kind),
+        )
+        .toList(growable: false);
+  }
+
+  List<_PuzzleBoardArrow> get _visiblePuzzleBoardArrows {
+    if (_puzzleSettingsIsOpen) {
+      return _visibleTeacherPuzzleBoardArrows;
+    }
+
+    if (_showLearningPanel) {
+      return _visibleLearningBoardArrows;
+    }
+
+    // В окне «Задачи» обычные кнопки показывают только ответ ученика.
+    // Эталон из «Настройка» показывается только через «Показать ответ».
+    if (_studentShowPuzzleAnswer) {
+      return _puzzleBoardArrows
+          .where((element) => element.side == _studentAnalysisSide)
+          .toList(growable: false);
+    }
+
+    return _visibleStudentPuzzleBoardArrows;
+  }
+
+  bool _isSecondaryMouseButton(PointerEvent event) {
+    return (event.buttons & kSecondaryMouseButton) != 0;
+  }
+
+  double _distanceToSegment(Offset point, Offset a, Offset b) {
+    final ab = b - a;
+    final length2 = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (length2 <= 0.0001) return (point - a).distance;
+
+    final ap = point - a;
+    final t = ((ap.dx * ab.dx + ap.dy * ab.dy) / length2).clamp(0.0, 1.0);
+    final projection = Offset(a.dx + ab.dx * t, a.dy + ab.dy * t);
+    return (point - projection).distance;
+  }
+
+  bool _removePuzzleAnalysisElementAt(Offset localPosition, double boardSize) {
+    final cell = boardSize / 8;
+    final circleTolerance = cell * 0.42;
+    final arrowTolerance = cell * 0.22;
+
+    final visible = _visiblePuzzleBoardArrows;
+    for (var i = visible.length - 1; i >= 0; i--) {
+      final element = visible[i];
+      final fromCenter = _boardCenterForSquare(element.from, boardSize);
+
+      if (element.isCircle || element.from == element.to) {
+        if ((localPosition - fromCenter).distance <= circleTolerance) {
+          setState(() {
+            if (_puzzleSettingsIsOpen) {
+              _puzzleBoardArrows.remove(element);
+              _pendingAnalysisArrowFrom = null;
+              _analysisPointerPosition = null;
+              _puzzleDraftPublished = false;
+            } else if (_showLearningPanel) {
+              _learningBoardArrows.remove(element);
+              _learningPendingAnalysisArrowFrom = null;
+              _learningAnalysisPointerPosition = null;
+            } else {
+              _studentBoardArrows.remove(element);
+              _studentPendingAnalysisArrowFrom = null;
+              _studentAnalysisPointerPosition = null;
+            }
+          });
+          _refreshPuzzleSettingsOverlay();
+          return true;
+        }
+        continue;
+      }
+
+      final toCenter = _boardCenterForSquare(element.to, boardSize);
+      if (_distanceToSegment(localPosition, fromCenter, toCenter) <=
+          arrowTolerance) {
+        setState(() {
+          if (_puzzleSettingsIsOpen) {
+            _puzzleBoardArrows.remove(element);
+            _pendingAnalysisArrowFrom = null;
+            _analysisPointerPosition = null;
+            _puzzleDraftPublished = false;
+          } else if (_showLearningPanel) {
+            _learningBoardArrows.remove(element);
+            _learningPendingAnalysisArrowFrom = null;
+            _learningAnalysisPointerPosition = null;
+          } else {
+            _studentBoardArrows.remove(element);
+            _studentPendingAnalysisArrowFrom = null;
+            _studentAnalysisPointerPosition = null;
+          }
+        });
+        _refreshPuzzleSettingsOverlay();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool _handlePuzzleAnalysisSquareTap(String square) {
+    if (!_puzzleArrowDrawMode) return false;
+
+    final isSettings = _puzzleSettingsIsOpen;
+    final isLearning = !isSettings && _showLearningPanel;
+    final key = _effectivePuzzleArrowKey;
+
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+
+      final side = isSettings
+          ? _teacherAnalysisSide
+          : (isLearning ? _learningAnalysisSide : _studentAnalysisSide);
+
+      if (_isCircleAnalysisKey(key)) {
+        final element = _PuzzleBoardArrow(
+          from: square,
+          to: square,
+          kind: key,
+          color: _analysisArrowColor(key),
+          isCircle: true,
+          side: side,
+        );
+
+        if (isSettings) {
+          _puzzleBoardArrows.add(element);
+          _pendingAnalysisArrowFrom = null;
+          _analysisPointerPosition = null;
+          _puzzleDraftPublished = false;
+        } else if (isLearning) {
+          _learningBoardArrows.add(element);
+          _learningPendingAnalysisArrowFrom = null;
+          _learningAnalysisPointerPosition = null;
+        } else {
+          _studentBoardArrows.add(element);
+          _studentPendingAnalysisArrowFrom = null;
+          _studentAnalysisPointerPosition = null;
+        }
+        return;
+      }
+
+      final pending = isSettings
+          ? _pendingAnalysisArrowFrom
+          : (isLearning
+              ? _learningPendingAnalysisArrowFrom
+              : _studentPendingAnalysisArrowFrom);
+
+      if (pending == null) {
+        if (isSettings) {
+          _pendingAnalysisArrowFrom = square;
+        } else if (isLearning) {
+          _learningPendingAnalysisArrowFrom = square;
+        } else {
+          _studentPendingAnalysisArrowFrom = square;
+        }
+        return;
+      }
+
+      if (pending == square) {
+        if (isSettings) {
+          _pendingAnalysisArrowFrom = null;
+        } else if (isLearning) {
+          _learningPendingAnalysisArrowFrom = null;
+        } else {
+          _studentPendingAnalysisArrowFrom = null;
+        }
+        return;
+      }
+
+      final element = _PuzzleBoardArrow(
+        from: pending,
+        to: square,
+        kind: key,
+        color: _analysisArrowColor(key),
+        side: side,
+      );
+
+      if (isSettings) {
+        _puzzleBoardArrows.add(element);
+        _pendingAnalysisArrowFrom = null;
+        _puzzleDraftPublished = false;
+      } else if (isLearning) {
+        _learningBoardArrows.add(element);
+        _learningPendingAnalysisArrowFrom = null;
+      } else {
+        _studentBoardArrows.add(element);
+        _studentPendingAnalysisArrowFrom = null;
+      }
+    });
+    _refreshPuzzleSettingsOverlay();
+
+    return true;
+  }
+
+  void _setPuzzleAnalysisMode(String? key) {
+    setState(() {
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+
+      if (key == null || !_validAnalysisArrowKeys.contains(key)) {
+        _activeAnalysisArrowKey = null;
+        return;
+      }
+
+      final wasActive = _activeAnalysisArrowKey == key;
+      if (wasActive) {
+        _activeAnalysisArrowKey = null;
+        _hiddenPuzzleAnalysisKinds.add(key);
+        _showPuzzleAnswerArrows = false;
+        return;
+      }
+
+      _activeAnalysisArrowKey = key;
+      _hiddenPuzzleAnalysisKinds.remove(key);
+      _showPuzzleAnswerArrows = false;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _setStudentPuzzleAnalysisMode(String? key) {
+    setState(() {
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+
+      // РЕЖИМ «ЗАДАЧИ»: повторное нажатие на активную кнопку
+      // должно выключать рисование, скрывать слой этого типа и возвращать
+      // доске обычные шахматные ходы. Элементы из ответа ученика НЕ удаляются.
+      if (key == null || !_validAnalysisArrowKeys.contains(key)) {
+        final currentKey = _studentAnalysisArrowKey;
+        if (currentKey != null &&
+            _validAnalysisArrowKeys.contains(currentKey)) {
+          _studentHiddenAnalysisKinds.add(currentKey);
+        }
+        _studentAnalysisArrowKey = null;
+        _studentShowPuzzleAnswer = false;
+        return;
+      }
+
+      final wasActive = _studentAnalysisArrowKey == key;
+      if (wasActive) {
+        _studentAnalysisArrowKey = null;
+        _studentHiddenAnalysisKinds.add(key);
+        _studentShowPuzzleAnswer = false;
+        return;
+      }
+
+      _studentAnalysisArrowKey = key;
+      _studentHiddenAnalysisKinds.remove(key);
+      _studentShowPuzzleAnswer = false;
+    });
+  }
+
+  void _finishStudentPuzzleAnalysisTask() {
+    final hasTask = _activePublishedPuzzleTask != null;
+    final movesCorrect = hasTask && _studentPuzzleMoveLineMatchesTeacher();
+
+    setState(() {
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+      _puzzleMoveChecked = hasTask;
+      _puzzleMoveCorrect = hasTask ? movesCorrect : null;
+      _shownSolutionLineIndex = 0;
+    });
+
+    if (!mounted || !hasTask) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          movesCorrect ? 'Ходы решения верные' : 'Ответ по ходам неверный',
+        ),
+      ),
+    );
+  }
+
+  void _setStudentShowPuzzleAnswer(bool value) {
+    setState(() {
+      _studentShowPuzzleAnswer = value;
+
+      // ВАЖНО: когда панель «Задачи» просто сбрасывает флаг
+      // «Показать ответ» в false перед переключением кнопки анализа,
+      // нельзя стирать _studentAnalysisArrowKey. Иначе повторное нажатие
+      // на «Угроза/Связка/.../P4» снова включает рисование вместо выключения.
+      if (!value) {
+        return;
+      }
+
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+
+      final lines = _activePuzzleSolutionMoveLines;
+      if (lines.isEmpty) {
+        _shownSolutionLineIndex = 0;
+      } else if (_shownSolutionLineIndex >= lines.length) {
+        _shownSolutionLineIndex = 0;
+      }
+    });
+  }
+
+  void _setLearningAnalysisMode(String? key) {
+    setState(() {
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+
+      if (key == null || !_validAnalysisArrowKeys.contains(key)) {
+        final currentKey = _learningAnalysisArrowKey;
+        if (currentKey != null &&
+            _validAnalysisArrowKeys.contains(currentKey)) {
+          _learningHiddenAnalysisKinds.add(currentKey);
+        }
+        _learningAnalysisArrowKey = null;
+        _learningShowAnswer = false;
+        _learningDrawingEnabled = false;
+        return;
+      }
+
+      final wasActive = _learningAnalysisArrowKey == key;
+      if (wasActive) {
+        _learningAnalysisArrowKey = null;
+        _learningHiddenAnalysisKinds.add(key);
+        _learningShowAnswer = false;
+        _learningDrawingEnabled = false;
+        return;
+      }
+
+      _learningAnalysisArrowKey = key;
+      _learningHiddenAnalysisKinds.remove(key);
+      _learningShowAnswer = false;
+    });
+  }
+
+  void _toggleLearningDrawing() {
+    setState(() {
+      final enable = !_learningDrawingEnabled;
+      _learningDrawingEnabled = enable;
+      if (enable && _learningAnalysisArrowKey == null) {
+        _learningAnalysisArrowKey = 'threat';
+        _learningHiddenAnalysisKinds.remove('threat');
+      }
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+    });
+  }
+
+  void _toggleLearningAnalysisSide() {
+    setState(() {
+      _learningAnalysisSide =
+          _learningAnalysisSide == 'white' ? 'black' : 'white';
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+      _learningDrawingEnabled = false;
+    });
+  }
+
+  void _finishLearningAnalysisTask() {
+    setState(() {
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+      _learningDrawingEnabled = false;
+    });
+  }
+
+  void _setLearningShowAnswer(bool value) {
+    setState(() {
+      _learningShowAnswer = value;
+      if (!value) return;
+
+      _learningDrawingEnabled = false;
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+    });
+  }
+
+  void _clearPuzzleAnalysisElements() {
+    setState(() {
+      _puzzleBoardArrows.clear();
+      _hiddenPuzzleAnalysisKinds.clear();
+      _teacherAnalysisSide = 'white';
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _showPuzzleAnswerArrows = false;
+      _puzzleDraftPublished = false;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _finishPuzzleAnalysisTask() {
+    setState(() {
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _setShowPuzzleAnswer(bool value) {
+    setState(() {
+      _showPuzzleAnswerArrows = value;
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  Offset _boardCenterForSquare(String square, double boardSize) {
+    final file = square.codeUnitAt(0) - 'a'.codeUnitAt(0);
+    final rank = int.tryParse(square.substring(1)) ?? 1;
+    final col = _isFlipped ? 7 - file : file;
+    final row = _isFlipped ? rank - 1 : 8 - rank;
+    final cell = boardSize / 8;
+    return Offset((col + 0.5) * cell, (row + 0.5) * cell);
+  }
+
+  String? _boardSquareFromLocalPosition(
+      Offset localPosition, double boardSize) {
+    if (localPosition.dx < 0 ||
+        localPosition.dy < 0 ||
+        localPosition.dx > boardSize ||
+        localPosition.dy > boardSize) {
+      return null;
+    }
+
+    final cell = boardSize / 8;
+    final col = (localPosition.dx / cell).floor().clamp(0, 7).toInt();
+    final row = (localPosition.dy / cell).floor().clamp(0, 7).toInt();
+
+    final fileIndex = _isFlipped ? 7 - col : col;
+    final rank = _isFlipped ? row + 1 : 8 - row;
+    final file = String.fromCharCode('a'.codeUnitAt(0) + fileIndex);
+    return '$file$rank';
+  }
+
+  void _startPuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
+    if (!_puzzleArrowDrawMode) return;
+
+    final square = _boardSquareFromLocalPosition(localPosition, boardSize);
+    if (square == null) return;
+
+    final isSettings = _puzzleSettingsIsOpen;
+    final isLearning = !isSettings && _showLearningPanel;
+    final key = _effectivePuzzleArrowKey;
+
+    setState(() {
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+
+      final side = isSettings
+          ? _teacherAnalysisSide
+          : (isLearning ? _learningAnalysisSide : _studentAnalysisSide);
+
+      if (_isCircleAnalysisKey(key)) {
+        final element = _PuzzleBoardArrow(
+          from: square,
+          to: square,
+          kind: key,
+          color: _analysisArrowColor(key),
+          isCircle: true,
+          side: side,
+        );
+
+        if (isSettings) {
+          _puzzleBoardArrows.add(element);
+          _pendingAnalysisArrowFrom = null;
+          _analysisPointerPosition = null;
+          _puzzleDraftPublished = false;
+        } else if (isLearning) {
+          _learningBoardArrows.add(element);
+          _learningPendingAnalysisArrowFrom = null;
+          _learningAnalysisPointerPosition = null;
+        } else {
+          _studentBoardArrows.add(element);
+          _studentPendingAnalysisArrowFrom = null;
+          _studentAnalysisPointerPosition = null;
+        }
+        return;
+      }
+
+      if (isSettings) {
+        _pendingAnalysisArrowFrom = square;
+        _analysisPointerPosition = localPosition;
+      } else if (isLearning) {
+        _learningPendingAnalysisArrowFrom = square;
+        _learningAnalysisPointerPosition = localPosition;
+      } else {
+        _studentPendingAnalysisArrowFrom = square;
+        _studentAnalysisPointerPosition = localPosition;
+      }
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _updatePuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
+    if (!_puzzleArrowDrawMode) return;
+
+    final isSettings = _puzzleSettingsIsOpen;
+    final isLearning = !isSettings && _showLearningPanel;
+    final pending = isSettings
+        ? _pendingAnalysisArrowFrom
+        : (isLearning
+            ? _learningPendingAnalysisArrowFrom
+            : _studentPendingAnalysisArrowFrom);
+    if (pending == null) return;
+
+    final clamped = Offset(
+      localPosition.dx.clamp(0, boardSize).toDouble(),
+      localPosition.dy.clamp(0, boardSize).toDouble(),
+    );
+
+    setState(() {
+      if (isSettings) {
+        _analysisPointerPosition = clamped;
+      } else if (isLearning) {
+        _learningAnalysisPointerPosition = clamped;
+      } else {
+        _studentAnalysisPointerPosition = clamped;
+      }
+    });
+  }
+
+  void _finishPuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
+    if (!_puzzleArrowDrawMode) return;
+    final key = _effectivePuzzleArrowKey;
+    if (_isCircleAnalysisKey(key)) return;
+
+    final isSettings = _puzzleSettingsIsOpen;
+    final isLearning = !isSettings && _showLearningPanel;
+    final from = isSettings
+        ? _pendingAnalysisArrowFrom
+        : (isLearning
+            ? _learningPendingAnalysisArrowFrom
+            : _studentPendingAnalysisArrowFrom);
+    if (from == null) return;
+
+    final to = _boardSquareFromLocalPosition(localPosition, boardSize);
+    setState(() {
+      if (to != null && to != from) {
+        final side = isSettings
+            ? _teacherAnalysisSide
+            : (isLearning ? _learningAnalysisSide : _studentAnalysisSide);
+        final element = _PuzzleBoardArrow(
+          from: from,
+          to: to,
+          kind: key,
+          color: _analysisArrowColor(key),
+          side: side,
+        );
+
+        if (isSettings) {
+          _puzzleBoardArrows.add(element);
+          _puzzleDraftPublished = false;
+        } else if (isLearning) {
+          _learningBoardArrows.add(element);
+        } else {
+          _studentBoardArrows.add(element);
+        }
+      }
+
+      if (isSettings) {
+        _pendingAnalysisArrowFrom = null;
+        _analysisPointerPosition = null;
+      } else if (isLearning) {
+        _learningPendingAnalysisArrowFrom = null;
+        _learningAnalysisPointerPosition = null;
+      } else {
+        _studentPendingAnalysisArrowFrom = null;
+        _studentAnalysisPointerPosition = null;
+      }
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _handlePuzzleAnalysisBoardTap(Offset localPosition, double boardSize) {
+    final square = _boardSquareFromLocalPosition(localPosition, boardSize);
+    if (square == null) return;
+    _handlePuzzleAnalysisSquareTap(square);
+  }
+
+  void _toggleTeacherAnalysisSide() {
+    setState(() {
+      _teacherAnalysisSide =
+          _teacherAnalysisSide == 'white' ? 'black' : 'white';
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _showPuzzleAnswerArrows = false;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _toggleStudentAnalysisSide() {
+    setState(() {
+      _studentAnalysisSide =
+          _studentAnalysisSide == 'white' ? 'black' : 'white';
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+    });
+  }
+
+  PuzzleTask? get _activePublishedPuzzleTask {
+    final tasks = _visiblePublishedPuzzleTasks;
+    if (_activePublishedPuzzleIndex < 0 ||
+        _activePublishedPuzzleIndex >= tasks.length) {
+      return null;
+    }
+    return tasks[_activePublishedPuzzleIndex];
+  }
+
+  Map<String, PuzzleAnalysisResult> get _studentAnalysisResults {
+    const keys = <String>[
+      'threat',
+      'pin',
+      'xray',
+      'weakness',
+      'r1',
+      'r2',
+      'r3',
+      'r4',
+    ];
+
+    final task = _activePublishedPuzzleTask;
+    final result = <String, PuzzleAnalysisResult>{};
+
+    for (final key in keys) {
+      result[key] = PuzzleAnalysisResult(
+        whiteCorrect: _studentCorrectAnalysisCount(task, key, 'white'),
+        whiteTotal: _taskCorrectAnalysisTotal(task, key, 'white'),
+        blackCorrect: _studentCorrectAnalysisCount(task, key, 'black'),
+        blackTotal: _taskCorrectAnalysisTotal(task, key, 'black'),
+      );
+    }
+
+    return result;
+  }
+
+  Map<String, LearningAnalysisResult> get _learningAnalysisResults {
+    const keys = <String>[
+      'threat',
+      'pin',
+      'xray',
+      'weakness',
+      'r1',
+      'r2',
+      'r3',
+      'r4',
+    ];
+
+    final result = <String, LearningAnalysisResult>{};
+    for (final key in keys) {
+      final white = _learningBoardArrows
+          .where((element) => element.kind == key && element.side == 'white')
+          .length;
+      final black = _learningBoardArrows
+          .where((element) => element.kind == key && element.side == 'black')
+          .length;
+
+      result[key] = LearningAnalysisResult(
+        whiteCorrect: white,
+        whiteTotal: white,
+        blackCorrect: black,
+        blackTotal: black,
+      );
+    }
+    return result;
+  }
+
+  int _taskCorrectAnalysisTotal(PuzzleTask? task, String kind, String side) {
+    if (task == null) return 0;
+    return (task.analysisArrows[kind] ?? const <PuzzleAnalysisArrow>[])
+        .where((element) => element.side == side)
+        .length;
+  }
+
+  int _studentCorrectAnalysisCount(PuzzleTask? task, String kind, String side) {
+    if (task == null) return 0;
+
+    final correct = (task.analysisArrows[kind] ?? const <PuzzleAnalysisArrow>[])
+        .where((element) => element.side == side)
+        .map((element) => '${element.from}->${element.to}')
+        .toList();
+
+    final answer = _studentBoardArrows
+        .where((element) => element.kind == kind && element.side == side)
+        .map((element) => '${element.from}->${element.to}')
+        .toList();
+
+    final correctBag = <String, int>{};
+    for (final item in correct) {
+      correctBag[item] = (correctBag[item] ?? 0) + 1;
+    }
+
+    var hits = 0;
+    for (final item in answer) {
+      final left = correctBag[item] ?? 0;
+      if (left <= 0) continue;
+      correctBag[item] = left - 1;
+      hits++;
+    }
+
+    return hits;
+  }
+
+  List<List<String>> get _activePuzzleSolutionMoveLines {
+    final task = _activePublishedPuzzleTask;
+    if (task == null) return const <List<String>>[];
+    return task.solutionLines
+        .map((line) => line.moves
+            .map(_normalizePuzzleMoveForCompare)
+            .where((move) => move.isNotEmpty)
+            .toList(growable: false))
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  List<String> get _currentStudentPuzzleMoveLine => _studentPuzzleMoveLine
+      .map(_normalizePuzzleMoveForCompare)
+      .where((move) => move.isNotEmpty)
+      .toList(growable: false);
+
+  String _normalizePuzzleMoveForCompare(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'[^a-h1-8qrbn]'), '');
+  }
+
+  bool _movesEqualForPuzzle(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (_normalizePuzzleMoveForCompare(left[i]) !=
+          _normalizePuzzleMoveForCompare(right[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _studentPuzzleMoveLineMatchesTeacher() {
+    final answer = _currentStudentPuzzleMoveLine;
+    if (answer.isEmpty) return false;
+
+    for (final correctLine in _activePuzzleSolutionMoveLines) {
+      if (_movesEqualForPuzzle(answer, correctLine)) return true;
+    }
+    return false;
+  }
+
+  void _resetStudentPuzzleMoveCheck() {
+    _studentPuzzleMoveLine.clear();
+    _puzzleMoveChecked = false;
+    _puzzleMoveCorrect = null;
+    _shownSolutionLineIndex = 0;
+  }
+
+  void _openPreviousSolutionLine() {
+    final lines = _activePuzzleSolutionMoveLines;
+    if (lines.isEmpty) return;
+    setState(() {
+      _shownSolutionLineIndex = _shownSolutionLineIndex <= 0
+          ? lines.length - 1
+          : _shownSolutionLineIndex - 1;
+    });
+  }
+
+  void _openNextSolutionLine() {
+    final lines = _activePuzzleSolutionMoveLines;
+    if (lines.isEmpty) return;
+    setState(() {
+      _shownSolutionLineIndex = (_shownSolutionLineIndex + 1) % lines.length;
+    });
+  }
+
+  bool get _showPuzzleMoveResultPanel =>
+      _showPuzzlePanel && _activePublishedPuzzleTask != null;
+
+  Future<void> _openPuzzleSettings() async {
+    // Окно «Настройка» — отдельный режим тренера.
+    // При входе в него выключаем активное рисование ученика, но ответ ученика
+    // не удаляем: он просто не должен управлять эталоном.
+    setState(() {
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+    });
+
+    if (_puzzleSettingsOverlay != null) {
+      _refreshPuzzleSettingsOverlay();
+      return;
+    }
+
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) => PuzzleSettingsDialog(
+        selectedTypeTitle: _selectedPuzzleType.title,
+        taskTitle: _puzzleDraftTitle,
+        taskNumber: _puzzleDraftNumber,
+        taskTypeTitle: _puzzleDraftTypeTitle ?? _selectedPuzzleType.title,
+        currentFen: game.fen,
+        startFen: _puzzleDraftStartFen,
+        savedLines: _puzzleDraftLines,
+        currentLine: _puzzleCurrentLine,
+        isRecordingLine: _puzzleRecordingLine,
+        isPublished: _puzzleDraftPublished,
+        activeAnalysisKey: _activeAnalysisArrowKey,
+        showAnswer: _showPuzzleAnswerArrows,
+        analysisCounts: _analysisElementCounts,
+        activeAnalysisSide: _teacherAnalysisSide,
+        onAnalysisSideToggle: _toggleTeacherAnalysisSide,
+        buildPuzzle: _buildPuzzleDraft,
+        onTaskTitleChanged: (value) {
+          _puzzleDraftTitle = value;
+          _puzzleDraftPublished = false;
+        },
+        onTaskNumberChanged: (value) {
+          _puzzleDraftNumber = value;
+          _puzzleDraftPublished = false;
+        },
+        onTaskTypeTitleChanged: (value) {
+          _puzzleDraftTypeTitle = value;
+          _puzzleDraftPublished = false;
+        },
+        onSetInitialPosition: () {
+          _puzzleSetInitialPosition();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onStartRecordingLine: () {
+          _puzzleStartRecordingLine();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onFinishRecordingLine: () {
+          _puzzleFinishRecordingLine();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onClearDraft: () {
+          _puzzleClearDraft();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onNewTask: () {
+          _puzzleNewTask();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onPublished: () {
+          _puzzleMarkPublished();
+          _refreshPuzzleSettingsOverlay();
+        },
+        onAnalysisModeChanged: _setPuzzleAnalysisMode,
+        onFinishAnalysis: _finishPuzzleAnalysisTask,
+        onShowAnswerChanged: _setShowPuzzleAnswer,
+        onClearAnalysisElements: _clearPuzzleAnalysisElements,
+        onClose: _closePuzzleSettingsOverlay,
+      ),
+    );
+
+    _puzzleSettingsOverlay = entry;
+    Overlay.of(context).insert(entry);
+  }
+
+  LearningStudent? get _selectedLearningStudent {
+    final selectedId = _selectedLearningStudentId;
+    if (selectedId == null || selectedId.isEmpty) return null;
+    for (final student in _learningStudents) {
+      if (student.id == selectedId) return student;
+    }
+    return null;
+  }
+
+  Future<void> _startLessonResponseListener() async {
+    try {
+      final service = cls.LessonInvitationService.instance;
+      await service.start(Supabase.instance.client);
+      await _lessonResponseSub?.cancel();
+      _lessonResponseSub = service.responses.listen((response) async {
+        try {
+          await _handleLessonInvitationResponse(response);
+        } catch (error) {
+          debugPrint('[LESSON] Ошибка обработки ответа: $error');
+        }
+      });
+    } catch (error) {
+      debugPrint('[LESSON] Не удалось запустить канал ответов: $error');
+    }
+  }
+
+  Future<void> _handleLessonInvitationResponse(
+    cls.LessonInvitationResponse response,
+  ) async {
+    final myId = Supabase.instance.client.auth.currentUser?.id ?? '';
+    if (myId.isEmpty || response.teacherId != myId) return;
+    if (_pendingLearningLessonId != response.lessonId) return;
+    if (_selectedLearningStudentId != response.studentId) return;
+
+    if (!mounted) return;
+
+    if (!response.accepted) {
+      setState(() {
+        _learningInvitationStatus =
+            '${response.studentName} отклонил приглашение на урок';
+        _pendingLearningLessonId = null;
+        _confirmedLearningStudentId = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _learningInvitationStatus =
+          '${response.studentName} принял приглашение. Урок подключён';
+      _learningLessonId = response.lessonId;
+      _pendingLearningLessonId = null;
+    });
+
+    await _activateLearningSession(
+      lessonId: response.lessonId,
+      role: LearningPanelRole.teacher,
+    );
+  }
+
+  Future<void> _loadLearningStudents({bool showError = false}) async {
+    final client = Supabase.instance.client;
+    final teacherId = client.auth.currentUser?.id;
+
+    if (teacherId == null || teacherId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _learningStudents.clear();
+        _selectedLearningStudentId = null;
+        _confirmedLearningStudentId = null;
+        _learningInvitationStatus = null;
+      });
+      return;
+    }
+
+    try {
+      final rows = await client
+          .from('teacher_students')
+          .select('student_id, student_nickname, created_at')
+          .eq('teacher_id', teacherId)
+          .order('created_at', ascending: true);
+
+      final loaded = <LearningStudent>[];
+      for (final raw in rows) {
+        if (raw is! Map) continue;
+        final row = Map<String, dynamic>.from(raw);
+        final studentId = '${row['student_id'] ?? ''}'.trim();
+        final nickname = '${row['student_nickname'] ?? ''}'.trim();
+        if (studentId.isEmpty || nickname.isEmpty) continue;
+        loaded.add(LearningStudent(id: studentId, nickname: nickname));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _learningStudents
+          ..clear()
+          ..addAll(loaded);
+
+        final selectedStillExists = _selectedLearningStudentId != null &&
+            _learningStudents.any(
+              (student) => student.id == _selectedLearningStudentId,
+            );
+        if (!selectedStillExists) {
+          _selectedLearningStudentId = null;
+          _confirmedLearningStudentId = null;
+          _learningInvitationStatus = null;
+        }
+        _selectedVideoStudentIds.removeWhere(
+          (id) => !_learningStudents.any((student) => student.id == id),
+        );
+      });
+    } catch (error) {
+      debugPrint('[LEARNING STUDENTS] Ошибка загрузки: $error');
+      if (showError && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Не удалось загрузить список учеников: $error'),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveLearningStudent({
+    required String studentId,
+    required String nickname,
+  }) async {
+    final client = Supabase.instance.client;
+    final teacherId = client.auth.currentUser?.id;
+    if (teacherId == null || teacherId.isEmpty) {
+      throw StateError('Сначала войдите в аккаунт учителя');
+    }
+
+    await client.from('teacher_students').upsert(
+      {
+        'teacher_id': teacherId,
+        'student_id': studentId,
+        'student_nickname': nickname,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      onConflict: 'teacher_id,student_id',
+    );
+  }
+
+  Future<void> _addLearningStudent() async {
+    try {
+      final client = Supabase.instance.client;
+      final myId = client.auth.currentUser?.id ?? '';
+      if (myId.isEmpty) {
+        throw StateError('Сначала войдите в аккаунт учителя');
+      }
+
+      final rows = await client
+          .from('profiles')
+          .select('id,nickname')
+          .order('nickname', ascending: true);
+
+      final registeredPlayers = <LearningStudent>[];
+      for (final row in rows) {
+        final id = '${row['id'] ?? ''}'.trim();
+        final nickname = '${row['nickname'] ?? ''}'.trim();
+        if (id.isEmpty || nickname.isEmpty || id == myId) continue;
+        registeredPlayers.add(LearningStudent(id: id, nickname: nickname));
+      }
+
+      if (!mounted) return;
+      final selected = await _showRegisteredPlayersDialog(registeredPlayers);
+      if (selected == null || !mounted) return;
+
+      final alreadyAdded =
+          _learningStudents.any((student) => student.id == selected.id);
+      if (alreadyAdded) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('${selected.nickname} уже находится в списке учеников'),
+          ),
+        );
+        return;
+      }
+
+      await _saveLearningStudent(
+        studentId: selected.id,
+        nickname: selected.nickname,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _learningStudents.add(selected);
+        _learningStudents.sort(
+          (a, b) =>
+              a.nickname.toLowerCase().compareTo(b.nickname.toLowerCase()),
+        );
+        _selectedLearningStudentId = selected.id;
+        _confirmedLearningStudentId = null;
+        _learningInvitationStatus = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось добавить ученика: $error')),
+      );
+    }
+  }
+
+  Future<LearningStudent?> _showRegisteredPlayersDialog(
+    List<LearningStudent> registeredPlayers,
+  ) async {
+    final searchController = TextEditingController();
+    var query = '';
+    var ascending = true;
+
+    try {
+      return await showDialog<LearningStudent>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            final normalizedQuery = query.trim().toLowerCase();
+            final visiblePlayers = registeredPlayers
+                .where(
+                  (player) =>
+                      normalizedQuery.isEmpty ||
+                      player.nickname.toLowerCase().contains(normalizedQuery),
+                )
+                .toList(growable: false)
+              ..sort(
+                (a, b) {
+                  final result = a.nickname
+                      .toLowerCase()
+                      .compareTo(b.nickname.toLowerCase());
+                  return ascending ? result : -result;
+                },
+              );
+
+            return AlertDialog(
+              title: const Text('Выбрать ученика'),
+              content: SizedBox(
+                width: 520,
+                height: 520,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: searchController,
+                            autofocus: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Поиск по нику',
+                              prefixIcon: Icon(Icons.search),
+                            ),
+                            onChanged: (value) {
+                              setDialogState(() => query = value);
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Tooltip(
+                          message:
+                              ascending ? 'Сортировка А–Я' : 'Сортировка Я–А',
+                          child: IconButton.filledTonal(
+                            onPressed: () {
+                              setDialogState(() => ascending = !ascending);
+                            },
+                            icon: Icon(
+                              ascending
+                                  ? Icons.sort_by_alpha
+                                  : Icons.sort_by_alpha_outlined,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Зарегистрированные игроки: ${visiblePlayers.length}',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: visiblePlayers.isEmpty
+                          ? const Center(
+                              child: Text('Игроки не найдены'),
+                            )
+                          : ListView.separated(
+                              itemCount: visiblePlayers.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, index) {
+                                final player = visiblePlayers[index];
+                                final alreadyAdded = _learningStudents.any(
+                                  (student) => student.id == player.id,
+                                );
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    child: Text(
+                                      player.nickname.characters.first
+                                          .toUpperCase(),
+                                    ),
+                                  ),
+                                  title: Text(player.nickname),
+                                  subtitle: alreadyAdded
+                                      ? const Text('Уже добавлен')
+                                      : null,
+                                  trailing: alreadyAdded
+                                      ? const Icon(Icons.check)
+                                      : const Icon(Icons.person_add_alt_1),
+                                  enabled: !alreadyAdded,
+                                  onTap: alreadyAdded
+                                      ? null
+                                      : () => Navigator.of(dialogContext)
+                                          .pop(player),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Закрыть'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      searchController.dispose();
+    }
+  }
+
+  Set<String> get _learningOnlineStudentIds =>
+      _learningStudentLastSeen.keys.toSet();
+
+  Set<String> get _learningConnectedGameStudentIds =>
+      _learningGameSessions.keys.toSet();
+
+  Set<String> get _learningPendingGameStudentIds =>
+      _pendingLearningGameInvites.values
+          .map((invite) => invite.student.id)
+          .toSet();
+
+  Map<String, dynamic> _unwrapLearningPresencePayload(dynamic raw) {
+    if (raw is! Map) return <String, dynamic>{};
+    final result = Map<String, dynamic>.from(raw);
+    while (result['payload'] is Map) {
+      final inner = Map<String, dynamic>.from(result['payload'] as Map);
+      result
+        ..remove('payload')
+        ..addAll(inner);
+    }
+    return result;
+  }
+
+  Future<void> _ensureLearningPresenceChannel() async {
+    if (_learningPresenceChannel != null) return;
+    final client = Supabase.instance.client;
+    final myId = client.auth.currentUser?.id ?? '';
+    if (myId.isEmpty) return;
+
+    final channel = client.channel(
+      'makechess:school-student-presence:v1',
+      opts: const rt.RealtimeChannelConfig(self: false),
+    );
+
+    void acceptPresence(dynamic raw) {
+      if (_learningRole != LearningPanelRole.teacher) return;
+      final payload = _unwrapLearningPresencePayload(raw);
+      final id = '${payload['id'] ?? ''}'.trim();
+      if (id.isEmpty || id == myId) return;
+      _learningStudentLastSeen[id] = DateTime.now();
+      if (mounted) setState(() {});
+    }
+
+    channel.onBroadcast(
+      event: 'student_online',
+      callback: (raw, [ref]) => acceptPresence(raw),
+    );
+    channel.onBroadcast(
+      event: 'student_ping',
+      callback: (raw, [ref]) => acceptPresence(raw),
+    );
+    channel.onBroadcast(
+      event: 'student_offline',
+      callback: (raw, [ref]) {
+        if (_learningRole != LearningPanelRole.teacher) return;
+        final payload = _unwrapLearningPresencePayload(raw);
+        final id = '${payload['id'] ?? ''}'.trim();
+        if (id.isEmpty) return;
+        if (_learningStudentLastSeen.remove(id) != null && mounted) {
+          setState(() {});
+        }
+      },
+    );
+    channel.onBroadcast(
+      event: 'who_is_student',
+      callback: (raw, [ref]) {
+        if (_learningRole == LearningPanelRole.student) {
+          unawaited(_publishLearningStudentPresence(event: 'student_online'));
+        }
+      },
+    );
+
+    await channel.subscribe();
+    _learningPresenceChannel = channel;
+
+    _learningPresenceCleanup ??=
+        Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_learningRole != LearningPanelRole.teacher) return;
+      final threshold = DateTime.now().subtract(const Duration(seconds: 25));
+      final before = _learningStudentLastSeen.length;
+      _learningStudentLastSeen
+          .removeWhere((_, seenAt) => seenAt.isBefore(threshold));
+      if (before != _learningStudentLastSeen.length && mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  Future<void> _publishLearningStudentPresence({
+    String event = 'student_ping',
+  }) async {
+    if (_learningRole != LearningPanelRole.student &&
+        event != 'student_offline') {
+      return;
+    }
+    await _ensureLearningPresenceChannel();
+    final channel = _learningPresenceChannel;
+    final user = Supabase.instance.client.auth.currentUser;
+    final name = (_nickname ?? '').trim();
+    if (channel == null || user == null || name.isEmpty) return;
+    await channel.sendBroadcastMessage(
+      event: event,
+      payload: <String, dynamic>{
+        'id': user.id,
+        'name': name,
+        'role': 'student',
+        'ts': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
+  }
+
+  Future<void> _updateLearningPresenceForRole(
+    LearningPanelRole previous,
+    LearningPanelRole next,
+  ) async {
+    if (previous == LearningPanelRole.student &&
+        next != LearningPanelRole.student) {
+      await _publishLearningStudentPresence(event: 'student_offline');
+    }
+
+    _learningPresenceHeartbeat?.cancel();
+    _learningPresenceHeartbeat = null;
+
+    if (next == LearningPanelRole.none) return;
+    await _ensureLearningPresenceChannel();
+
+    if (next == LearningPanelRole.student) {
+      await _publishLearningStudentPresence(event: 'student_online');
+      _learningPresenceHeartbeat =
+          Timer.periodic(const Duration(seconds: 8), (_) {
+        unawaited(_publishLearningStudentPresence());
+      });
+      return;
+    }
+
+    _learningStudentLastSeen.clear();
+    await _learningPresenceChannel?.sendBroadcastMessage(
+      event: 'who_is_student',
+      payload: <String, dynamic>{
+        'from': Supabase.instance.client.auth.currentUser?.id ?? '',
+        'ts': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _handleLearningRoleChanged(LearningPanelRole role) {
+    final previous = _learningRole;
+    if (mounted) {
+      setState(() => _learningRole = role);
+    } else {
+      _learningRole = role;
+    }
+    unawaited(_updateLearningPresenceForRole(previous, role));
+  }
+
+  Future<void> _disposeLearningPresence() async {
+    _learningPresenceHeartbeat?.cancel();
+    _learningPresenceHeartbeat = null;
+    _learningPresenceCleanup?.cancel();
+    _learningPresenceCleanup = null;
+
+    final channel = _learningPresenceChannel;
+    _learningPresenceChannel = null;
+
+    // При закрытии не создаём канал заново только ради сообщения offline.
+    if (_learningRole == LearningPanelRole.student && channel != null) {
+      final user = Supabase.instance.client.auth.currentUser;
+      final name = (_nickname ?? '').trim();
+      if (user != null && name.isNotEmpty) {
+        try {
+          await channel.sendBroadcastMessage(
+            event: 'student_offline',
+            payload: <String, dynamic>{
+              'id': user.id,
+              'name': name,
+              'role': 'student',
+              'ts': DateTime.now().toUtc().toIso8601String(),
+            },
+          );
+        } catch (_) {}
+      }
+    }
+
+    if (channel != null) {
+      try {
+        await channel.unsubscribe();
+      } catch (_) {}
+      try {
+        await Supabase.instance.client.removeChannel(channel);
+      } catch (_) {}
+    }
+    _learningStudentLastSeen.clear();
+  }
+
+  void _selectLearningStudent(String studentId) {
+    if (!_learningStudents.any((student) => student.id == studentId)) return;
+    setState(() {
+      _selectedLearningStudentId = studentId;
+
+      // Строка выбрана, но выбор ещё не подтверждён кнопкой.
+      _confirmedLearningStudentId = null;
+      _learningInvitationStatus = null;
+    });
+  }
+
+  void _toggleLearningBoardsView() {
+    setState(() {
+      _learningShowAllBoards = !_learningShowAllBoards;
+      if (!_learningShowAllBoards) {
+        _learningFocusedStudentId ??= _firstLearningBoardStudentId;
+      }
+    });
+  }
+
+  String? get _firstLearningBoardStudentId {
+    // Первая доска — это всегда левый верхний слот.
+    if (_learningStudents.isNotEmpty) return _learningStudents.first.id;
+    if (_learningGameSessions.isNotEmpty) {
+      return _learningGameSessions.keys.first;
+    }
+    return null;
+  }
+
+  _LearningGameSession? get _activeLearningGameSession {
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    if (focusedId == null) return null;
+    return _learningGameSessions[focusedId];
+  }
+
+  _LearningGameSession? get _selectedLearningGameSession {
+    final selectedId = _selectedLearningStudentId ?? _learningFocusedStudentId;
+    if (selectedId == null) return null;
+    return _learningGameSessions[selectedId];
+  }
+
+  bool get _selectedLearningStudentEvaluationEnabled =>
+      _selectedLearningGameSession?.studentEvaluationEnabled ?? false;
+
+  void _focusLearningStudentBoard(String studentId) {
+    if (!_learningStudents.any((student) => student.id == studentId) &&
+        !_learningGameSessions.containsKey(studentId)) {
+      return;
+    }
+    setState(() {
+      _selectedLearningStudentId = studentId;
+      _learningFocusedStudentId = studentId;
+      _learningShowAllBoards = false;
+    });
+  }
+
+  void _toggleVideoLearningStudent(String studentId) {
+    if (!_learningStudents.any((student) => student.id == studentId)) return;
+
+    var added = false;
+    setState(() {
+      if (_selectedVideoStudentIds.contains(studentId)) {
+        _selectedVideoStudentIds.remove(studentId);
+        return;
+      }
+      if (_selectedVideoStudentIds.length >= 8) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Для одного видеозвонка можно выбрать до 8 учеников'),
+          ),
+        );
+        return;
+      }
+      _selectedVideoStudentIds.add(studentId);
+      added = true;
+    });
+
+    // Если видеоурок уже идёт, новый отмеченный ученик вызывается сразу.
+    // Первый ученик при этом не отключается и продолжает работать в своём окне.
+    final activeCall = _classroomVideoCall;
+    if (added &&
+        activeCall != null &&
+        activeCall.isActive &&
+        activeCall.isTeacher) {
+      unawaited(_extendRunningClassroomVideo());
+    }
+  }
+
+  Future<void> _extendRunningClassroomVideo() async {
+    await startSelectedStudentsVideo();
+  }
+
+  Future<void> _inviteLearningStudentToGame(
+    LearningStudent student,
+  ) async {
+    if (!_learningStudents.any((item) => item.id == student.id)) {
+      return;
+    }
+    if (!_learningOnlineStudentIds.contains(student.id)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${student.nickname} должен войти через «Войти как ученик»',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    if (_learningPendingGameStudentIds.contains(student.id)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ждём ответ от ${student.nickname}')),
+        );
+      }
+      return;
+    }
+
+    final existing = _learningGameSessions[student.id];
+    if (existing != null && !existing.terminated) {
+      _focusLearningStudentBoard(student.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Партия с ${student.nickname} уже открыта'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (existing == null && _learningGameSessions.length >= 8) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Одновременно можно открыть не более 8 партий'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (_lobby == null) {
+      await _enterLobby(showMessage: false);
+      if (_lobby == null) return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text('Партия с ${student.nickname}'),
+        content: const Text('Кем хотите играть?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop('random'),
+            child: const Text('Случайный'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop('white'),
+            child: const Text('Белыми'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogCtx).pop('black'),
+            child: const Text('Чёрными'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    var myColor = choice;
+    if (myColor == 'random') {
+      myColor = math.Random().nextBool() ? 'white' : 'black';
+    }
+
+    final pickedTc = await showDialog<_TcChoice>(
+      context: context,
+      builder: (_) => _TcDialog(
+        initialMinutes: _tcMinutes,
+        initialIncrement: _tcIncrement,
+        initialRated: _matchRated,
+      ),
+    );
+    if (pickedTc == null) return;
+
+    final roomId = const Uuid().v4();
+    _pendingLearningGameInvites[roomId] = _PendingLearningGameInvite(
+      student: student,
+      myColor: myColor,
+      minutes: pickedTc.minutes,
+      increment: pickedTc.increment,
+      rated: pickedTc.rated,
+    );
+
+    try {
+      _lobby!.sendPresenceNow();
+      await _lobby!.sendInvite(
+        toUserId: student.id,
+        toName: student.nickname,
+        roomId: roomId,
+        color: myColor,
+        minutes: pickedTc.minutes,
+        increment: pickedTc.increment,
+        rated: pickedTc.rated,
+        kind: 'learning',
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _selectedLearningStudentId = student.id;
+        _learningFocusedStudentId ??= student.id;
+        _learningInvitationStatus =
+            'Приглашение отправлено: ${student.nickname}';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Приглашение отправлено: ${student.nickname}, '
+            '${pickedTc.minutes}+${pickedTc.increment}',
+          ),
+        ),
+      );
+
+      // Если ученик не ответил, кнопка не должна навсегда оставаться «Ждём…».
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 45), () {
+          final stillPending = _pendingLearningGameInvites[roomId];
+          if (stillPending == null || stillPending.student.id != student.id) {
+            return;
+          }
+          _pendingLearningGameInvites.remove(roomId);
+          if (!mounted) return;
+          setState(() {
+            _learningInvitationStatus =
+                '${student.nickname} не ответил на приглашение';
+          });
+        }),
+      );
+    } catch (error) {
+      _pendingLearningGameInvites.remove(roomId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось пригласить ученика: $error')),
+      );
+    }
+  }
+
+  Future<void> _sendClassroomVideoInvitations({
+    required SupabaseClient client,
+    required String lessonId,
+    required String classroomId,
+    required String teacherId,
+    required String teacherName,
+    required List<LearningStudent> students,
+  }) async {
+    final invitations = cls.LessonInvitationService.instance;
+    await invitations.start(client);
+
+    for (final student in students) {
+      await invitations.sendInvitation(
+        cls.LessonInvitation(
+          lessonId: lessonId,
+          teacherId: teacherId,
+          teacherName: teacherName,
+          studentId: student.id,
+          studentName: student.nickname,
+          createdAt: DateTime.now(),
+          kind: 'video',
+          classroomId: classroomId,
+        ),
+      );
+    }
+  }
+
+  /// Вызывается кнопкой «Видео» из общей шапки приложения.
+  ///
+  /// Первый вызов создаёт видеокласс. Следующие выбранные ученики добавляются
+  /// в тот же видеокласс без отключения уже работающих учеников.
+  Future<bool> startSelectedStudentsVideo() async {
+    final client = Supabase.instance.client;
+    final teacherId = client.auth.currentUser?.id ?? '';
+    final teacherName = (_nickname ?? '').trim();
+    final students = _learningStudents
+        .where((student) => _selectedVideoStudentIds.contains(student.id))
+        .take(8)
+        .toList(growable: false);
+
+    if (teacherId.isEmpty || teacherName.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сначала войдите в аккаунт учителя')),
+        );
+      }
+      return false;
+    }
+    if (students.isEmpty) return false;
+
+    final activeCall = _classroomVideoCall;
+    final activeLessonId = _classroomVideoLessonId;
+    final activeClassroomId = _classroomVideoClassroomId;
+    final canExtendExistingCall = activeCall != null &&
+        activeCall.isActive &&
+        activeCall.isTeacher &&
+        activeCall.teacherId == teacherId &&
+        activeLessonId != null &&
+        activeLessonId.isNotEmpty &&
+        activeClassroomId != null &&
+        activeClassroomId.isNotEmpty;
+
+    if (canExtendExistingCall) {
+      final runningCall = activeCall!;
+      final runningLessonId = activeLessonId!;
+      final runningClassroomId = activeClassroomId!;
+      final newStudents = students
+          .where((student) => !runningCall.hasTeacherStudent(student.id))
+          .toList(growable: false);
+
+      if (newStudents.isEmpty) return true;
+
+      try {
+        await runningCall.addTeacherStudents(
+          <String, String>{
+            for (final student in newStudents) student.id: student.nickname,
+          },
+        );
+        await _sendClassroomVideoInvitations(
+          client: client,
+          lessonId: runningLessonId,
+          classroomId: runningClassroomId,
+          teacherId: teacherId,
+          teacherName: teacherName,
+          students: newStudents,
+        );
+
+        if (!mounted) return true;
+        setState(() {
+          _learningInvitationStatus =
+              'Добавлено в видеовызов: ${newStudents.length} ученик(а/ов)';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'В видеовызов добавлено ${newStudents.length} ученик(а/ов)',
+            ),
+          ),
+        );
+        return true;
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Не удалось добавить ученика: $error')),
+          );
+        }
+        return true;
+      }
+    }
+
+    final lessonId = const Uuid().v4();
+    final signaling = cls.ClassroomSignaling(client);
+
+    try {
+      final classroomId = await signaling.ensureActiveClassroom(
+        schoolId: 'video:$lessonId',
+        teacherId: teacherId,
+      );
+
+      await _classroomVideoCall?.stop();
+      _classroomVideoCall = null;
+      _classroomVideoLessonId = null;
+      _classroomVideoClassroomId = null;
+
+      final call = ClassroomCallService(
+        client: client,
+        signaling: signaling,
+        classroomId: classroomId,
+        selfId: teacherId,
+        teacherId: teacherId,
+        isTeacher: true,
+        peerNames: <String, String>{
+          for (final student in students) student.id: student.nickname,
+        },
+      );
+      _classroomVideoCall = call;
+      await call.start(context);
+      _classroomVideoLessonId = lessonId;
+      _classroomVideoClassroomId = classroomId;
+
+      await _sendClassroomVideoInvitations(
+        client: client,
+        lessonId: lessonId,
+        classroomId: classroomId,
+        teacherId: teacherId,
+        teacherName: teacherName,
+        students: students,
+      );
+
+      if (!mounted) return true;
+      setState(() {
+        _learningInvitationStatus =
+            'Видеовызов отправлен: ${students.length} ученик(а/ов)';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Видеовызов отправлен ${students.length} ученик(а/ов)',
+          ),
+        ),
+      );
+      return true;
+    } catch (error) {
+      await _classroomVideoCall?.stop();
+      _classroomVideoCall = null;
+      _classroomVideoLessonId = null;
+      _classroomVideoClassroomId = null;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось начать видеоурок: $error')),
+        );
+      }
+      return true;
+    }
+  }
+
+  Future<void> acceptVideoInvitation(cls.LessonInvitation invitation) async {
+    final classroomId = invitation.classroomId;
+    final client = Supabase.instance.client;
+    final studentId = client.auth.currentUser?.id ?? '';
+    if (!invitation.isVideo ||
+        classroomId == null ||
+        classroomId.isEmpty ||
+        studentId.isEmpty) {
+      return;
+    }
+
+    await _classroomVideoCall?.stop();
+    final call = ClassroomCallService(
+      client: client,
+      signaling: cls.ClassroomSignaling(client),
+      classroomId: classroomId,
+      selfId: studentId,
+      teacherId: invitation.teacherId,
+      isTeacher: false,
+      peerNames: <String, String>{
+        invitation.teacherId: invitation.teacherName,
+      },
+    );
+    _classroomVideoCall = call;
+    await call.start(context);
+    _classroomVideoLessonId = invitation.lessonId;
+    _classroomVideoClassroomId = classroomId;
+  }
+
+  Future<void> stopClassroomVideo() async {
+    await _classroomVideoCall?.stop();
+    _classroomVideoCall = null;
+    _classroomVideoLessonId = null;
+    _classroomVideoClassroomId = null;
+  }
+
+  Future<void> _inviteSelectedLearningStudent() async {
+    final student = _selectedLearningStudent;
+    final client = Supabase.instance.client;
+    final teacherId = client.auth.currentUser?.id;
+
+    if (teacherId == null || teacherId.isEmpty || _nickname == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Сначала войдите в зарегистрированный аккаунт'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (student == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сначала выберите ученика из списка')),
+        );
+      }
+      return;
+    }
+
+    final lessonId = const Uuid().v4();
+
+    setState(() {
+      _learningRole = LearningPanelRole.teacher;
+      _confirmedLearningStudentId = student.id;
+      _pendingLearningLessonId = lessonId;
+      _learningInvitationStatus =
+          'Отправляем приглашение ученику ${student.nickname}…';
+    });
+
+    try {
+      final service = cls.LessonInvitationService.instance;
+      await service.start(client);
+      await service.sendInvitation(
+        cls.LessonInvitation(
+          lessonId: lessonId,
+          teacherId: teacherId,
+          teacherName: _nickname ?? 'Учитель',
+          studentId: student.id,
+          studentName: student.nickname,
+          createdAt: DateTime.now(),
+        ),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _learningInvitationStatus =
+            'Приглашение отправлено ученику ${student.nickname}. Ждём ответ';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _pendingLearningLessonId = null;
+        _confirmedLearningStudentId = null;
+        _learningInvitationStatus = 'Не удалось отправить приглашение';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка приглашения: $error')),
+      );
+    }
+  }
+
+  Future<void> _activateLearningSession({
+    required String lessonId,
+    required LearningPanelRole role,
+  }) async {
+    _leaveBoardChannel();
+
+    if (!mounted) return;
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = true;
+      _mobilePanel = 'learning';
+      _learningRole = role;
+      _learningLessonId = lessonId;
+      _syncBoard = true;
+      _sharedControl = true;
+      _syncEditor = true;
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+    });
+
+    _joinBoardChannel();
+
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (role == LearningPanelRole.teacher) {
+      _syncSendFen();
+      _syncSendEditMode(_editMode);
+    } else {
+      _boardChannel?.sendBroadcastMessage(
+        event: 'sync_request',
+        payload: {'from': Supabase.instance.client.auth.currentUser?.id},
+      );
+    }
+  }
+
+  Future<void> openLearningAsStudent(
+    String lessonId,
+    String teacherId,
+    String teacherName,
+  ) async {
+    _closePuzzleSettingsOverlay();
+
+    setState(() {
+      _learningTeacherId = teacherId;
+      _learningTeacherName = teacherName;
+      _learningInvitationStatus = 'Урок с учителем $teacherName подключён';
+    });
+
+    await _activateLearningSession(
+      lessonId: lessonId,
+      role: LearningPanelRole.student,
+    );
+  }
+
+  void openPuzzlesPanel() {
+    // Окно «Задачи» — отдельный режим ученика.
+    // Если было открыто окно «Настройка», закрываем его, чтобы эталонные
+    // стрелки/кружки тренера не оставались на доске и не управлялись
+    // кнопками ученика.
+    _closePuzzleSettingsOverlay();
+
+    setState(() {
+      _showPuzzlePanel = true;
+      _showLearningPanel = false;
+      _mobilePanel = 'puzzles';
+      _learningRole = LearningPanelRole.none;
+
+      // Полностью гасим режим тренера на доске, но НЕ удаляем данные эталона.
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _showPuzzleAnswerArrows = false;
+      _hiddenPuzzleAnalysisKinds.clear();
+
+      // Оставляем ученика в чистом режиме без активного рисования.
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+      _learningDrawingEnabled = false;
+    });
+  }
+
+  void openLearningPanel() {
+    _closePuzzleSettingsOverlay();
+    unawaited(_loadLearningStudents(showError: true));
+
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = true;
+      _mobilePanel = 'learning';
+      _learningRole = LearningPanelRole.none;
+
+      _activeAnalysisArrowKey = null;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _showPuzzleAnswerArrows = false;
+
+      _studentAnalysisArrowKey = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+      _learningDrawingEnabled = false;
+    });
+  }
+
+  Future<void> _toggleLearningStudentEvaluation() async {
+    if (_learningRole != LearningPanelRole.teacher) return;
+
+    final session = _selectedLearningGameSession;
+    if (session == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Сначала ученик должен принять приглашение и подключиться к партии',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final next = !session.studentEvaluationEnabled;
+    setState(() {
+      session.studentEvaluationEnabled = next;
+      _learningStudentEvaluationEnabled = next;
+    });
+
+    try {
+      final lobby = _lobby;
+      if (lobby == null) {
+        throw StateError('Лобби не подключено');
+      }
+
+      // Важно: это не изменение интерфейса учителя.
+      // Команда адресуется по ID только выбранному ученику и приходит
+      // по тому же каналу, по которому ученик получил приглашение в игру.
+      await lobby.sendLearningUiControl(
+        toUserId: session.student.id,
+        command: 'student_eval',
+        data: <String, dynamic>{
+          'enabled': next,
+          'roomId': session.roomId,
+          'studentId': session.student.id,
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        session.studentEvaluationEnabled = !next;
+        _learningStudentEvaluationEnabled = !next;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось изменить оценку позиции: $error')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          next
+              ? 'Оценка позиции для ${session.student.nickname} включена'
+              : 'Оценка позиции для ${session.student.nickname} выключена',
+        ),
+      ),
+    );
+  }
+
+  void openLobbyPanel() {
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = false;
+      _mobilePanel = 'lobby';
+      _learningRole = LearningPanelRole.none;
+    });
+  }
+
+  void openBoardOnly() {
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = false;
+      _mobilePanel = 'none';
+      _learningRole = LearningPanelRole.none;
+    });
+  }
+
+  void openMobileGamePanel() {
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = false;
+      _mobilePanel = 'game';
+      _learningRole = LearningPanelRole.none;
+    });
+  }
+
+  void openMobileRightPanel() {
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = false;
+      _mobilePanel = 'moves';
+      _learningRole = LearningPanelRole.none;
+    });
+  }
+
+  void openMobileChatPanel() {
+    setState(() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = false;
+      _mobilePanel = 'chat';
+      _learningRole = LearningPanelRole.none;
+    });
+  }
+
   bool _loading = false;
   bool _engineDuel = false;
   bool _gptLoading = false;
+
+  double _engineEval = 0.0; // диапазон для ползунка: -15 .. +15
+  bool _loadingEval = false;
+  int _evalRequestEpoch = 0;
+  String? _lastEvalScheduledFen;
 
   // engine
   bool _vsEngine = false;
@@ -819,16 +3720,15 @@ class _MyHomePageState extends State<MyHomePage> {
   final ScrollController _movesScroll = ScrollController();
 
   // board scale
-  static const double _baseAt100 = 480.0;
+  static const double _baseAt100 = 560.0;
   static const double _minPercent = 50.0;
   static const double _maxPercent = 200.0;
-  static const double _stepPercent = 10.0;
+  static const double _stepPercent = 5.0;
   double _boardPercent = 100.0;
   bool _showFenInput = false;
   void _saveBoardPercent() {
     try {
-      html.window.localStorage['board_percent'] =
-          _boardPercent.toStringAsFixed(0);
+      writeLocalStorage('board_percent', _boardPercent.toStringAsFixed(0));
     } catch (_) {}
   }
 
@@ -842,10 +3742,30 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _logout() async {
     try {
+      await _leaveLobby();
+    } catch (e) {
+      debugPrint('[LOBBY AUTO] Ошибка выхода из лобби: $e');
+    }
+
+    try {
+      await _disposeLearningPresence();
       await Supabase.instance.client.auth.signOut();
     } catch (_) {}
+
+    if (!mounted) return;
     setState(() {
       _nickname = null;
+      _learningStudents.clear();
+      for (final session in _learningGameSessions.values) {
+        session.dispose();
+      }
+      _learningGameSessions.clear();
+      _pendingLearningGameInvites.clear();
+      _learningFocusedStudentId = null;
+      _learningShowAllBoards = false;
+      _selectedLearningStudentId = null;
+      _confirmedLearningStudentId = null;
+      _learningInvitationStatus = null;
     });
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -874,11 +3794,22 @@ class _MyHomePageState extends State<MyHomePage> {
   void resetBoardPercent() => _resetBoardPercent();
   double get boardPercentValue => _boardPercent;
 
+  double readBoardPercent() => _boardPercent;
+
+  void openAuthPanel() {
+    if (!mounted) return;
+    setState(() {
+      _authOpen = true;
+    });
+  }
+
   // audio
   final AudioPlayer _player = AudioPlayer();
 
   // auth panel
+  // auth panel
   bool _authOpen = false;
+  ModalRoute<dynamic>? _lastHandledAuthRoute;
   bool _authIsLogin = true;
   final _passCtl = TextEditingController();
   final _nickCtl = TextEditingController();
@@ -887,12 +3818,25 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // realtime
   LobbyService? _lobby;
+  bool _autoLobbyConnecting = false;
   RoomService? _room;
   String? _roomId;
   String? _opponentId;
   String? _opponentName;
   bool get _inRoom => _roomId != null;
   bool _isSpectator = false;
+
+  // Истина только на стороне ученика, если игровая комната открыта
+  // приглашением из панели «Учиться».
+  bool _activeRoomIsLearning = false;
+
+  // Надёжный признак именно ученической школьной партии. Он не зависит
+  // от того, сохранился ли служебный флаг приглашения после открытия комнаты.
+  bool get _studentLearningRoomActive =>
+      _inRoom &&
+      !_isSpectator &&
+      _showLearningPanel &&
+      _learningRole == LearningPanelRole.student;
 
   // room chat
   final List<_ChatMsg> _chat = [];
@@ -935,6 +3879,11 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
+
+    // Flutter Web: отключаем стандартное меню браузера,
+    // чтобы правая кнопка мыши удаляла стрелки/кружки на доске.
+    BrowserContextMenu.disableContextMenu();
+
 // === загрузим сохранённый фон и начнём слушать изменения ===
     bgController.load().then((_) {
       if (!mounted) return;
@@ -945,7 +3894,7 @@ class _MyHomePageState extends State<MyHomePage> {
     bgController.addListener(_onBgChanged);
     _backgroundBytes = bgController.bgBytes;
     try {
-      final s = html.window.localStorage['board_percent'];
+      final s = readLocalStorage('board_percent');
       if (s != null) {
         final p = double.tryParse(s);
         if (p != null) {
@@ -956,19 +3905,35 @@ class _MyHomePageState extends State<MyHomePage> {
 
     _fens.add(game.fen);
     _plyIndex = 0;
-    _loadNickname().then((_) => _tryRestoreRoom());
+    _loadNickname().then((_) async {
+      await _loadLearningStudents();
+      await _enterLobbyAutomatically();
+      await _tryRestoreRoom();
+    });
     _duelDelayCtl = TextEditingController(text: _engineDuelDelayMs.toString());
+    _startLessonResponseListener();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshEvalBar();
+    });
+
+// Показ стартового окна один раз после первого кадра
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    // Считаем аргументы, переданные навигатором из AppShell (openAuth: true)
-    final args = ModalRoute.of(context)?.settings.arguments;
+    final route = ModalRoute.of(context);
+    final args = route?.settings.arguments;
 
-    // Открыть панель авторизации один раз (если её ещё не открывали)
-    if (args is Map && args['openAuth'] == true && !_authOpen) {
+    if (route != null &&
+        args is Map &&
+        args['openAuth'] == true &&
+        !_authOpen &&
+        _lastHandledAuthRoute != route) {
+      _lastHandledAuthRoute = route;
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         setState(() => _authOpen = true);
@@ -984,15 +3949,170 @@ class _MyHomePageState extends State<MyHomePage> {
     _stopTick();
     _room?.disconnect();
     _lobby?.disconnect();
+    for (final session in _learningGameSessions.values) {
+      session.dispose();
+    }
+    _learningGameSessions.clear();
+    _pendingLearningGameInvites.clear();
+    unawaited(_disposeLearningPresence());
+    _closePuzzleSettingsOverlay();
     _duelDelayCtl.dispose();
+    _lessonResponseSub?.cancel();
+    _lessonResponseSub = null;
+    unawaited(_classroomVideoCall?.stop() ?? Future<void>.value());
+    _classroomVideoCall = null;
 
     // >>> освобождаем контроллер для GPT-подсказки
     _gptPromptCtl.dispose();
     bgController.removeListener(_onBgChanged);
+
+    // Возвращаем стандартное контекстное меню при уничтожении экрана.
+    BrowserContextMenu.enableContextMenu();
+
     super.dispose();
   }
 
+  // --- СОВМЕСТНОЕ РЕДАКТИРОВАНИЕ ДОСКИ (FEN sync через Supabase Realtime) ---
+  bool _syncBoard = false;
+  RealtimeChannel? _boardChannel;
+  bool _sharedControl = false; // общий контроль: можно ходить любыми фигурами
+
+  bool _syncEditor = false;
+  String? get _syncRoomId => _learningLessonId ?? _roomId;
+  bool _applyingRemoteFen = false; // защита от «эхо» при приёме FEN
+
+// подхватываем текущую комнату, если есть
+
+  void _joinBoardChannel() {
+    final roomId = _syncRoomId;
+    if (roomId == null || roomId.isEmpty) return;
+    _leaveBoardChannel();
+    _boardChannel = Supabase.instance.client.channel('board:$roomId');
+
+    _boardChannel!
+      // поток FEN (и ходы, и «живые» правки из редактора)
+      ..onBroadcast(
+        event: 'fen',
+        callback: (payload, [ref]) {
+          if (!_syncBoard) return;
+          final fen = payload['fen'] as String?;
+          if (fen == null || fen == game.fen) return;
+
+          _applyingRemoteFen = true; // ← ставим флаг до применения
+          setState(() {
+            final ok = game.load(fen);
+            if (ok) {
+              _fenController.text = game.fen;
+              _sanMoves.clear();
+              _fens
+                ..clear()
+                ..add(game.fen);
+              _plyIndex = 0;
+              _selectedSquare = null;
+              _legalTargets.clear();
+              _captureTargets.clear();
+              _result = null;
+              // _editMode не трогаем
+            }
+          });
+          _applyingRemoteFen = false; // ← снимаем флаг после применения
+        },
+      )
+
+      // синхрон включения/выключения «Редактор»
+      ..onBroadcast(
+        event: 'edit_mode',
+        callback: (payload, [ref]) {
+          final on = payload['on'] == true;
+          setState(() {
+            _editMode = on;
+          });
+        },
+      )
+      ..onBroadcast(
+        event: 'edit_mode',
+        callback: (payload, [ref]) {
+          final on = payload['on'] == true;
+          setState(() {
+            _editMode = on;
+          });
+        },
+      )
+      ..onBroadcast(
+        event: 'student_eval',
+        callback: (payload, [ref]) {
+          final enabled = payload['enabled'] == true;
+          if (!mounted) return;
+          setState(() {
+            _learningStudentEvaluationEnabled = enabled;
+          });
+        },
+      )
+      ..onBroadcast(
+        event: 'sync_request',
+        callback: (payload, [ref]) {
+          if (!_syncBoard || _learningRole != LearningPanelRole.teacher) {
+            return;
+          }
+          _syncSendFen();
+          _syncSendEditMode(_editMode);
+          _boardChannel?.sendBroadcastMessage(
+            event: 'student_eval',
+            payload: {'enabled': _learningStudentEvaluationEnabled},
+          );
+        },
+      )
+      ..subscribe();
+  }
+
+  void _leaveBoardChannel() {
+    if (_boardChannel != null) {
+      Supabase.instance.client.removeChannel(_boardChannel!);
+      _boardChannel = null;
+    }
+  }
+
+  void _toggleSyncBoard() {
+    setState(() {
+      _syncBoard = !_syncBoard;
+      _sharedControl = _syncBoard; // общий контроль вместе с режимом
+      _syncEditor = _syncBoard; // ← включаем синхрон редактора вместе с режимом
+    });
+    if (_syncBoard) {
+      if (_boardChannel == null) {
+        _joinBoardChannel();
+      }
+      _syncSendFen(); // выровнять позицию
+      _syncSendEditMode(_editMode); // разослать текущее состояние редактора
+    }
+  }
+
+  void _syncSendFen() {
+    final ch = _boardChannel;
+    if (!_syncBoard || ch == null) return;
+    ch.sendBroadcastMessage(
+      event: 'fen',
+      payload: {'fen': game.fen},
+    );
+  }
+
+// «Живое» превью из редактора (без применения к game)
+  void _syncSendEditFen() {
+    final ch = _boardChannel;
+    if (!_syncEditor || ch == null) return; // только при совместном режиме
+    final fen = _boardToFen();
+    ch.sendBroadcastMessage(event: 'fen', payload: {'fen': fen});
+  }
+
+// Синхрон состояния редактора (вкл/выкл)
+  void _syncSendEditMode(bool on) {
+    final ch = _boardChannel;
+    if (!_syncBoard || ch == null) return; // только при совместном режиме
+    ch.sendBroadcastMessage(event: 'edit_mode', payload: {'on': on});
+  }
+
   // ================== helpers & services ==================
+
   String _opposite(String c) => c.toLowerCase() == 'white' ? 'black' : 'white';
 
   Future<void> _playSound({required bool capture}) async {
@@ -1077,7 +4197,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (parsed == null || !parsed.hasScheme || !u.startsWith('https://')) {
       return 'supabaseUrl должен начинаться с https://';
     }
-    if (!u.contains('.supabase.co') && !u.contains('.supabase.in')) {
+    if (parsed.host.isEmpty) {
       return 'supabaseUrl должен содержать .supabase.co (или .supabase.in).';
     }
     return null;
@@ -1313,6 +4433,8 @@ class _MyHomePageState extends State<MyHomePage> {
         await _signInWithNick(nickname: uname, password: pass);
       }
       await _loadNickname();
+      await _loadLearningStudents(showError: true);
+      await _enterLobbyAutomatically();
       if (mounted) setState(() => _authOpen = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1372,9 +4494,10 @@ class _MyHomePageState extends State<MyHomePage> {
                   title: const Text('Учиться'),
                   onTap: () {
                     Navigator.pop(ctx);
-                    // TODO: навигация в ваш раздел "Учиться"
+                    openLearningPanel();
                   },
                 ),
+
                 ListTile(
                   leading: const Icon(Icons.extension),
                   title: const Text('Задачи'),
@@ -1438,7 +4561,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.fiber_new),
-                  title: const Text('Новая игра'),
+                  title: const Text('Новый игрок'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _onNewGameUniversal();
@@ -1457,7 +4580,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   title: Text(_editMode ? 'Выйти из редактора' : 'Редактор'),
                   onTap: () {
                     Navigator.pop(ctx);
-                    if (_inRoom) return;
+                    if (_inRoom && !_sharedControl) return;
                     _editMode ? _applyEditor() : _enterEditor();
                   },
                 ),
@@ -1489,6 +4612,66 @@ class _MyHomePageState extends State<MyHomePage> {
                   onTap: () {
                     Navigator.pop(ctx);
                     _logout();
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void openLearnSheet(BuildContext ctx) {
+    showModalBottomSheet(
+      context: ctx,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx2) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.9,
+          minChildSize: 0.6,
+          maxChildSize: 0.95,
+          builder: (ctx3, scroll) {
+            return ListView(
+              controller: scroll,
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+              children: [
+                const ListTile(
+                  title: Text('Учиться',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                const Divider(height: 1),
+
+                // 1) Реальный учитель — открывает диалог «Школы»
+                ListTile(
+                  leading: const Icon(Icons.school),
+                  title: const Text('Школа с реальным учителем'),
+                  onTap: () async {
+                    Navigator.pop(ctx); // закрываем лист
+                    final sb = Supabase.instance.client;
+
+                    await showSchoolDialogNew(
+                      context: ctx,
+                      client: sb,
+                      signaling: cls.ClassroomSignaling(
+                          sb), // тот же класс, что и в classroom/*
+                      schoolId: 'demo-school', // временно
+                      teacherId: sb.auth.currentUser?.id ?? 'teacher_demo',
+                    );
+                  },
+                ),
+
+                // 2) Виртуальный учитель — заглушка
+                ListTile(
+                  leading: const Icon(Icons.smart_toy),
+                  title: const Text('Школа с виртуальным учителем (аватар)'),
+                  onTap: () {
+                    Navigator.pop(ctx2);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Скоро…')),
+                    );
                   },
                 ),
               ],
@@ -1593,30 +4776,16 @@ class _MyHomePageState extends State<MyHomePage> {
     final saneFen = sanitizeFenEp(fen);
     final fenForApi = stripEpField(saneFen);
 
-    final url = Uri.parse('https://chess-api.com/v1');
     try {
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'fen': fenForApi,
-          'variants': 3,
-          'depth': 18,
-          'maxThinkingTime': 2000,
-        }),
+      final obj = await sf.getAnalysisRaw(
+        fenForApi,
+        depth: 18,
+        multiPv: 3,
+        maxThinkingTime: 2000,
       );
-
-      if (response.statusCode == 200) {
-        final obj = jsonDecode(response.body);
-        final uci = _extractUci(obj);
-        setState(
-            () => _result = const JsonEncoder.withIndent('  ').convert(obj));
-        return uci;
-      } else {
-        setState(
-            () => _result = 'Error ${response.statusCode}: ${response.body}');
-        return null;
-      }
+      final uci = _extractUci(obj);
+      setState(() => _result = const JsonEncoder.withIndent('  ').convert(obj));
+      return uci;
     } catch (e) {
       setState(() => _result = 'Exception: $e');
       return null;
@@ -1766,6 +4935,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (uci != null) {
       await _applyUciMove(uci);
+      unawaited(_refreshEvalBar());
       _checkGameOver();
     }
     setState(() => _engineThinking = false);
@@ -1806,12 +4976,18 @@ class _MyHomePageState extends State<MyHomePage> {
     _selectedSquare = null;
     _legalTargets.clear();
     _captureTargets.clear();
+
+    if (_syncBoard && !_applyingRemoteFen) {
+      _syncSendFen();
+    }
   }
 
   void _setPly(int n) {
     _plyIndex = n.clamp(0, _sanMoves.length);
     _resetToFen(_fens[_plyIndex]);
     setState(() {});
+    unawaited(_refreshEvalBar());
+    _syncSendFen(); // ← отправляем текущий FEN второму игроку
   }
 
   void _goStart() => _setPly(0);
@@ -1909,6 +5085,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   bool _myTurnNow() {
+    if (_sharedControl) return true;
     if (_gameTerminated) return false;
     if (!_vsEngine && !_inRoom) return true;
     return game.turn == _humanColor;
@@ -1950,7 +5127,9 @@ class _MyHomePageState extends State<MyHomePage> {
     _scrollMovesToEnd();
 
     _onLocalMoveAffectClocks();
-    _broadcastClockSnapshot();
+
+    _syncSendFen();
+    unawaited(_refreshEvalBar());
   }
 
   void _scrollMovesToEnd() {
@@ -2011,21 +5190,35 @@ class _MyHomePageState extends State<MyHomePage> {
     required bool rated,
     bool broadcast = false,
   }) {
+    final bool noTime = (minutes == 0 && increment == 0);
+
     setState(() {
       _tcMinutes = minutes;
       _tcIncrement = increment;
-      _rated = rated;
-      _matchRated = rated;
+      _rated = noTime ? false : rated;
+      _matchRated = noTime ? false : rated;
     });
 
-    _resetClocks();
+    // если нет контроля времени — выключаем часы полностью
+    if (noTime) {
+      _stopTick();
+      _whiteMs = 0;
+      _blackMs = 0;
+      _clocksStarted = false;
+    } else {
+      _resetClocks();
+    }
+
     if (broadcast) _broadcastTimeControl();
     _broadcastClockSnapshot();
+
     if (mounted) {
+      final text = noTime
+          ? 'Контроль: без времени'
+          : 'Контроль: $minutes+${increment}${rated ? " (рейтинговая)" : ""}';
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(
-                'Контроль: $minutes+${increment}${rated ? " (рейтинговая)" : ""}')),
+        SnackBar(content: Text(text)),
       );
     }
   }
@@ -2043,8 +5236,16 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _startTickForActiveSide() {
     _stopTick();
+
+    // ← РЕЖИМ «БЕЗ КОНТРОЛЯ ВРЕМЕНИ»: минуты=0 и инкремент=0 — не тикаем
+    if (_tcMinutes == 0 && _tcIncrement == 0) {
+      _clocksStarted = false;
+      return;
+    }
+
     if (!_inRoom) return;
     if (_gameTerminated) return;
+
     _lastTickAt = DateTime.now();
     _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
       final now = DateTime.now();
@@ -2119,7 +5320,34 @@ class _MyHomePageState extends State<MyHomePage> {
     LobbyStore.instance.set(users);
   }
 
-  Future<void> _enterLobby() async {
+  Future<void> _enterLobbyAutomatically() async {
+    final supa = Supabase.instance.client;
+
+    if (_autoLobbyConnecting || _lobby != null) return;
+    if (supa.auth.currentUser == null || _nickname == null) return;
+
+    _autoLobbyConnecting = true;
+    try {
+      await _enterLobby(showMessage: false);
+    } catch (e, st) {
+      debugPrint('[LOBBY AUTO] Не удалось автоматически войти в лобби: $e');
+      debugPrintStack(stackTrace: st);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Аккаунт открыт, но автоматическое подключение к контактам не удалось',
+            ),
+          ),
+        );
+      }
+    } finally {
+      _autoLobbyConnecting = false;
+    }
+  }
+
+  Future<void> _enterLobby({bool showMessage = true}) async {
     final supa = Supabase.instance.client;
     final uid = supa.auth.currentUser?.id;
     if (uid == null || _nickname == null) {
@@ -2144,8 +5372,17 @@ class _MyHomePageState extends State<MyHomePage> {
         _syncLobbyStoreFromOnline(); // <<< добавили
       };
 
-      lobby.onInvite =
-          (roomId, fromId, fromName, inviterColor, m, inc, rated) async {
+      lobby.onInvite = (roomId, fromId, fromName, inviterColor, m, inc, rated,
+          inviteKind) async {
+        final isLearningInvite = inviteKind == 'learning';
+        final schoolModeActive =
+            _showLearningPanel && _learningRole != LearningPanelRole.none;
+        if (isLearningInvite && _learningRole != LearningPanelRole.student) {
+          return;
+        }
+        if (!isLearningInvite && schoolModeActive) {
+          return;
+        }
         if (_inviteDialogOpen) return;
         _inviteDialogOpen = true;
 
@@ -2154,7 +5391,9 @@ class _MyHomePageState extends State<MyHomePage> {
             context: context,
             barrierDismissible: false,
             builder: (dialogCtx) => AlertDialog(
-              title: const Text('Вызов на игру'),
+              title: Text(
+                isLearningInvite ? 'Приглашение от учителя' : 'Вызов на игру',
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2179,6 +5418,14 @@ class _MyHomePageState extends State<MyHomePage> {
           );
 
           if (ok == true) {
+            if (isLearningInvite && mounted) {
+              setState(() {
+                _learningTeacherId = fromId;
+                _learningTeacherName = fromName;
+                _learningInvitationStatus =
+                    'Партия с учителем $fromName подключена';
+              });
+            }
             _applyTimeControl(
                 minutes: m, increment: inc, rated: rated, broadcast: false);
             _matchRated = rated;
@@ -2197,6 +5444,7 @@ class _MyHomePageState extends State<MyHomePage> {
               opponentName: fromName,
               myColor: myColor,
               spectator: false,
+              learningRoom: isLearningInvite,
             );
           }
         } finally {
@@ -2205,6 +5453,22 @@ class _MyHomePageState extends State<MyHomePage> {
       };
 
       lobby.onAccept = (roomId, fromId, fromName, acceptorColor) {
+        final pending = _pendingLearningGameInvites.remove(roomId);
+        if (pending != null) {
+          unawaited(
+            _openLearningGameRoom(
+              roomId: roomId,
+              studentId: pending.student.id,
+              studentName: pending.student.nickname,
+              myColor: _opposite(acceptorColor),
+              minutes: pending.minutes,
+              increment: pending.increment,
+              rated: pending.rated,
+            ),
+          );
+          return;
+        }
+
         final myColor = _opposite(acceptorColor);
         _openRoom(roomId,
             opponentId: fromId,
@@ -2213,22 +5477,56 @@ class _MyHomePageState extends State<MyHomePage> {
             spectator: false);
       };
 
+      lobby.onLearningUiControl = (event) {
+        if ('${event['command'] ?? ''}' != 'student_eval') return;
+
+        final currentUserId =
+            Supabase.instance.client.auth.currentUser?.id ?? '';
+        final targetUserId = '${event['to'] ?? ''}';
+        if (currentUserId.isEmpty || targetUserId != currentUserId) return;
+
+        // Команда относится только к текущей учебной партии этого ученика.
+        final eventRoomId = '${event['roomId'] ?? ''}';
+        if (eventRoomId.isNotEmpty &&
+            _roomId != null &&
+            eventRoomId != _roomId) {
+          return;
+        }
+
+        final enabled = event['enabled'] == true;
+        if (!mounted) return;
+        setState(() {
+          _learningStudentEvaluationEnabled = enabled;
+          if (_roomId != null) {
+            _activeRoomIsLearning = true;
+          }
+        });
+
+        if (enabled) {
+          unawaited(_refreshEvalBar());
+        }
+      };
+
       _lobby = lobby;
     }
 
     await _lobby!.connect();
 
+    _joinBoardChannel();
+
     // Сразу после подключения синхронизируем текущий список в шину
     _syncLobbyStoreFromOnline(); // <<< добавили
 
-    if (mounted) {
+    if (mounted && showMessage) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Вы в лобби')));
+          .showSnackBar(const SnackBar(content: Text('Вы в контактах')));
     }
   }
 
   Future<void> _leaveLobby() async {
+    _leaveBoardChannel();
     await _lobby?.disconnect();
+
     _lobby = null; // << чтобы не держать старую ссылку
     LobbyStore.instance
         .clear(); // << сначала чистим шину (модалка увидит пусто)
@@ -2304,7 +5602,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _matchRated = pickedTc.rated;
 
     // 3) гарантируем подключение канала (если отвалился)
-    await _lobby!.connect();
+
     _lobby!.sendPresenceNow();
 
     final roomId = const Uuid().v4();
@@ -2344,21 +5642,1487 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _openLearningGameRoom({
+    required String roomId,
+    required String studentId,
+    required String studentName,
+    required String myColor,
+    required int minutes,
+    required int increment,
+    required bool rated,
+  }) async {
+    final oldSession = _learningGameSessions.remove(studentId);
+    oldSession?.dispose();
+
+    final room = RoomService(Supabase.instance.client, roomId: roomId);
+    final session = _LearningGameSession(
+      student: LearningStudent(id: studentId, nickname: studentName),
+      roomId: roomId,
+      myColor: myColor,
+      minutes: minutes,
+      increment: increment,
+      rated: rated,
+      room: room,
+    );
+
+    room.onMove = (payload) {
+      final incomingRoomId = '${payload['roomId'] ?? ''}';
+      if (incomingRoomId.isNotEmpty && incomingRoomId != session.roomId) return;
+      if ('${payload['kind'] ?? ''}' == 'learning_ctrl') {
+        debugPrint(
+            '[LEARNING CTRL][teacher] ${payload['type']} room=${session.roomId}');
+        _onLearningRemoteCtrl(session, payload);
+        return;
+      }
+      _applyLearningRemoteMove(
+        session,
+        '${payload['from'] ?? ''}',
+        '${payload['to'] ?? ''}',
+        payload['promotion']?.toString(),
+      );
+    };
+
+    room.onCtrl = (event) => _onLearningRemoteCtrl(session, event);
+    room.onLearningStudentEvaluation = (event) {
+      _onLearningRemoteCtrl(
+        session,
+        <String, dynamic>{
+          ...event,
+          'type': 'learning_student_eval',
+        },
+      );
+    };
+    room.onLearningReset = (event) {
+      _onLearningRemoteCtrl(
+        session,
+        <String, dynamic>{
+          ...event,
+          'type': 'learning_reset',
+        },
+      );
+    };
+
+    room.onDrawOffer = (event) {
+      final incomingRoomId = '${event['roomId'] ?? ''}';
+      if (incomingRoomId.isNotEmpty && incomingRoomId != session.roomId) return;
+      unawaited(_askLearningDrawOffer(session));
+    };
+
+    room.onDrawAnswer = (event) {
+      final incomingRoomId = '${event['roomId'] ?? ''}';
+      if (incomingRoomId.isNotEmpty && incomingRoomId != session.roomId) return;
+      if (event['accepted'] == true) {
+        _finishLearningGameSession(
+          session,
+          '1/2-1/2',
+          'Ничья по соглашению',
+          broadcast: false,
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${session.student.nickname} отклонил ничью'),
+          ),
+        );
+      }
+    };
+
+    room.onResign = (event) {
+      final incomingRoomId = '${event['roomId'] ?? ''}';
+      if (incomingRoomId.isNotEmpty && incomingRoomId != session.roomId) return;
+      final result = session.myColor == 'white' ? '1-0' : '0-1';
+      _finishLearningGameSession(
+        session,
+        result,
+        '${session.student.nickname} сдался',
+        broadcast: false,
+      );
+    };
+
+    await room.connect();
+    if (!mounted) {
+      session.dispose();
+      return;
+    }
+
+    setState(() {
+      _learningGameSessions[studentId] = session;
+      _learningFocusedStudentId = studentId;
+      _selectedLearningStudentId = studentId;
+      _learningShowAllBoards = false;
+      _learningInvitationStatus = '$studentName принял приглашение';
+    });
+    unawaited(_refreshLearningSessionEval(session));
+  }
+
+  void _onLearningRemoteCtrl(
+    _LearningGameSession session,
+    Map<String, dynamic> event,
+  ) {
+    final senderClientId = '${event['clientId'] ?? ''}';
+    if (senderClientId.isNotEmpty && senderClientId == _clientId) return;
+
+    final eventType = '${event['type'] ?? ''}';
+    if (session.terminated &&
+        eventType != 'result' &&
+        eventType != 'learning_reset') {
+      return;
+    }
+    switch (eventType) {
+      case 'result':
+        final result = '${event['result'] ?? ''}';
+        if (result.isEmpty) return;
+        _finishLearningGameSession(
+          session,
+          result,
+          '${event['reason'] ?? 'Игра окончена'}',
+          broadcast: false,
+        );
+        break;
+      case 'learning_sync_request':
+        unawaited(session.room.sendLearningControl(<String, dynamic>{
+          'type': 'learning_student_eval',
+          'enabled': session.studentEvaluationEnabled,
+          'studentId': session.student.id,
+          'clientId': _clientId,
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }));
+        unawaited(session.room.sendLearningControl(<String, dynamic>{
+          'type': 'learning_reset',
+          'fen': session.game.fen,
+          'teacherColor': session.myColor,
+          'w': session.whiteMs,
+          'b': session.blackMs,
+          'clientId': _clientId,
+          'resetBy': 'sync',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }));
+        break;
+      case 'learning_student_eval':
+        session.studentEvaluationEnabled = event['enabled'] == true;
+        if (mounted) setState(() {});
+        break;
+      case 'learning_swap_colors':
+        final teacherColor = '${event['teacherColor'] ?? session.myColor}';
+        session.myColor = teacherColor == 'black' ? 'black' : 'white';
+        session.selectedSquare = null;
+        session.legalTargets.clear();
+        session.captureTargets.clear();
+        if (mounted) setState(() {});
+        break;
+      case 'learning_reset':
+        final incomingTeacherColor =
+            '${event['teacherColor'] ?? session.myColor}';
+        session.myColor = incomingTeacherColor == 'black' ? 'black' : 'white';
+        _resetLearningSessionState(session);
+        final incomingWhiteMs = (event['w'] as num?)?.toInt();
+        final incomingBlackMs = (event['b'] as num?)?.toInt();
+        if (incomingWhiteMs != null) session.whiteMs = incomingWhiteMs;
+        if (incomingBlackMs != null) session.blackMs = incomingBlackMs;
+        if (mounted) setState(() {});
+        unawaited(_refreshLearningSessionEval(session));
+        break;
+      case 'clock':
+        final white = (event['w'] as num?)?.toInt();
+        final black = (event['b'] as num?)?.toInt();
+        if (white == null || black == null) return;
+        session.whiteMs = white;
+        session.blackMs = black;
+        session.clocksStarted = true;
+        _startLearningSessionClock(session);
+        if (mounted) setState(() {});
+        break;
+    }
+  }
+
+  Future<void> _askLearningDrawOffer(_LearningGameSession session) async {
+    if (!mounted || session.terminated) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Предложение ничьей'),
+        content: Text('${session.student.nickname} предлагает ничью'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отклонить'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Принять'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == null) return;
+    await session.room.sendDrawAnswer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'Учитель',
+      accepted: accepted,
+    );
+    if (accepted) {
+      _finishLearningGameSession(
+        session,
+        '1/2-1/2',
+        'Ничья по соглашению',
+      );
+    }
+  }
+
+  bool _learningTeacherTurn(_LearningGameSession session) {
+    if (session.terminated) return false;
+    final teacherColor =
+        session.myColor == 'black' ? ch.Color.BLACK : ch.Color.WHITE;
+    return session.game.turn == teacherColor;
+  }
+
+  String _learningDisplayIndexToSquare(
+    _LearningGameSession session,
+    int index,
+  ) {
+    final row = index ~/ 8;
+    final col = index % 8;
+    if (session.isFlipped) {
+      final file = String.fromCharCode('h'.codeUnitAt(0) - col);
+      return '$file${row + 1}';
+    }
+    final file = String.fromCharCode('a'.codeUnitAt(0) + col);
+    return '$file${8 - row}';
+  }
+
+  List<Map<String, dynamic>> _learningVerboseMoves(
+    _LearningGameSession session,
+    String square,
+  ) {
+    try {
+      return List<Map<String, dynamic>>.from(
+        session.game.moves({'square': square, 'verbose': true}),
+      );
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  void _computeLearningLegalTargets(
+    _LearningGameSession session,
+    String square,
+  ) {
+    final moves = _learningVerboseMoves(session, square);
+    session.legalTargets
+      ..clear()
+      ..addAll(moves.map((move) => '${move['to'] ?? ''}').where(
+            (target) => target.isNotEmpty,
+          ));
+    session.captureTargets
+      ..clear()
+      ..addAll(
+        moves.where((move) {
+          final flags = '${move['flags'] ?? ''}';
+          return flags.contains('c') ||
+              flags.contains('e') ||
+              move['captured'] != null;
+        }).map((move) => '${move['to'] ?? ''}'),
+      );
+  }
+
+  void _onLearningSquareTap(
+    _LearningGameSession session,
+    String square,
+  ) {
+    if (_learningFocusedStudentId != session.student.id && mounted) {
+      setState(() => _learningFocusedStudentId = session.student.id);
+    }
+    if (!_learningTeacherTurn(session)) return;
+
+    final selected = session.selectedSquare;
+    if (selected == null) {
+      final piece = session.game.get(square);
+      if (piece == null || piece.color != session.game.turn) return;
+      setState(() {
+        session.selectedSquare = square;
+        _computeLearningLegalTargets(session, square);
+      });
+      return;
+    }
+
+    if (session.legalTargets.contains(square)) {
+      unawaited(_makeLearningMove(session, selected, square));
+      return;
+    }
+
+    final piece = session.game.get(square);
+    setState(() {
+      if (piece != null && piece.color == session.game.turn) {
+        session.selectedSquare = square;
+        _computeLearningLegalTargets(session, square);
+      } else {
+        session.selectedSquare = null;
+        session.legalTargets.clear();
+        session.captureTargets.clear();
+      }
+    });
+  }
+
+  bool _learningNeedsPromotion(
+    _LearningGameSession session,
+    String from,
+    String to,
+  ) {
+    final piece = session.game.get(from);
+    if (piece == null || piece.type != ch.PieceType.PAWN) return false;
+    final rank = int.tryParse(to.substring(1)) ?? 0;
+    return (piece.color == ch.Color.WHITE && rank == 8) ||
+        (piece.color == ch.Color.BLACK && rank == 1);
+  }
+
+  String? _learningSanFor(
+    _LearningGameSession session,
+    String from,
+    String to, {
+    String? promotion,
+  }) {
+    for (final move in _learningVerboseMoves(session, from)) {
+      if ('${move['to'] ?? ''}' != to) continue;
+      final movePromotion = move['promotion']?.toString();
+      if (promotion == null || promotion == movePromotion) {
+        return move['san']?.toString();
+      }
+    }
+    return null;
+  }
+
+  Future<void> _makeLearningMove(
+    _LearningGameSession session,
+    String from,
+    String to,
+  ) async {
+    if (!_learningTeacherTurn(session)) return;
+    if (session.plyIndex != session.sanMoves.length) {
+      session.plyIndex = session.sanMoves.length;
+      session.game.load(session.fens.last);
+    }
+
+    String? promotion;
+    if (_learningNeedsPromotion(session, from, to)) {
+      final piece = session.game.get(from);
+      if (piece == null) return;
+      promotion = await _askPromotionPiece(context, piece.color);
+      if (promotion == null) return;
+    }
+
+    final san = _learningSanFor(
+          session,
+          from,
+          to,
+          promotion: promotion,
+        ) ??
+        '$from-$to';
+    final movedColor = session.game.turn;
+    final ok = session.game.move({
+      'from': from,
+      'to': to,
+      if (promotion != null) 'promotion': promotion,
+    });
+    if (!ok) return;
+
+    _afterLearningSessionMove(session, san, movedColor);
+    await session.room.sendMove(
+      from: from,
+      to: to,
+      promotion: promotion,
+    );
+  }
+
+  void _applyLearningRemoteMove(
+    _LearningGameSession session,
+    String from,
+    String to,
+    String? promotion,
+  ) {
+    if (session.terminated || from.isEmpty || to.isEmpty) return;
+    if (session.plyIndex != session.sanMoves.length) {
+      session.plyIndex = session.sanMoves.length;
+      session.game.load(session.fens.last);
+    }
+    final san = _learningSanFor(
+          session,
+          from,
+          to,
+          promotion: promotion,
+        ) ??
+        '$from-$to';
+    final movedColor = session.game.turn;
+    final ok = session.game.move({
+      'from': from,
+      'to': to,
+      if (promotion != null) 'promotion': promotion,
+    });
+    if (!ok) return;
+    _afterLearningSessionMove(session, san, movedColor);
+  }
+
+  void _afterLearningSessionMove(
+    _LearningGameSession session,
+    String san,
+    ch.Color movedColor,
+  ) {
+    session.sanMoves.add(san);
+    session.fens.add(session.game.fen);
+    session.plyIndex = session.sanMoves.length;
+    session.selectedSquare = null;
+    session.legalTargets.clear();
+    session.captureTargets.clear();
+
+    _applyLearningClockAfterMove(session, movedColor);
+    _checkLearningGameOver(session);
+    _broadcastLearningClock(session);
+    if (mounted) setState(() {});
+    unawaited(_refreshLearningSessionEval(session));
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (session.movesScroll.hasClients) {
+        session.movesScroll.animateTo(
+          session.movesScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _applyLearningClockAfterMove(
+    _LearningGameSession session,
+    ch.Color movedColor,
+  ) {
+    if (session.minutes == 0 && session.increment == 0) return;
+    session.clocksStarted = true;
+    if (session.increment > 0) {
+      if (movedColor == ch.Color.WHITE) {
+        session.whiteMs += session.increment * 1000;
+      } else {
+        session.blackMs += session.increment * 1000;
+      }
+    }
+    _startLearningSessionClock(session);
+  }
+
+  void _startLearningSessionClock(_LearningGameSession session) {
+    session.tick?.cancel();
+    session.tick = null;
+    if (!session.clocksStarted || session.terminated) return;
+    if (session.minutes == 0 && session.increment == 0) return;
+
+    session.lastTickAt = DateTime.now();
+    session.tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      if (!mounted || session.terminated) {
+        session.tick?.cancel();
+        session.tick = null;
+        return;
+      }
+      final now = DateTime.now();
+      final previous = session.lastTickAt ?? now;
+      final delta = now.difference(previous).inMilliseconds;
+      session.lastTickAt = now;
+
+      if (session.game.turn == ch.Color.WHITE) {
+        session.whiteMs = math.max(0, session.whiteMs - delta).toInt();
+        if (session.whiteMs == 0) {
+          _finishLearningGameSession(
+            session,
+            '0-1',
+            'Время белых истекло',
+          );
+        }
+      } else {
+        session.blackMs = math.max(0, session.blackMs - delta).toInt();
+        if (session.blackMs == 0) {
+          _finishLearningGameSession(
+            session,
+            '1-0',
+            'Время чёрных истекло',
+          );
+        }
+      }
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _broadcastLearningClock(_LearningGameSession session) {
+    unawaited(
+      session.room.sendLearningControl({
+        'type': 'clock',
+        'w': session.whiteMs,
+        'b': session.blackMs,
+        'turn': session.game.turn == ch.Color.WHITE ? 'w' : 'b',
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      }),
+    );
+  }
+
+  void _checkLearningGameOver(_LearningGameSession session) {
+    if (session.game.in_checkmate) {
+      final result = session.game.turn == ch.Color.WHITE ? '0-1' : '1-0';
+      _finishLearningGameSession(session, result, 'Мат');
+    } else if (session.game.in_stalemate || session.game.in_draw) {
+      _finishLearningGameSession(session, '1/2-1/2', 'Ничья');
+    }
+  }
+
+  void _finishLearningGameSession(
+    _LearningGameSession session,
+    String result,
+    String reason, {
+    bool broadcast = true,
+  }) {
+    if (session.terminated) return;
+    session.terminated = true;
+    session.result = result;
+    session.resultReason = reason;
+    session.tick?.cancel();
+    session.tick = null;
+    if (broadcast) {
+      unawaited(
+        session.room.sendLearningControl({
+          'type': 'result',
+          'result': result,
+          'reason': reason,
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }),
+      );
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _offerLearningDraw(_LearningGameSession session) async {
+    if (session.terminated) return;
+    await session.room.sendDrawOffer(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'Учитель',
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Предложение ничьей отправлено: ${session.student.nickname}',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _resignLearningSession(_LearningGameSession session) async {
+    if (session.terminated) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: Text('Партия с ${session.student.nickname} будет завершена'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Сдаться'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await session.room.sendResign(
+      fromUserId: Supabase.instance.client.auth.currentUser?.id ?? '',
+      fromName: _nickname ?? 'Учитель',
+    );
+    final result = session.myColor == 'white' ? '0-1' : '1-0';
+    _finishLearningGameSession(session, result, 'Учитель сдался');
+  }
+
+  Future<void> _toggleLearningSessionTeacherColor(
+    _LearningGameSession session,
+  ) async {
+    if (session.terminated) return;
+    final next = session.myColor == 'white' ? 'black' : 'white';
+    if (mounted) {
+      setState(() {
+        session.myColor = next;
+        session.selectedSquare = null;
+        session.legalTargets.clear();
+        session.captureTargets.clear();
+      });
+    } else {
+      session.myColor = next;
+    }
+    await session.room.sendLearningControl({
+      'type': 'learning_swap_colors',
+      'teacherColor': next,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  void _resetLearningSessionState(_LearningGameSession session) {
+    session.tick?.cancel();
+    session.tick = null;
+    session.game.reset();
+    session.sanMoves.clear();
+    session.fens
+      ..clear()
+      ..add(session.game.fen);
+    session.plyIndex = 0;
+    session.selectedSquare = null;
+    session.legalTargets.clear();
+    session.captureTargets.clear();
+    session.result = null;
+    session.resultReason = null;
+    session.terminated = false;
+    session.whiteMs = session.minutes * 60 * 1000;
+    session.blackMs = session.minutes * 60 * 1000;
+    session.clocksStarted = false;
+    session.lastTickAt = null;
+  }
+
+  Future<void> _confirmResetLearningSession(
+    _LearningGameSession session,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Расставить позицию заново?'),
+        content: Text(
+          'Партия с ${session.student.nickname} начнётся с начальной позиции.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Начать заново'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    _resetLearningSessionState(session);
+    if (mounted) setState(() {});
+    unawaited(_refreshLearningSessionEval(session));
+    await session.room.sendLearningControl(<String, dynamic>{
+      'type': 'learning_reset',
+      'fen': session.game.fen,
+      'teacherColor': session.myColor,
+      'w': session.whiteMs,
+      'b': session.blackMs,
+      'clientId': _clientId,
+      'resetBy': 'teacher',
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> _confirmResetLearningStudentPosition() async {
+    final room = _room;
+    if (!_studentLearningRoomActive || room == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Сначала подключитесь к учителю'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Расставить позицию заново?'),
+        content: const Text(
+          'Позиция вернётся к начальной и одновременно обновится у учителя.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Начать заново'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final teacherColor = _humanColor == ch.Color.WHITE ? 'black' : 'white';
+    final resetMs = _tcMinutes * 60 * 1000;
+
+    _stopTick();
+    if (mounted) {
+      setState(() {
+        game.reset();
+        _fenController.text = game.fen;
+        _sanMoves.clear();
+        _fens
+          ..clear()
+          ..add(game.fen);
+        _plyIndex = 0;
+        _selectedSquare = null;
+        _legalTargets.clear();
+        _captureTargets.clear();
+        _gameTerminated = false;
+        _result = null;
+        _whiteMs = resetMs;
+        _blackMs = resetMs;
+        _lastTickAt = null;
+        _clocksStarted = false;
+      });
+    }
+
+    await room.sendLearningControl(<String, dynamic>{
+      'type': 'learning_reset',
+      'fen': game.fen,
+      'teacherColor': teacherColor,
+      'w': _whiteMs,
+      'b': _blackMs,
+      'clientId': _clientId,
+      'resetBy': 'student',
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> _stopLearningVideoForStudent(String studentId) async {
+    _selectedVideoStudentIds.remove(studentId);
+    final call = _classroomVideoCall;
+    if (call != null && call.isActive && call.isTeacher) {
+      await call.stopPeer(studentId);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _endLearningStudentGame(LearningStudent student) async {
+    final session = _learningGameSessions[student.id];
+    if (session == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Закончить занятие?'),
+        content: Text(
+          'Закончить занятие с ${student.nickname}?\n\n'
+          'Будут завершены партия и видеосвязь.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Закончить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await session.room.sendLearningControl({
+        'type': 'learning_session_end',
+        'reason': 'Занятие завершено учителем',
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      });
+    } catch (_) {}
+
+    await _stopLearningVideoForStudent(student.id);
+
+    _learningGameSessions.remove(student.id);
+    _pendingLearningGameInvites.removeWhere(
+      (_, invite) => invite.student.id == student.id,
+    );
+    session.dispose();
+
+    if (_learningFocusedStudentId == student.id) {
+      _learningFocusedStudentId = _learningGameSessions.isEmpty
+          ? null
+          : _learningGameSessions.keys.first;
+    }
+    if (mounted) {
+      setState(() {
+        _learningInvitationStatus = 'Занятие с ${student.nickname} завершено';
+      });
+    }
+  }
+
+  void _setLearningSessionPly(_LearningGameSession session, int value) {
+    final int next = value.clamp(0, session.sanMoves.length);
+    session.plyIndex = next;
+    session.game.load(session.fens[next]);
+    session.selectedSquare = null;
+    session.legalTargets.clear();
+    session.captureTargets.clear();
+    if (mounted) setState(() {});
+    unawaited(_refreshLearningSessionEval(session));
+  }
+
+  Future<void> _copyLearningSessionPgn(
+    _LearningGameSession session,
+  ) async {
+    final pgn = _rowsFromSan(session.sanMoves).join(' ').trim();
+    await Clipboard.setData(ClipboardData(text: pgn));
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null || pgn.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              pgn.isEmpty ? 'Список ходов пока пуст' : 'PGN скопирован',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    final type = session.minutes <= 3
+        ? CabinetGameType.blitz
+        : (session.minutes <= 15
+            ? CabinetGameType.rapid
+            : CabinetGameType.classic);
+    final teacherName = (_nickname ?? 'Учитель').trim();
+    final teacherIsWhite = session.myColor == 'white';
+    final result = session.result ?? '*';
+
+    try {
+      await PersonalCabinetStore.instance.saveGame(
+        CabinetGameRecord(
+          id: '${DateTime.now().microsecondsSinceEpoch}-${session.roomId}',
+          userId: user.id,
+          type: type,
+          savedAt: DateTime.now(),
+          whiteName: teacherIsWhite ? teacherName : session.student.nickname,
+          blackName: teacherIsWhite ? session.student.nickname : teacherName,
+          opponentName: session.student.nickname,
+          result: result,
+          timeControl: session.minutes == 0 && session.increment == 0
+              ? 'Без времени'
+              : '${session.minutes}+${session.increment}',
+          source: 'Школа MakeChess',
+          pgn: pgn,
+        ),
+      );
+    } catch (_) {
+      // Копирование PGN должно работать даже при ошибке локального архива.
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PGN скопирован')),
+      );
+    }
+  }
+
+  String _formatLearningClock(int milliseconds) {
+    if (milliseconds < 0) milliseconds = 0;
+    final seconds = milliseconds ~/ 1000;
+    final minutes = seconds ~/ 60;
+    final rest = seconds % 60;
+    return '$minutes:${rest.toString().padLeft(2, '0')}';
+  }
+
+  List<_LearningGameSession?> _orderedLearningBoardSessions() {
+    final result = <_LearningGameSession?>[];
+    final used = <String>{};
+    for (final student in _learningStudents.take(8)) {
+      result.add(_learningGameSessions[student.id]);
+      used.add(student.id);
+    }
+    for (final entry in _learningGameSessions.entries) {
+      if (result.length >= 8) break;
+      if (used.add(entry.key)) result.add(entry.value);
+    }
+    while (result.length < 8) {
+      result.add(null);
+    }
+    return result;
+  }
+
+  LearningStudent? _learningStudentForSlot(int index) {
+    if (index < _learningStudents.length && index < 8) {
+      return _learningStudents[index];
+    }
+    return null;
+  }
+
+  Widget _buildLearningBoardsArea({
+    required double width,
+    required double height,
+  }) {
+    if (_learningShowAllBoards) {
+      final sessions = _orderedLearningBoardSessions();
+      return SizedBox(
+        width: width,
+        height: height,
+        child: Scrollbar(
+          child: GridView.builder(
+            padding: const EdgeInsets.only(right: 8, bottom: 12),
+            physics: const ClampingScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 0.86,
+            ),
+            itemCount: 8,
+            itemBuilder: (context, index) {
+              final session = sessions[index];
+              final fallbackStudent = _learningStudentForSlot(index);
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  final double boardSize = math
+                      .max(
+                        120.0,
+                        math.min(
+                          constraints.maxWidth - 42,
+                          constraints.maxHeight - 98,
+                        ),
+                      )
+                      .toDouble();
+                  return _buildLearningBoardCard(
+                    session: session,
+                    fallbackStudent: fallbackStudent,
+                    boardSize: boardSize,
+                    compact: true,
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      );
+    }
+
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final session = focusedId == null ? null : _learningGameSessions[focusedId];
+    LearningStudent? fallbackStudent;
+    if (focusedId != null) {
+      for (final student in _learningStudents) {
+        if (student.id == focusedId) {
+          fallbackStudent = student;
+          break;
+        }
+      }
+    }
+    fallbackStudent ??=
+        _learningStudents.isEmpty ? null : _learningStudents.first;
+
+    final double boardSize = math
+        .max(
+          220.0,
+          math.min(560.0, math.min(width - 52, height - 98)),
+        )
+        .toDouble();
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: _buildLearningBoardCard(
+          session: session,
+          fallbackStudent: fallbackStudent,
+          boardSize: boardSize,
+          compact: false,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningBoardCard({
+    required _LearningGameSession? session,
+    required LearningStudent? fallbackStudent,
+    required double boardSize,
+    required bool compact,
+  }) {
+    final student = session?.student ?? fallbackStudent;
+    final studentName = student?.nickname ?? 'Учебная доска';
+    final teacherName = (_nickname ?? 'Учитель').trim();
+    final teacherIsWhite = session?.myColor != 'black';
+    final studentClock = session == null
+        ? '--:--'
+        : _formatLearningClock(
+            teacherIsWhite ? session.blackMs : session.whiteMs,
+          );
+    final teacherClock = session == null
+        ? '--:--'
+        : _formatLearningClock(
+            teacherIsWhite ? session.whiteMs : session.blackMs,
+          );
+
+    Widget playerBar({
+      required String name,
+      required String clock,
+      required ch.Color color,
+      required bool isStudentBar,
+      required bool isTeacherBar,
+    }) {
+      final activeTurn =
+          session != null && !session.terminated && session.game.turn == color;
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: AppRadius.r8,
+          onTap: isStudentBar && student != null
+              ? () => _focusLearningStudentBoard(student.id)
+              : null,
+          child: Container(
+            height: compact ? 29 : 36,
+            padding: EdgeInsets.symmetric(horizontal: compact ? 7 : 10),
+            decoration: BoxDecoration(
+              color: activeTurn
+                  ? AppColors.accentGlowSoft
+                  : AppColors.surfaceCard.withOpacity(0.82),
+              borderRadius: AppRadius.r8,
+              border: Border.all(
+                color:
+                    activeTurn ? AppColors.borderBright : AppColors.borderSoft,
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption.copyWith(
+                      fontWeight: FontWeight.w800,
+                      fontSize: compact ? 11 : 13,
+                    ),
+                  ),
+                ),
+                if (isTeacherBar && session != null) ...[
+                  Tooltip(
+                    message: session.myColor == 'white'
+                        ? 'Учитель играет белыми. Сменить на чёрные'
+                        : 'Учитель играет чёрными. Сменить на белые',
+                    child: IconButton(
+                      onPressed: session.terminated
+                          ? null
+                          : () => unawaited(
+                                _toggleLearningSessionTeacherColor(session),
+                              ),
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints.tightFor(
+                        width: compact ? 25 : 29,
+                        height: compact ? 25 : 29,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      iconSize: compact ? 15 : 17,
+                      icon: const Icon(Icons.contrast),
+                    ),
+                  ),
+                  Tooltip(
+                    message: 'Начать позицию заново',
+                    child: IconButton(
+                      onPressed: () => unawaited(
+                        _confirmResetLearningSession(session),
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints.tightFor(
+                        width: compact ? 25 : 29,
+                        height: compact ? 25 : 29,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      iconSize: compact ? 15 : 17,
+                      icon: const Icon(Icons.restart_alt),
+                    ),
+                  ),
+                  SizedBox(width: compact ? 2 : 4),
+                ],
+                Text(
+                  clock,
+                  style: AppTextStyles.caption.copyWith(
+                    fontWeight: FontWeight.w900,
+                    fontSize: compact ? 11 : 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final studentColor = teacherIsWhite ? ch.Color.BLACK : ch.Color.WHITE;
+    final teacherColor = teacherIsWhite ? ch.Color.WHITE : ch.Color.BLACK;
+
+    return Container(
+      padding: EdgeInsets.all(compact ? 5 : 8),
+      decoration: AppDecorations.panel(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Ученик всегда сверху. Нажатие только на эту тёмную полосу
+          // разворачивает его доску крупно.
+          playerBar(
+            name: studentName,
+            clock: studentClock,
+            color: studentColor,
+            isStudentBar: true,
+            isTeacherBar: false,
+          ),
+          SizedBox(height: compact ? 4 : 6),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              session == null
+                  ? _buildLearningBoardPlaceholder(boardSize)
+                  : _buildLearningGameBoard(session, boardSize),
+              SizedBox(width: compact ? 4 : 6),
+              SizedBox(
+                width: compact ? 18 : 28,
+                height: boardSize,
+                child: EvalBar(
+                  eval: session?.engineEval ?? 0.0,
+                  flipped: session?.isFlipped ?? false,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: compact ? 4 : 6),
+          // Учитель всегда снизу независимо от выбранного цвета фигур.
+          playerBar(
+            name: teacherName,
+            clock: teacherClock,
+            color: teacherColor,
+            isStudentBar: false,
+            isTeacherBar: true,
+          ),
+          if (session?.result != null) ...[
+            SizedBox(height: compact ? 3 : 5),
+            Text(
+              '${session!.result} · ${session.resultReason ?? ''}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.accent,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLearningBoardPlaceholder(double boardSize) {
+    final initialGame = ch.Chess();
+    return AnimatedBuilder(
+      animation: widget.boardTheme,
+      builder: (context, _) => SizedBox(
+        width: boardSize,
+        height: boardSize,
+        child: GridView.builder(
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 8,
+          ),
+          itemCount: 64,
+          itemBuilder: (context, index) {
+            final row = index ~/ 8;
+            final column = index % 8;
+            final file = String.fromCharCode('a'.codeUnitAt(0) + column);
+            final square = '$file${8 - row}';
+            final piece = initialGame.get(square);
+            final cell = boardSize / 8;
+            return Container(
+              color: (row + column).isEven
+                  ? widget.boardTheme.lightSquare
+                  : widget.boardTheme.darkSquare,
+              child: piece == null
+                  ? null
+                  : Center(
+                      child: SvgPicture.asset(
+                        _assetFor(_codeFor(piece)),
+                        width: cell * 0.84,
+                        height: cell * 0.84,
+                      ),
+                    ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningGameBoard(
+    _LearningGameSession session,
+    double boardSize,
+  ) {
+    return AnimatedBuilder(
+      animation: widget.boardTheme,
+      builder: (context, _) {
+        final cell = boardSize / 8;
+        final pieceSize = cell * 0.84;
+        return SizedBox(
+          width: boardSize,
+          height: boardSize,
+          child: GridView.builder(
+            padding: EdgeInsets.zero,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 8,
+            ),
+            itemCount: 64,
+            itemBuilder: (context, index) {
+              final square = _learningDisplayIndexToSquare(session, index);
+              final row = index ~/ 8;
+              final column = index % 8;
+              final light = (row + column).isEven;
+              final selected = session.selectedSquare == square;
+              final legal = session.legalTargets.contains(square);
+              final capture = session.captureTargets.contains(square);
+              final piece = session.game.get(square);
+
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _onLearningSquareTap(session, square),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: light
+                        ? widget.boardTheme.lightSquare
+                        : widget.boardTheme.darkSquare,
+                    border: Border.all(
+                      color: selected ? Colors.amber : Colors.black12,
+                      width: selected ? 2.4 : 0.7,
+                    ),
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (legal && !capture)
+                        Center(
+                          child: Container(
+                            width: cell * 0.28,
+                            height: cell * 0.28,
+                            decoration: const BoxDecoration(
+                              color: Color(0x6600D67A),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      if (capture)
+                        Center(
+                          child: Container(
+                            width: cell * 0.74,
+                            height: cell * 0.74,
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: Colors.redAccent,
+                                width: math.max(1.4, cell * 0.055).toDouble(),
+                              ),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      if (piece != null)
+                        Center(
+                          child: SvgPicture.asset(
+                            _assetFor(_codeFor(piece)),
+                            width: pieceSize,
+                            height: pieceSize,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDesktopRightColumn(double width) {
+    final session =
+        _showLearningPanel && _learningRole == LearningPanelRole.teacher
+            ? _activeLearningGameSession
+            : null;
+
+    if (session != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          MoveListPanel(
+            san: session.sanMoves,
+            currentPly: session.plyIndex,
+            controller: session.movesScroll,
+            onCopyPGN: () => unawaited(_copyLearningSessionPgn(session)),
+            onClear: () {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Ходы активной онлайн-партии удалять нельзя',
+                    ),
+                  ),
+                );
+              }
+            },
+            width: width,
+            height: 420,
+          ),
+          const SizedBox(height: 12),
+          RightSidebarPanel(
+            plyIndex: session.plyIndex,
+            sanMoves: session.sanMoves,
+            onGoStart: () => _setLearningSessionPly(session, 0),
+            onGoPrev: () =>
+                _setLearningSessionPly(session, session.plyIndex - 1),
+            onGoNext: () =>
+                _setLearningSessionPly(session, session.plyIndex + 1),
+            onGoEnd: () =>
+                _setLearningSessionPly(session, session.sanMoves.length),
+            onResignPressed: () => unawaited(_resignLearningSession(session)),
+            offerDrawUniversal: () => unawaited(_offerLearningDraw(session)),
+            loading: false,
+            onBestMove: () async {
+              final move = await _fetchUciBestMove(session.game.fen);
+              if (mounted && move != null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Лучший ход: $move')),
+                );
+              }
+            },
+            gptLoading: false,
+            explainHere: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Выбрана активная ученическая доска'),
+                ),
+              );
+            },
+            showFenInput: false,
+            toggleFenInput: () {
+              Clipboard.setData(ClipboardData(text: session.game.fen));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('FEN скопирован')),
+              );
+            },
+            loadingBest: false,
+            onTakeBestMove: () {},
+            loadingAnalysis: false,
+            onOpenAnalysis: () {},
+            openGptPromptDialog: () {},
+            inRoom: true,
+            sharedControl: false,
+            editMode: false,
+            applyEditor: () {},
+            enterEditor: () {},
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        MoveListPanel(
+          san: _sanMoves,
+          currentPly: _plyIndex,
+          controller: _movesScroll,
+          onCopyPGN: () => unawaited(_copyPgnAndSaveToCabinet()),
+          onClear: () {
+            setState(() {
+              _sanMoves.clear();
+              _fens
+                ..clear()
+                ..add(game.fen);
+              _plyIndex = 0;
+              if (_showPuzzleMoveResultPanel) {
+                _resetStudentPuzzleMoveCheck();
+                _studentShowPuzzleAnswer = false;
+              }
+            });
+          },
+          puzzleMoveChecked:
+              _showPuzzleMoveResultPanel ? _puzzleMoveChecked : false,
+          puzzleMoveCorrect:
+              _showPuzzleMoveResultPanel ? _puzzleMoveCorrect : null,
+          showPuzzleCorrectAnswer:
+              _showPuzzleMoveResultPanel && _studentShowPuzzleAnswer,
+          correctPuzzleLines: _activePuzzleSolutionMoveLines,
+          selectedCorrectLineIndex: _shownSolutionLineIndex,
+          onPreviousCorrectLine: _openPreviousSolutionLine,
+          onNextCorrectLine: _openNextSolutionLine,
+          width: width,
+          height: 420,
+        ),
+        const SizedBox(height: 12),
+        RightSidebarPanel(
+          plyIndex: _plyIndex,
+          sanMoves: _sanMoves,
+          onGoStart: _goStart,
+          onGoPrev: _goPrev,
+          onGoNext: _goNext,
+          onGoEnd: _goEnd,
+          onResignPressed: _onResignPressed,
+          offerDrawUniversal: _offerDrawUniversal,
+          loading: _loading,
+          onBestMove: () async {
+            final fen = _fenController.text.trim().isEmpty
+                ? game.fen
+                : _fenController.text.trim();
+            await _fetchUciBestMove(fen);
+          },
+          gptLoading: _gptLoading,
+          explainHere: _explainHere,
+          showFenInput: _showFenInput,
+          toggleFenInput: () => setState(() => _showFenInput = !_showFenInput),
+          loadingBest: _loadingBest,
+          onTakeBestMove: _onTakeBestMove,
+          loadingAnalysis: _loadingAnalysis,
+          onOpenAnalysis: _onOpenAnalysis,
+          openGptPromptDialog: _openGptPromptDialog,
+          inRoom: _inRoom,
+          sharedControl: _sharedControl,
+          editMode: _editMode,
+          applyEditor: _applyEditor,
+          enterEditor: _enterEditor,
+        ),
+      ],
+    );
+  }
+
   Future<void> _openRoom(
     String roomId, {
     required String opponentId,
     required String opponentName,
     required String myColor, // 'white' | 'black'
     required bool spectator,
+    bool learningRoom = false,
   }) async {
     _room?.disconnect();
     final supa = Supabase.instance.client;
+    final effectiveLearningRoom = learningRoom ||
+        (_showLearningPanel &&
+            _learningRole == LearningPanelRole.student &&
+            !spectator);
 
     _room = RoomService(supa, roomId: roomId);
 
     _room!.onMove = (m) {
       final rid = m['roomId'] as String?;
       if (rid != null && _roomId != null && rid != _roomId) return;
+      if ('${m['kind'] ?? ''}' == 'learning_ctrl') {
+        debugPrint('[LEARNING CTRL][student] ${m['type']} room=$_roomId');
+        _onRemoteCtrl(m);
+        return;
+      }
       _applyRemoteMove(
         '${m['from']}',
         '${m['to']}',
@@ -2385,6 +7149,22 @@ class _MyHomePageState extends State<MyHomePage> {
     };
 
     _room!.onCtrl = (evt) => _onRemoteCtrl(evt);
+    _room!.onLearningStudentEvaluation = (evt) {
+      _onRemoteCtrl(
+        <String, dynamic>{
+          ...evt,
+          'type': 'learning_student_eval',
+        },
+      );
+    };
+    _room!.onLearningReset = (evt) {
+      _onRemoteCtrl(
+        <String, dynamic>{
+          ...evt,
+          'type': 'learning_reset',
+        },
+      );
+    };
 
     _room!.onDrawOffer = (evt) async {
       final rid = evt['roomId'] as String?;
@@ -2451,12 +7231,13 @@ class _MyHomePageState extends State<MyHomePage> {
       _humanColor =
           (myColor.toLowerCase() == 'white') ? ch.Color.WHITE : ch.Color.BLACK;
       _isSpectator = spectator;
+      _activeRoomIsLearning = effectiveLearningRoom;
       _chat.clear();
       _drawOfferedByMe = _drawOfferedToMe = false;
       _rematchOfferedByMe = _rematchOfferedToMe = false;
       _gameTerminated = false;
     });
-
+    _joinBoardChannel();
     try {
       final row = await supa
           .from('profiles')
@@ -2480,15 +7261,41 @@ class _MyHomePageState extends State<MyHomePage> {
 
     _resetClocks();
 
-    html.window.localStorage[_LS_ROOM] = jsonEncode({
-      'roomId': roomId,
-      'opponentId': opponentId,
-      'opponentName': _opponentName,
-      'myColor': (myColor.toLowerCase()),
-      'spectator': spectator,
-    });
+    writeLocalStorage(
+      _LS_ROOM,
+      jsonEncode({
+        'roomId': roomId,
+        'opponentId': opponentId,
+        'opponentName': _opponentName,
+        'myColor': (myColor.toLowerCase()),
+        'spectator': spectator,
+        'learningRoom': effectiveLearningRoom,
+      }),
+    );
 
     _broadcastTimeControl();
+
+    if (effectiveLearningRoom) {
+      Future<void> requestLearningState() async {
+        final room = _room;
+        if (room == null || _roomId != roomId) return;
+        await room.sendLearningControl(<String, dynamic>{
+          'type': 'learning_sync_request',
+          'clientId': _clientId,
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
+
+      unawaited(requestLearningState());
+      unawaited(Future<void>.delayed(
+        const Duration(milliseconds: 600),
+        requestLearningState,
+      ));
+      unawaited(Future<void>.delayed(
+        const Duration(milliseconds: 1600),
+        requestLearningState,
+      ));
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2501,6 +7308,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _leaveRoom() async {
     await _room?.disconnect();
+    _leaveBoardChannel();
     _stopTick();
     setState(() {
       _room = null;
@@ -2508,14 +7316,15 @@ class _MyHomePageState extends State<MyHomePage> {
       _opponentId = null;
       _opponentName = null;
       _isSpectator = false;
+      _activeRoomIsLearning = false;
     });
 
     _matchRated = _rated;
-    html.window.localStorage.remove(_LS_ROOM);
+    removeLocalStorage(_LS_ROOM);
   }
 
   Future<void> _tryRestoreRoom() async {
-    final s = html.window.localStorage[_LS_ROOM];
+    final s = readLocalStorage(_LS_ROOM);
     if (s == null) return;
     try {
       final map = jsonDecode(s) as Map<String, dynamic>;
@@ -2524,6 +7333,7 @@ class _MyHomePageState extends State<MyHomePage> {
       final oppName = map['opponentName'] as String? ?? 'opponent';
       final myColor = map['myColor'] as String? ?? 'white';
       final spectator = (map['spectator'] as bool?) ?? false;
+      final learningRoom = (map['learningRoom'] as bool?) ?? false;
       if (roomId != null && oppId != null) {
         final supa = Supabase.instance.client;
         if (supa.auth.currentUser == null) return;
@@ -2531,7 +7341,8 @@ class _MyHomePageState extends State<MyHomePage> {
             opponentId: oppId,
             opponentName: oppName,
             myColor: myColor,
-            spectator: spectator);
+            spectator: spectator,
+            learningRoom: learningRoom);
       }
     } catch (_) {}
   }
@@ -2546,6 +7357,112 @@ class _MyHomePageState extends State<MyHomePage> {
       out.add('$n. $w ${b.isEmpty ? '' : b}');
     }
     return out;
+  }
+
+  CabinetGameType _cabinetGameTypeForCurrentPosition() {
+    if (_showPuzzlePanel || _showPuzzleMoveResultPanel) {
+      return CabinetGameType.puzzles;
+    }
+    if (_tcMinutes == 0 && _tcIncrement == 0) {
+      return CabinetGameType.classic;
+    }
+    if (_tcMinutes <= 3) return CabinetGameType.blitz;
+    if (_tcMinutes <= 15) return CabinetGameType.rapid;
+    return CabinetGameType.classic;
+  }
+
+  String _cabinetResultForCurrentPosition() {
+    final raw = (_result ?? '').trim();
+    if (raw.contains('1/2-1/2')) return '1/2-1/2';
+    if (raw.contains('1-0')) return '1-0';
+    if (raw.contains('0-1')) return '0-1';
+    return '*';
+  }
+
+  Future<void> _copyPgnAndSaveToCabinet() async {
+    final pgn = _rowsFromSan(_sanMoves).join(' ').trim();
+    await Clipboard.setData(ClipboardData(text: pgn));
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null || user.id.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'PGN скопирован. Для сохранения в личном кабинете войдите в аккаунт',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (pgn.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PGN скопирован, но список ходов пуст')),
+      );
+      return;
+    }
+
+    final type = _cabinetGameTypeForCurrentPosition();
+    final myName = (_nickname ?? 'Игрок').trim().isEmpty
+        ? 'Игрок'
+        : (_nickname ?? 'Игрок').trim();
+    final opponentName = type == CabinetGameType.puzzles
+        ? 'Задача'
+        : (_vsEngine
+            ? 'Компьютер'
+            : ((_opponentName ?? '').trim().isEmpty
+                ? 'Соперник'
+                : _opponentName!.trim()));
+
+    final whiteName = _humanColor == ch.Color.WHITE ? myName : opponentName;
+    final blackName = _humanColor == ch.Color.BLACK ? myName : opponentName;
+    final result = _cabinetResultForCurrentPosition();
+    final timeControl = (_tcMinutes == 0 && _tcIncrement == 0)
+        ? 'Без времени'
+        : '$_tcMinutes+$_tcIncrement';
+    final source = type == CabinetGameType.puzzles
+        ? 'Задача MakeChess'
+        : (_inRoom
+            ? 'Онлайн'
+            : (_vsEngine ? 'Против компьютера' : 'Локальная партия'));
+
+    try {
+      final added = await PersonalCabinetStore.instance.saveGame(
+        CabinetGameRecord(
+          id: '${DateTime.now().microsecondsSinceEpoch}-${user.id}',
+          userId: user.id,
+          type: type,
+          savedAt: DateTime.now(),
+          whiteName: whiteName,
+          blackName: blackName,
+          opponentName: opponentName,
+          result: result,
+          timeControl: timeControl,
+          source: source,
+          pgn: pgn,
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            added
+                ? 'PGN скопирован и сохранён: ${type.title}'
+                : 'PGN скопирован. Эта партия уже есть в личном кабинете',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('PGN скопирован, но сохранить партию не удалось: $error'),
+        ),
+      );
+    }
   }
 
   String _makePGN(String result) {
@@ -2698,7 +7615,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _showInfo('Игра окончена', message);
     });
 
-    html.window.localStorage.remove(_LS_ROOM);
+    removeLocalStorage(_LS_ROOM);
   }
 
   // ================== CHAT / CTRL HANDLERS ==================
@@ -2746,6 +7663,71 @@ class _MyHomePageState extends State<MyHomePage> {
         _startTickForActiveSide();
         break;
 
+      case 'learning_student_eval':
+        final enabled = evt['enabled'] == true;
+        setState(() {
+          _activeRoomIsLearning = true;
+          _learningStudentEvaluationEnabled = enabled;
+        });
+        if (enabled) {
+          unawaited(_refreshEvalBar());
+        }
+        break;
+
+      case 'learning_swap_colors':
+        final teacherColor = '${evt['teacherColor'] ?? 'white'}';
+        setState(() {
+          _humanColor =
+              teacherColor == 'white' ? ch.Color.BLACK : ch.Color.WHITE;
+        });
+        break;
+
+      case 'learning_reset':
+        final resetFen = '${evt['fen'] ?? ''}'.trim();
+        final teacherColor = '${evt['teacherColor'] ?? 'white'}';
+        final incomingWhiteMs = (evt['w'] as num?)?.toInt();
+        final incomingBlackMs = (evt['b'] as num?)?.toInt();
+
+        _stopTick();
+        setState(() {
+          _activeRoomIsLearning = true;
+          if (resetFen.isNotEmpty) {
+            try {
+              game.load(resetFen);
+            } catch (_) {
+              game.reset();
+            }
+          } else {
+            game.reset();
+          }
+          _fenController.text = game.fen;
+          _sanMoves.clear();
+          _fens
+            ..clear()
+            ..add(game.fen);
+          _plyIndex = 0;
+          _selectedSquare = null;
+          _legalTargets.clear();
+          _captureTargets.clear();
+          _gameTerminated = false;
+          _result = null;
+          _humanColor =
+              teacherColor == 'white' ? ch.Color.BLACK : ch.Color.WHITE;
+          final resetMs = _tcMinutes * 60 * 1000;
+          _whiteMs = incomingWhiteMs ?? resetMs;
+          _blackMs = incomingBlackMs ?? resetMs;
+          _lastTickAt = null;
+          _clocksStarted = false;
+        });
+        if (_learningStudentEvaluationEnabled) {
+          unawaited(_refreshEvalBar());
+        }
+        break;
+
+      case 'learning_session_end':
+        unawaited(_leaveLearningRoomAfterTeacherEnd());
+        break;
+
       case 'rematch_offer':
         setState(() => _rematchOfferedToMe = true);
         _maybeAskRematchDialog();
@@ -2761,6 +7743,32 @@ class _MyHomePageState extends State<MyHomePage> {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('Реванш отклонён')));
         break;
+    }
+  }
+
+  Future<void> _leaveLearningRoomAfterTeacherEnd() async {
+    // Завершаем и учебную партию, и видеосвязь ученика с учителем.
+    await stopClassroomVideo();
+    await _leaveRoom();
+    game.reset();
+    _fenController.text = game.fen;
+    _sanMoves.clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+    _gameTerminated = false;
+    _result = null;
+    if (mounted) {
+      setState(() {
+        _learningInvitationStatus = 'Учитель завершил занятие';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Учитель завершил занятие')),
+      );
     }
   }
 
@@ -2783,7 +7791,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     _afterHumanMoveCommon(san, isCapture);
     _checkGameOver();
-
+    unawaited(_refreshEvalBar());
     _broadcastClockSnapshot();
   }
 
@@ -2812,9 +7820,23 @@ class _MyHomePageState extends State<MyHomePage> {
     final bool ok = game.move(params);
     if (!ok) return;
 
+    if (_puzzleRecordingLine) {
+      _puzzleCurrentLine.add('$from$to${promo ?? ''}');
+      _puzzleDraftPublished = false;
+      _refreshPuzzleSettingsOverlay();
+    } else if (_showPuzzlePanel &&
+        _activePublishedPuzzleTask != null &&
+        !_puzzleSettingsIsOpen) {
+      _studentPuzzleMoveLine.add('$from$to${promo ?? ''}');
+      _puzzleMoveChecked = false;
+      _puzzleMoveCorrect = null;
+      _studentShowPuzzleAnswer = false;
+      _shownSolutionLineIndex = 0;
+    }
+
     _afterHumanMoveCommon(san, isCapture);
     _checkGameOver();
-
+    unawaited(_refreshEvalBar());
     if (_room != null) {
       await _room!.sendMove(from: from, to: to, promotion: promo);
     }
@@ -2930,22 +7952,26 @@ class _MyHomePageState extends State<MyHomePage> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      barrierDismissible: false, // чтобы не закрывали тапом по фону
+      builder: (ctx) => AlertDialog(
+        // <- используем локальный ctx
         title: const Text('Ничья?'),
         content: const Text('Соперник предлагает ничью. Принять?'),
         actions: [
           TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _declineDrawOnline();
-              },
-              child: const Text('Отклонить')),
+            onPressed: () {
+              Navigator.of(ctx).pop(); // <- закрываем ЭТОТ диалог
+              _declineDrawOnline();
+            },
+            child: const Text('Отклонить'),
+          ),
           FilledButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _acceptDrawOnline();
-              },
-              child: const Text('Принять')),
+            onPressed: () {
+              Navigator.of(ctx).pop(); // <- закрываем ЭТОТ диалог
+              _acceptDrawOnline();
+            },
+            child: const Text('Принять'),
+          ),
         ],
       ),
     );
@@ -3055,277 +8081,6 @@ class _MyHomePageState extends State<MyHomePage> {
     _broadcastTimeControl();
   }
 
-// === ПРАВАЯ КОЛОНКА: Moves + стрелки + кнопки ===
-  Widget _RightColumn(double boardSize) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // список ходов (высота ≈ как у доски)
-        _MoveListPanel(
-          san: _sanMoves,
-          currentPly: _plyIndex,
-          controller: _movesScroll,
-          height: math.max(380, boardSize),
-          onCopyPGN: () {
-            final rows = _rowsFromSan(_sanMoves);
-            Clipboard.setData(ClipboardData(text: rows.join(' ')));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('PGN скопирован')),
-            );
-          },
-          onClear: () {
-            setState(() {
-              _sanMoves.clear();
-              _fens
-                ..clear()
-                ..add(game.fen);
-              _plyIndex = 0;
-            });
-          },
-        ),
-
-        const SizedBox(height: 10),
-
-        // стрелки навигации по истории
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            IconButton(
-              tooltip: 'В начало',
-              onPressed: _plyIndex > 0 ? _goStart : null,
-              icon: const Icon(Icons.first_page),
-            ),
-            IconButton(
-              tooltip: 'Назад',
-              onPressed: _plyIndex > 0 ? _goPrev : null,
-              icon: const Icon(Icons.chevron_left),
-            ),
-            IconButton(
-              tooltip: 'Вперёд',
-              onPressed: _plyIndex < _sanMoves.length ? _goNext : null,
-              icon: const Icon(Icons.chevron_right),
-            ),
-            IconButton(
-              tooltip: 'В конец',
-              onPressed: _plyIndex < _sanMoves.length ? _goEnd : null,
-              icon: const Icon(Icons.last_page),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 10),
-
-        // ряд: Сдаться  |  Предложить ничью
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _onResignPressed,
-                icon: const Icon(Icons.flag),
-                label: const Text('Сдаться'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _offerDrawUniversal,
-                icon: const Icon(Icons.handshake_outlined),
-                label: const Text('Предложить ничью'),
-              ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 10),
-
-        // ряд: Взять лучший ход | Объяснить позицию
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _loading
-                    ? null
-                    : () async {
-                        setState(() => _loading = true);
-                        final fen = _fenController.text.trim().isEmpty
-                            ? game.fen
-                            : _fenController.text.trim();
-                        final uci = await _fetchUciBestMove(fen);
-                        setState(() => _loading = false);
-                        if (!mounted) return;
-                        if (uci != null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Лучший ход (UCI): $uci')),
-                          );
-                        }
-                      },
-                child: _loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Взять лучший ход'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _gptLoading ? null : _explainHere,
-                icon: _gptLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.psychology),
-                label:
-                    Text(_gptLoading ? 'Запрос к GPT...' : 'Объяснить позицию'),
-              ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 10),
-
-        // ряд: Введите FEN | Stockfish Analysis
-        // ряд: Введите FEN | Stockfish Analysis
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => setState(() => _showFenInput = !_showFenInput),
-                child: const Text('Введите FEN'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.end,
-                children: [
-                  FilledButton.icon(
-                    key: const Key('btnBestMove'),
-                    onPressed: _loadingBest ? null : _onTakeBestMove,
-                    icon: _loadingBest
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.flash_on),
-                    label: const Text('Взять лучший ход'),
-                  ),
-                  OutlinedButton.icon(
-                    key: const Key('btnAnalysis'),
-                    onPressed: _loadingAnalysis
-                        ? null
-                        : () async {
-                            setState(() => _loadingAnalysis = true);
-                            final fen = _fenController.text.trim().isEmpty
-                                ? game.fen
-                                : _fenController.text.trim();
-
-                            try {
-                              // ⚡ Берём богатый ответ (JSON с eval, depth, winChance и т.д.)
-                              final rich = await sf.getBestMoveRich(
-                                fen,
-                                depth: 18,
-                                multiPv: 2,
-                                maxThinkingTime: 2000,
-                              );
-
-                              final text = (rich['text'] is String)
-                                  ? rich['text'] as String
-                                  : '';
-                              const enc = JsonEncoder.withIndent('  ');
-                              final pretty = enc.convert(rich);
-
-                              if (!mounted) return;
-                              await showDialog(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: const Text('Stockfish analysis'),
-                                  content: SingleChildScrollView(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        if (text.trim().isNotEmpty) ...[
-                                          SelectableText(text),
-                                          const SizedBox(height: 12),
-                                        ],
-                                        const SelectableText(
-                                          'Details (rich):',
-                                          style: TextStyle(
-                                              fontWeight: FontWeight.w600),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        SelectableText(
-                                          pretty,
-                                          style: const TextStyle(
-                                              fontFamily: 'monospace',
-                                              fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.of(ctx).pop(),
-                                      child: const Text('Закрыть'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            } catch (e) {
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Stockfish: $e')),
-                                );
-                              }
-                            } finally {
-                              if (mounted)
-                                setState(() => _loadingAnalysis = false);
-                            }
-                          },
-                    icon: _loadingAnalysis
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.analytics),
-                    label: const Text('Stockfish Analysis'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 10),
-
-// >>> Кнопка "С вопросом…" теперь в ПРАВОМ блоке
-        FilledButton.icon(
-          onPressed: _gptLoading ? null : _openGptPromptDialog,
-          icon: const Icon(Icons.question_answer),
-          label: const Text('С вопросом…'),
-        ),
-        const SizedBox(height: 10),
-
-        // одиночная кнопка: Редактор
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton(
-            onPressed:
-                _inRoom ? null : (_editMode ? _applyEditor : _enterEditor),
-            child: Text(_editMode ? 'Выйти из редактора' : 'Редактор'),
-          ),
-        ),
-      ],
-    );
-  }
-
 // === ЛЕВАЯ ПАНЕЛЬ КНОПОК (над Лобби) ===============================
 // == ЛЕВЫЕ КНОПКИ: сетка 2×3, без "Редактор" ==
   Widget _LeftUtilityButtons() {
@@ -3333,403 +8088,521 @@ class _MyHomePageState extends State<MyHomePage> {
     final bool canContinueVsEngine = !_inRoom && !_vsEngine;
     final bool canContinueVsHuman = _vsEngine && !_inRoom;
 
-    // ширина одной ячейки в 2-колоночной сетке
-    final double cellW =
-        (_leftColWidth - 12) / 2; // 12 = промежуток между колонками
-
-    Widget cell(Widget child) => SizedBox(width: cellW, child: child);
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Wrap(
-        spacing: 12, // горизонтальный зазор между колонками
-        runSpacing: 10, // вертикальный зазор между рядами
-        children: [
-          // ряд 1
-          cell(FilledButton.tonalIcon(
-            onPressed: canContinueVsEngine ? _continueVsEngine : null,
-            icon: const Icon(Icons.smart_toy),
-            label: const Text('Продолжить с компьютером'),
-          )),
-          cell(FilledButton.tonalIcon(
-            onPressed: canContinueVsHuman ? _continueVsHuman : null,
-            icon: const Icon(Icons.group),
-            label: const Text('С человеком'),
-          )),
-
-          // ряд 2
-          cell(FilledButton.tonalIcon(
-            onPressed: canVsEngine ? _startEngineDuel : null,
-            icon: const Icon(Icons.auto_awesome_motion),
-            label: const Text('Компьютер vs Компьютер'),
-          )),
-          cell(_buildEngineDelayFieldCompact(cellW)),
-
-          // ряд 3
-          cell(_buildColorSelectorCompact(cellW)),
-          cell(FilledButton.icon(
-            onPressed: _onNewGameUniversal,
-            icon: const Icon(Icons.fiber_new),
-            label: const Text('Новая игра'),
-          )),
-        ],
-      ),
+    return GameModePanel(
+      leftColWidth: _leftColWidth,
+      canVsEngine: canVsEngine,
+      canContinueVsEngine: canContinueVsEngine,
+      canContinueVsHuman: canContinueVsHuman,
+      inRoom: _inRoom,
+      syncBoard: _syncBoard,
+      vsEngine: _vsEngine,
+      humanColor: _humanColor,
+      duelDelayCtl: _duelDelayCtl,
+      onContinueVsEngine: _continueVsEngine,
+      onContinueVsHuman: _continueVsHuman,
+      onToggleSyncBoard: _toggleSyncBoard,
+      onStartEngineDuel: _startEngineDuel,
+      onNewGame: _onNewGameUniversal,
+      onHumanColorChanged: (color) {
+        setState(() {
+          _humanColor = color;
+        });
+      },
+      onEngineDelayChanged: (v) {
+        final n = int.tryParse(v);
+        if (n != null) _engineDuelDelayMs = n;
+      },
     );
   }
 
 // Компактный переключатель цвета (Белые/Чёрные) в одну ячейку сетки
-  Widget _buildColorSelectorCompact(double w) {
-    return SizedBox(
-      width: w,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Вы играете за:', style: TextStyle(fontSize: 12)),
-          const SizedBox(height: 6),
-          ToggleButtons(
-            borderRadius: BorderRadius.circular(10),
-            isSelected: [
-              _humanColor == ch.Color.WHITE,
-              _humanColor == ch.Color.BLACK,
-            ],
-            onPressed: (_vsEngine || _inRoom)
-                ? null
-                : (i) => setState(() {
-                      _humanColor = (i == 0) ? ch.Color.WHITE : ch.Color.BLACK;
-                    }),
-            children: const [
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Text('Белые'),
-              ),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Text('Чёрные'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
 // Компактное поле "Задержка, мс" (для дуэли движков)
-  Widget _buildEngineDelayFieldCompact(double w) {
-    return SizedBox(
-      width: w,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Задержка, мс', style: TextStyle(fontSize: 12)),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _duelDelayCtl, // у тебя уже есть этот контроллер
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(
-              isDense: true,
-              contentPadding:
-                  EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (v) {
-              final n = int.tryParse(v);
-              if (n != null) _engineDuelDelayMs = n;
-            },
-          ),
-        ],
-      ),
-    );
-  }
 
 // === ПРАВАЯ ПАНЕЛЬ ПОД MOVES (стрелки + действия + анализ) =========
-  Widget _RightUtilityButtons() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // Стрелки истории
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            IconButton(
-              tooltip: 'В начало',
-              onPressed: _plyIndex > 0 ? _goStart : null,
-              icon: const Icon(Icons.first_page),
-            ),
-            IconButton(
-              tooltip: 'Назад',
-              onPressed: _plyIndex > 0 ? _goPrev : null,
-              icon: const Icon(Icons.chevron_left),
-            ),
-            IconButton(
-              tooltip: 'Вперёд',
-              onPressed: _plyIndex < _sanMoves.length ? _goNext : null,
-              icon: const Icon(Icons.chevron_right),
-            ),
-            IconButton(
-              tooltip: 'В конец',
-              onPressed: _plyIndex < _sanMoves.length ? _goEnd : null,
-              icon: const Icon(Icons.last_page),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        // Сдаться / Предложить ничью
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _onResignPressed,
-                icon: const Icon(Icons.flag),
-                label: const Text('Сдаться'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: (_inRoom && !_isSpectator && !_gameTerminated)
-                    ? _offerDrawOnline
-                    : null,
-                icon: const Icon(Icons.handshake_outlined),
-                label: const Text('Предложить ничью'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        // Блок анализа: как на твоём макете
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          alignment: WrapAlignment.center,
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                FilledButton.icon(
-                  key: const Key('btnBestMove_bottom'),
-                  onPressed: _loadingBest ? null : _onTakeBestMove,
-                  icon: _loadingBest
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.flash_on),
-                  label: const Text('Взять лучший ход'),
-                ),
-                OutlinedButton.icon(
-                  key: const Key('btnAnalysis_bottom'),
-                  onPressed: _loading
-                      ? null
-                      : () async {
-                          setState(() => _loading = true);
-                          final fen = _fenController.text.trim().isEmpty
-                              ? game.fen
-                              : _fenController.text.trim();
-
-                          try {
-                            // ⚡ Анализ через богатый JSON
-                            final rich = await sf.getBestMoveRich(
-                              fen,
-                              depth: 20,
-                              multiPv: 4,
-                              maxThinkingTime: 2500,
-                            );
-
-                            final text = (rich['text'] is String)
-                                ? rich['text'] as String
-                                : '';
-                            const enc = JsonEncoder.withIndent('  ');
-                            final pretty = enc.convert(rich);
-
-                            if (!mounted) return;
-                            await showDialog(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                title: const Text('Stockfish analysis'),
-                                content: SingleChildScrollView(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      if (text.trim().isNotEmpty) ...[
-                                        SelectableText(
-                                          text,
-                                          style: const TextStyle(fontSize: 14),
-                                        ),
-                                        const SizedBox(height: 12),
-                                      ],
-                                      const SelectableText(
-                                        'Details (rich):',
-                                        style: TextStyle(
-                                            fontWeight: FontWeight.w600),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      SelectableText(
-                                        pretty,
-                                        style: const TextStyle(
-                                            fontFamily: 'monospace',
-                                            fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.of(ctx).pop(),
-                                    child: const Text('Закрыть'),
-                                  ),
-                                ],
-                              ),
-                            );
-                          } catch (e) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Stockfish: $e')),
-                              );
-                            }
-                          } finally {
-                            if (mounted) setState(() => _loading = false);
-                          }
-                        },
-                  icon: const Icon(Icons.analytics),
-                  label: const Text('Stockfish Analysis'),
-                ),
-              ],
-            ),
-
-            FilledButton.icon(
-              onPressed: _gptLoading ? null : _explainHere, // без доп. текста
-              icon: _gptLoading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.psychology),
-              label:
-                  Text(_gptLoading ? 'Запрос к GPT...' : 'Объяснить позицию'),
-            ),
-            // >>> НОВАЯ КНОПКА С ДИАЛОГОМ ВОПРОСА
-            FilledButton.icon(
-              onPressed: _gptLoading ? null : _openGptPromptDialog,
-              icon: const Icon(Icons.question_answer),
-              label: const Text('С вопросом…'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
 
 // === ЕДИНЫЙ КОНТЕНТ (адаптив) ==============================================
 // === ЕДИНЫЙ КОНТЕНТ (адаптив, без showChat внутри) ===
+  Widget _buildMobileMovesAndControls(double width) {
+    final gap = 8.0;
+    final controlsWidth = (width - gap) * 0.52;
+    final movesWidth = width - gap - controlsWidth;
+    return SizedBox(
+      width: width,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: controlsWidth,
+            height: 470,
+            child: RightSidebarPanel(
+              plyIndex: _plyIndex,
+              sanMoves: _sanMoves,
+              onGoStart: _goStart,
+              onGoPrev: _goPrev,
+              onGoNext: _goNext,
+              onGoEnd: _goEnd,
+              onResignPressed: _onResignPressed,
+              offerDrawUniversal: _offerDrawUniversal,
+              loading: _loading,
+              onBestMove: () async {
+                final fen = _fenController.text.trim().isEmpty
+                    ? game.fen
+                    : _fenController.text.trim();
+                await _fetchUciBestMove(fen);
+              },
+              gptLoading: _gptLoading,
+              explainHere: _explainHere,
+              showFenInput: _showFenInput,
+              toggleFenInput: () =>
+                  setState(() => _showFenInput = !_showFenInput),
+              loadingBest: _loadingBest,
+              onTakeBestMove: _onTakeBestMove,
+              loadingAnalysis: _loadingAnalysis,
+              onOpenAnalysis: _onOpenAnalysis,
+              openGptPromptDialog: _openGptPromptDialog,
+              inRoom: _inRoom,
+              sharedControl: _sharedControl,
+              editMode: _editMode,
+              applyEditor: _applyEditor,
+              enterEditor: _enterEditor,
+              compact: true,
+            ),
+          ),
+          SizedBox(width: gap),
+          MoveListPanel(
+            san: _sanMoves,
+            currentPly: _plyIndex,
+            controller: _movesScroll,
+            onCopyPGN: () => unawaited(_copyPgnAndSaveToCabinet()),
+            onClear: () {
+              setState(() {
+                _sanMoves.clear();
+                _fens
+                  ..clear()
+                  ..add(game.fen);
+                _plyIndex = 0;
+                if (_showPuzzleMoveResultPanel) {
+                  _resetStudentPuzzleMoveCheck();
+                  _studentShowPuzzleAnswer = false;
+                }
+              });
+            },
+            puzzleMoveChecked:
+                _showPuzzleMoveResultPanel ? _puzzleMoveChecked : false,
+            puzzleMoveCorrect:
+                _showPuzzleMoveResultPanel ? _puzzleMoveCorrect : null,
+            showPuzzleCorrectAnswer:
+                _showPuzzleMoveResultPanel && _studentShowPuzzleAnswer,
+            correctPuzzleLines: _activePuzzleSolutionMoveLines,
+            selectedCorrectLineIndex: _shownSolutionLineIndex,
+            onPreviousCorrectLine: _openPreviousSolutionLine,
+            onNextCorrectLine: _openNextSolutionLine,
+            width: movesWidth,
+            height: 470,
+            compact: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileGameModeIcons(double width) {
+    Widget action({
+      required String tooltip,
+      required Widget icon,
+      required VoidCallback? onPressed,
+      bool active = false,
+    }) {
+      return Tooltip(
+        message: tooltip,
+        child: SizedBox(
+          width: 42,
+          height: 42,
+          child: IconButton(
+            onPressed: onPressed,
+            icon: IconTheme(
+              data: const IconThemeData(size: 19),
+              child: icon,
+            ),
+            color: active ? Colors.lightBlueAccent : Colors.white,
+            disabledColor: Colors.white30,
+            style: IconButton.styleFrom(
+              backgroundColor: active
+                  ? Colors.lightBlue.withValues(alpha: 0.18)
+                  : const Color(0xFF252B33),
+              side: BorderSide(
+                color: active ? Colors.lightBlueAccent : Colors.white12,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(9),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFF171B20),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          action(
+            tooltip: 'Играть с человеком',
+            icon: const Icon(Icons.people),
+            onPressed: _vsEngine && !_inRoom ? _continueVsHuman : null,
+          ),
+          action(
+            tooltip: 'Играть с компьютером',
+            icon: const Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                    left: -9, top: 3, child: Icon(Icons.person, size: 16)),
+                Positioned(
+                    left: 3,
+                    top: 1,
+                    child: Icon(Icons.desktop_windows, size: 18)),
+              ],
+            ),
+            onPressed: !_inRoom && !_vsEngine ? _continueVsEngine : null,
+          ),
+          action(
+            tooltip: 'Компьютер против компьютера',
+            icon: const Icon(Icons.view_stream_outlined),
+            onPressed: !_inRoom ? _startEngineDuel : null,
+          ),
+          action(
+            tooltip: 'Совместный режим',
+            icon: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.person, size: 14),
+                Text('&',
+                    style:
+                        TextStyle(fontSize: 11, fontWeight: FontWeight.w900)),
+                Icon(Icons.person, size: 14),
+              ],
+            ),
+            active: _syncBoard,
+            onPressed: _toggleSyncBoard,
+          ),
+          action(
+            tooltip: _humanColor == ch.Color.WHITE
+                ? 'Вы играете белыми'
+                : 'Вы играете чёрными',
+            icon: const Icon(Icons.contrast),
+            onPressed: (!_inRoom && !_vsEngine)
+                ? () => setState(() {
+                      _humanColor = _humanColor == ch.Color.WHITE
+                          ? ch.Color.BLACK
+                          : ch.Color.WHITE;
+                    })
+                : null,
+          ),
+          action(
+            tooltip: 'Новый игрок',
+            icon: const Icon(Icons.fiber_new),
+            onPressed: _onNewGameUniversal,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMainContent(double boardSize, bool isLogged, bool isMobile) {
+    // Десктоп строим в логических размерах 100%, а затем масштабируем целиком.
+    // Поэтому вместе с доской пропорционально меняются кнопки, текст, значки,
+    // отступы и обе боковые панели. Видеосвязь и игровая логика не затрагиваются.
+    final double desktopScale = boardSize / _baseAt100;
+    final double logicalBoardSize = _baseAt100;
+    final double logicalSidePanelWidth = logicalBoardSize * 0.7 * 1.2;
+    const double logicalDesktopGap = 16.0;
+    const double logicalCenterExtra = 92.0;
+    final double logicalCenterWidth = logicalBoardSize + logicalCenterExtra;
+    final double logicalDesktopWidth =
+        logicalSidePanelWidth * 2 + logicalCenterWidth + logicalDesktopGap * 2;
+    final double actualDesktopWidth = logicalDesktopWidth * desktopScale;
+    final double logicalPanelHeight = math.max(
+      640.0,
+      MediaQuery.of(context).size.height - 96,
+    );
+
+    Widget scaledDesktop(Widget child) {
+      final scaled = SizedBox(
+        width: actualDesktopWidth,
+        child: FittedBox(
+          fit: BoxFit.fitWidth,
+          alignment: Alignment.topCenter,
+          child: SizedBox(
+            width: logicalDesktopWidth,
+            child: child,
+          ),
+        ),
+      );
+
+      // Сохраняем прежнее поведение увеличения выше 100%:
+      // интерфейс можно прокручивать по горизонтали, а не сжимать обратно.
+      if (_boardPercent > 100.0) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: scaled,
+        );
+      }
+      return scaled;
+    }
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 16 : 8,
+        vertical: 12,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          _buildTopBar(), // шапка (на десктопе скрыта)
-          const SizedBox(height: 8),
-
           if (isMobile) ...[
-            // ===== Мобильная раскладка: всё в колонку =====
-            _buildLeftColumn(boardSize,
-                showBottomTools: false), // ваша колонка с доской (как была)
-            const SizedBox(height: 16),
-
-            _MoveListPanel(
-              san: _sanMoves,
-              currentPly: _plyIndex,
-              controller: _movesScroll,
-              onCopyPGN: () {
-                final rows = _rowsFromSan(_sanMoves);
-                Clipboard.setData(ClipboardData(text: rows.join(' ')));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('PGN скопирован')),
-                );
-              },
-              onClear: () {
-                setState(() {
-                  _sanMoves.clear();
-                  _fens
-                    ..clear()
-                    ..add(game.fen);
-                  _plyIndex = 0;
-                });
-              },
-            ),
-            const SizedBox(height: 16),
-
-            _LobbyPanel(
-              isLoggedIn: isLogged,
-              inLobby: _lobby != null,
-              online: _lobby?.online ?? const [],
-              myId: Supabase.instance.client.auth.currentUser?.id,
-              myRating: _myRating,
-              onEnterLobby: _enterLobby,
-              onLeaveLobby: _leaveLobby,
-              onInvite: (id, name) => _invitePlayer(id, name),
-            ),
-
-            const SizedBox(height: 16),
-            _buildBottomTools(), // нижние инструменты показываем
+            if (_mobilePanel == 'lobby') ...[
+              LobbyPanel(
+                isLoggedIn: isLogged,
+                inLobby: _lobby != null,
+                online: _lobby?.online ?? const [],
+                myId: Supabase.instance.client.auth.currentUser?.id,
+                myRating: _myRating,
+                onEnterLobby: _enterLobby,
+                onLeaveLobby: _leaveLobby,
+                onInvite: (id, name) => _invitePlayer(id, name),
+              ),
+            ] else if (_mobilePanel == 'game') ...[
+              SizedBox(
+                width: boardSize,
+                child: _LeftUtilityButtons(),
+              ),
+            ] else if (_mobilePanel == 'moves') ...[
+              _buildMobileMovesAndControls(boardSize),
+            ] else if (_mobilePanel == 'chat') ...[
+              _buildChat(
+                maxWidth: boardSize,
+                height: 420,
+              ),
+            ] else ...[
+              _buildMobileGameModeIcons(boardSize),
+              const SizedBox(height: 8),
+              _buildLeftColumn(
+                boardSize,
+                showChat: false,
+                showBottomTools: false,
+              ),
+              const SizedBox(height: 12),
+              _buildMobileMovesAndControls(boardSize),
+              if (_showLearningPanel || _mobilePanel == 'learning') ...[
+                const SizedBox(height: 16),
+                LearningPanel(
+                  activeAnalysisKey: _learningAnalysisArrowKey,
+                  showAnswer: _learningShowAnswer,
+                  activeAnalysisSide: _learningAnalysisSide,
+                  analysisResults: _learningAnalysisResults,
+                  onAnalysisSideToggle: _toggleLearningAnalysisSide,
+                  onAnalysisModeChanged: _setLearningAnalysisMode,
+                  drawingEnabled: _learningDrawingEnabled,
+                  onToggleDrawing: _toggleLearningDrawing,
+                  onFinishAnalysis: _finishLearningAnalysisTask,
+                  onShowAnswerChanged: _setLearningShowAnswer,
+                  onRoleChanged: _handleLearningRoleChanged,
+                  onLoadPosition: () {
+                    _editMode ? _applyEditor() : _enterEditor();
+                  },
+                  onToggleSharedMode: _toggleSyncBoard,
+                  sharedModeEnabled: _syncBoard,
+                  onToggleStudentEvaluation: () =>
+                      unawaited(_toggleLearningStudentEvaluation()),
+                  studentEvaluationEnabled:
+                      _selectedLearningStudentEvaluationEnabled,
+                  role: _learningRole,
+                  students: _learningStudents,
+                  selectedStudentId: _selectedLearningStudentId,
+                  selectedVideoStudentIds: _selectedVideoStudentIds,
+                  confirmedStudentId: _confirmedLearningStudentId,
+                  invitationStatus: _learningInvitationStatus,
+                  onAddStudent: _addLearningStudent,
+                  onStudentSelected: _selectLearningStudent,
+                  onVideoStudentToggled: _toggleVideoLearningStudent,
+                  onInviteStudentToGame: _inviteLearningStudentToGame,
+                  onInviteSelectedStudent: _inviteSelectedLearningStudent,
+                  showAllBoards: _learningShowAllBoards,
+                  onToggleBoardsView: _toggleLearningBoardsView,
+                  onStudentDoubleTap: _focusLearningStudentBoard,
+                  activeBoardStudentId: _learningFocusedStudentId,
+                  onlineStudentIds: _learningOnlineStudentIds,
+                  connectedGameStudentIds: _learningConnectedGameStudentIds,
+                  pendingGameStudentIds: _learningPendingGameStudentIds,
+                  onEndStudentGame: _endLearningStudentGame,
+                  width: boardSize,
+                  height: math.max(
+                    640.0,
+                    MediaQuery.of(context).size.height - 96,
+                  ),
+                ),
+              ] else if (_showPuzzlePanel || _mobilePanel == 'puzzles') ...[
+                const SizedBox(height: 16),
+                PuzzleTypesPanel(
+                  selectedType: _selectedPuzzleType,
+                  onTypeSelected: (type) {
+                    setState(() {
+                      _selectedPuzzleType = type;
+                      _activePublishedPuzzleIndex = -1;
+                    });
+                  },
+                  onOpenTasksTap: _openPublishedPuzzlesFolder,
+                  onSettingsTap: _openPuzzleSettings,
+                  publishedTasks: _visiblePublishedPuzzleTasks,
+                  activeTaskIndex: _activePublishedPuzzleIndex,
+                  loadingTasks: _loadingPublishedPuzzleTasks,
+                  onTaskSelected: _activatePublishedPuzzle,
+                  onPreviousTask: _activatePreviousPublishedPuzzle,
+                  onNextTask: _activateNextPublishedPuzzle,
+                  activeAnalysisKey: _studentAnalysisArrowKey,
+                  showAnswer: _studentShowPuzzleAnswer,
+                  activeAnalysisSide: _studentAnalysisSide,
+                  analysisResults: _studentAnalysisResults,
+                  onAnalysisSideToggle: _toggleStudentAnalysisSide,
+                  onAnalysisModeChanged: _setStudentPuzzleAnalysisMode,
+                  onFinishAnalysis: _finishStudentPuzzleAnalysisTask,
+                  onShowAnswerChanged: _setStudentShowPuzzleAnswer,
+                  width: boardSize,
+                  height: math.max(
+                    640.0,
+                    MediaQuery.of(context).size.height - 96,
+                  ),
+                ),
+              ],
+            ],
             const SizedBox(height: 24),
           ] else ...[
             // ===== Десктоп: три колонки =====
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // 1) ЛЕВАЯ КОЛОНКА — ЛОББИ + ЧАТ
-                SizedBox(
-                  width: _leftColWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _LeftUtilityButtons(), // если есть (ваши кнопки слева)
-                      const SizedBox(height: 12),
-
-                      _LobbyPanel(
-                        isLoggedIn: isLogged,
-                        inLobby: _lobby != null,
-                        online: _lobby?.online ?? const [],
-                        myId: Supabase.instance.client.auth.currentUser?.id,
-                        myRating: _myRating,
-                        onEnterLobby: _enterLobby,
-                        onLeaveLobby: _leaveLobby,
-                        onInvite: (id, name) => _invitePlayer(id, name),
+            // ===== Десктоп: три колонки =====
+            scaledDesktop(
+              PlayLayout(
+                leftWidth: logicalSidePanelWidth,
+                centerWidth: logicalCenterWidth,
+                rightWidth: logicalSidePanelWidth,
+                gap: logicalDesktopGap,
+                padding: EdgeInsets.zero,
+                left: _showLearningPanel
+                    ? LearningPanel(
+                        activeAnalysisKey: _learningAnalysisArrowKey,
+                        showAnswer: _learningShowAnswer,
+                        activeAnalysisSide: _learningAnalysisSide,
+                        analysisResults: _learningAnalysisResults,
+                        onAnalysisSideToggle: _toggleLearningAnalysisSide,
+                        onAnalysisModeChanged: _setLearningAnalysisMode,
+                        drawingEnabled: _learningDrawingEnabled,
+                        onToggleDrawing: _toggleLearningDrawing,
+                        onFinishAnalysis: _finishLearningAnalysisTask,
+                        onShowAnswerChanged: _setLearningShowAnswer,
+                        onRoleChanged: _handleLearningRoleChanged,
+                        onLoadPosition: () {
+                          _editMode ? _applyEditor() : _enterEditor();
+                        },
+                        onToggleSharedMode: _toggleSyncBoard,
+                        sharedModeEnabled: _syncBoard,
+                        onToggleStudentEvaluation: () =>
+                            unawaited(_toggleLearningStudentEvaluation()),
+                        studentEvaluationEnabled:
+                            _selectedLearningStudentEvaluationEnabled,
+                        role: _learningRole,
+                        students: _learningStudents,
+                        selectedStudentId: _selectedLearningStudentId,
+                        selectedVideoStudentIds: _selectedVideoStudentIds,
+                        confirmedStudentId: _confirmedLearningStudentId,
+                        invitationStatus: _learningInvitationStatus,
+                        onAddStudent: _addLearningStudent,
+                        onStudentSelected: _selectLearningStudent,
+                        onVideoStudentToggled: _toggleVideoLearningStudent,
+                        onInviteStudentToGame: _inviteLearningStudentToGame,
+                        onInviteSelectedStudent: _inviteSelectedLearningStudent,
+                        showAllBoards: _learningShowAllBoards,
+                        onToggleBoardsView: _toggleLearningBoardsView,
+                        onStudentDoubleTap: _focusLearningStudentBoard,
+                        activeBoardStudentId: _learningFocusedStudentId,
+                        onlineStudentIds: _learningOnlineStudentIds,
+                        connectedGameStudentIds:
+                            _learningConnectedGameStudentIds,
+                        pendingGameStudentIds: _learningPendingGameStudentIds,
+                        onEndStudentGame: _endLearningStudentGame,
+                        width: logicalSidePanelWidth,
+                        height: logicalPanelHeight,
+                      )
+                    : _showPuzzlePanel
+                        ? PuzzleTypesPanel(
+                            selectedType: _selectedPuzzleType,
+                            onTypeSelected: (type) {
+                              setState(() {
+                                _selectedPuzzleType = type;
+                                _activePublishedPuzzleIndex = -1;
+                              });
+                            },
+                            onOpenTasksTap: _openPublishedPuzzlesFolder,
+                            onSettingsTap: _openPuzzleSettings,
+                            publishedTasks: _visiblePublishedPuzzleTasks,
+                            activeTaskIndex: _activePublishedPuzzleIndex,
+                            loadingTasks: _loadingPublishedPuzzleTasks,
+                            onTaskSelected: _activatePublishedPuzzle,
+                            onPreviousTask: _activatePreviousPublishedPuzzle,
+                            onNextTask: _activateNextPublishedPuzzle,
+                            activeAnalysisKey: _studentAnalysisArrowKey,
+                            showAnswer: _studentShowPuzzleAnswer,
+                            activeAnalysisSide: _studentAnalysisSide,
+                            analysisResults: _studentAnalysisResults,
+                            onAnalysisSideToggle: _toggleStudentAnalysisSide,
+                            onAnalysisModeChanged:
+                                _setStudentPuzzleAnalysisMode,
+                            onFinishAnalysis: _finishStudentPuzzleAnalysisTask,
+                            onShowAnswerChanged: _setStudentShowPuzzleAnswer,
+                            width: logicalSidePanelWidth,
+                            height: logicalPanelHeight,
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _LeftUtilityButtons(),
+                              const SizedBox(height: 12),
+                              LobbyPanel(
+                                isLoggedIn: isLogged,
+                                inLobby: _lobby != null,
+                                online: _lobby?.online ?? const [],
+                                myId: Supabase
+                                    .instance.client.auth.currentUser?.id,
+                                myRating: _myRating,
+                                onEnterLobby: _enterLobby,
+                                onLeaveLobby: _leaveLobby,
+                                onInvite: (id, name) => _invitePlayer(id, name),
+                              ),
+                              const SizedBox(height: 12),
+                              _buildChat(
+                                  maxWidth: logicalSidePanelWidth, height: 220),
+                            ],
+                          ),
+                center: _showLearningPanel &&
+                        _learningRole == LearningPanelRole.teacher
+                    ? _buildLearningBoardsArea(
+                        width: logicalCenterWidth,
+                        height: logicalPanelHeight,
+                      )
+                    : _buildLeftColumn(
+                        logicalBoardSize,
+                        showChat: false,
+                        showBottomTools: false,
                       ),
-
-                      const SizedBox(height: 12),
-
-                      // ЧАТ слева
-                      _buildChat(maxWidth: 320, height: 220),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(width: 24),
-
-                // 2) ЦЕНТР — ДОСКА (как у вас было)
-                _buildLeftColumn(
-                  boardSize,
-                  showChat: false,
-                  showBottomTools: false,
-                ),
-
-                const SizedBox(width: 24),
-
-                // 3) ПРАВАЯ КОЛОНКА — Moves + стрелки + действия
-                SizedBox(
-                  width: 320,
-                  child: _RightColumn(boardSize),
-                ),
-              ],
+                right: _buildDesktopRightColumn(logicalSidePanelWidth),
+              ),
             ),
             // ⚠️ На десктопе нижние инструменты НЕ выводим, чтобы не было дубля
           ],
@@ -3790,17 +8663,26 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _onTakeBestMove() async {
     if (_loadingBest) return;
     setState(() => _loadingBest = true);
+
     try {
       final fen = (_fenController.text.trim().isEmpty)
           ? game.fen
           : _fenController.text.trim();
-      final uci = await sf.getBestMove(fen,
-          depth: 18); // импорт: import 'stockfish_service.dart' as sf;
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Best move (UCI): $uci')),
+
+      final rich = await sf.getAnalysisRaw(
+        fen,
+        depth: 18,
+        multiPv: 1, // один лучший вариант
+        maxThinkingTime: 2000,
       );
-      // тут можешь сразу применить ход к доске, если нужно
+
+      if (!mounted) return;
+
+      final txt = (rich['text'] as String?) ?? (rich['uci'] as String?) ?? 'OK';
+
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(txt)));
+
+      // Если хочешь — можешь взять rich['uci'] и сразу применить ход к доске.
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -3811,14 +8693,235 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+// ---------- 1) Извлечь краткую выжимку из "богатого" ответа ----------
+  String _sfSummaryFromRich(Map<String, dynamic> rich) {
+    final depth = rich['depth'] ?? rich['analysisDepth'] ?? rich['d'] ?? '';
+    final best = (rich['best'] ?? rich['move'] ?? rich['uci'] ?? '').toString();
+    final text = (rich['text'] ?? '').toString();
+
+    // оценка / мат — берём из score/mate/centipawns
+    String evalStr = '';
+    if (rich['mate'] != null) {
+      evalStr = 'mate ${rich['mate']}';
+    } else if (rich['score'] is Map) {
+      final s = rich['score'] as Map;
+      if (s['mate'] != null) {
+        evalStr = 'mate ${s['mate']}';
+      } else if (s['value'] != null) {
+        evalStr = 'cp ${s['value']}';
+      }
+    } else if (rich['centipawns'] != null) {
+      evalStr = 'cp ${rich['centipawns']}';
+    } else if (rich['eval'] != null) {
+      evalStr = 'eval ${rich['eval']}';
+    }
+
+    final winChance =
+        rich['winChance'] != null ? 'winChance: ${rich['winChance']}' : '';
+    return [
+      if (text.isNotEmpty) text,
+      if (best.isNotEmpty) 'Best: $best',
+      if (evalStr.isNotEmpty) 'Score: $evalStr',
+      if (depth.toString().isNotEmpty) 'Depth: $depth',
+      if (winChance.isNotEmpty) winChance,
+    ].where((s) => s.trim().isNotEmpty).join('\n');
+  }
+
+// ---------- 2) Попробовать вытащить несколько PV/продолжений ----------
+  List<String> _pvLinesFromRich(Map<String, dynamic> rich) {
+    final res = <String>[];
+
+    // Вариант 1: готовый массив линий
+    if (rich['lines'] is List) {
+      for (final ln in (rich['lines'] as List)) {
+        if (ln is Map && ln['pv'] is String) res.add(ln['pv']);
+      }
+    }
+
+    // Вариант 2: continuation / continuationArr
+    if (res.isEmpty && rich['continuation'] is List) {
+      final cont = (rich['continuation'] as List).cast<Map>();
+      final moves = cont.map((m) => '${m['from']}${m['to']}').join(' ');
+      if (moves.isNotEmpty) res.add(moves);
+    }
+    if (res.isEmpty && rich['continuationArr'] is List) {
+      final arr = (rich['continuationArr'] as List).cast<String>();
+      if (arr.isNotEmpty) res.add(arr.join(' '));
+    }
+
+    // Вариант 3: pv строкой
+    if (res.isEmpty &&
+        rich['pv'] is String &&
+        (rich['pv'] as String).trim().isNotEmpty) {
+      res.add(rich['pv'] as String);
+    }
+
+    return res.take(3).toList(); // до 3-х линий хватает
+  }
+
+// ---------- 3) Сформировать понятный промпт для GPT ----------
+  String _buildGptPromptWithStockfish({
+    required String fen,
+    required Map<String, dynamic> rich,
+  }) {
+    final side = fen.contains(' w ') ? 'White to move' : 'Black to move';
+    final summary = _sfSummaryFromRich(rich);
+    final pvs = _pvLinesFromRich(rich);
+
+    final prettyJson = const JsonEncoder.withIndent('  ').convert(rich);
+
+    return '''
+You are a strong chess coach. Explain the position for an intermediate player.
+
+FEN: $fen
+Side to move: $side
+
+Stockfish summary:
+$summary
+
+Top candidate lines (from engine):
+${pvs.isEmpty ? '(no PV lines were provided)' : pvs.map((e) => '• $e').join('\n')}
+
+Tasks:
+1) Explain the best plan and the main idea behind the best move.
+2) Give typical plans for both sides in this structure.
+3) Mention tactical motifs or traps to watch out for.
+4) Keep it concise and actionable.
+
+(For reference only, raw engine payload below — do NOT just repeat it):
+$prettyJson
+''';
+  }
+
+  double _extractEvalFromRich(Map<String, dynamic> raw) {
+    // mate имеет приоритет
+    final mate =
+        raw['mate'] ?? (raw['score'] is Map ? raw['score']['mate'] : null);
+    if (mate is num) {
+      if (mate == 0) return 0.0;
+      return mate > 0 ? 15.0 : -15.0;
+    }
+
+    // обычная оценка
+    final dynamic evalRaw = raw['eval'] ??
+        raw['centipawns'] ??
+        (raw['score'] is Map ? raw['score']['value'] : null);
+
+    if (evalRaw == null) return 0.0;
+
+    if (evalRaw is num) {
+      // Если пришли "центопешки" типа 124 -> 1.24
+      final double val =
+          evalRaw.abs() > 20 ? evalRaw / 100.0 : evalRaw.toDouble();
+      return val.clamp(-15.0, 15.0);
+    }
+
+    final s = evalRaw.toString().replaceAll(',', '.').trim();
+    final parsed = double.tryParse(s);
+    if (parsed == null) return 0.0;
+
+    final double val = parsed.abs() > 20 ? parsed / 100.0 : parsed;
+    return val.clamp(-15.0, 15.0);
+  }
+
+  Future<void> _refreshLearningSessionEval(
+    _LearningGameSession session,
+  ) async {
+    final fen = session.game.fen;
+    final requestEpoch = ++session.evalRequestEpoch;
+    session.loadingEval = true;
+    session.lastEvalFen = fen;
+
+    try {
+      final raw = await sf.getAnalysisRaw(
+        fen,
+        depth: 14,
+        multiPv: 1,
+        maxThinkingTime: 900,
+      );
+      final eval = _extractEvalFromRich(raw);
+
+      if (!mounted ||
+          requestEpoch != session.evalRequestEpoch ||
+          session.game.fen != fen ||
+          _learningGameSessions[session.student.id] != session) {
+        return;
+      }
+      setState(() {
+        session.engineEval = eval;
+      });
+    } catch (_) {
+      // Оставляем последнюю корректную оценку этой доски.
+    } finally {
+      if (requestEpoch == session.evalRequestEpoch) {
+        session.loadingEval = false;
+      }
+    }
+  }
+
+  Future<void> _refreshEvalBar() async {
+    final requestEpoch = ++_evalRequestEpoch;
+    _loadingEval = true;
+
+    try {
+      final String fen = game.fen;
+      _lastEvalScheduledFen = fen;
+
+      final raw = await sf.getAnalysisRaw(
+        fen,
+        depth: 16,
+        multiPv: 1,
+        maxThinkingTime: 1200,
+      );
+
+      final eval = _extractEvalFromRich(raw);
+
+      if (!mounted || requestEpoch != _evalRequestEpoch || game.fen != fen) {
+        return;
+      }
+      setState(() {
+        _engineEval = eval;
+      });
+    } catch (_) {
+      // молча оставляем последнюю оценку
+    } finally {
+      if (requestEpoch == _evalRequestEpoch) {
+        _loadingEval = false;
+      }
+    }
+  }
+
   Future<void> _onOpenAnalysis() async {
     if (_loadingAnalysis) return;
     setState(() => _loadingAnalysis = true);
+
     try {
-      final fen = (_fenController.text.trim().isEmpty)
-          ? game.fen
-          : _fenController.text.trim();
-      final text = await sf.getAnalysisText(fen, depth: 18, multiPv: 3);
+      final String fenInput = _fenController.text.trim();
+      final String fen = fenInput.isEmpty ? game.fen : fenInput;
+
+      // 1) БЕРЁМ ПОЛНЫЙ JSON (а не текст!)
+      final raw = await sf.getAnalysisRaw(
+        fen,
+        depth: 20, // можешь поднять до 22–24
+        multiPv: 4, // топ-4 линии
+        maxThinkingTime: 2500,
+      );
+
+      // Keep the evaluation bar synchronized with this exact analysis run.
+      // The background bar calculation uses faster settings and may differ.
+      final analysisEval = _extractEvalFromRich(raw);
+      if (mounted) {
+        setState(() => _engineEval = analysisEval);
+      }
+
+      // 2) Если есть «человеческий» текст — покажем сверху отдельным блоком
+      final String text =
+          (raw['text'] is String) ? (raw['text'] as String) : '';
+
+      // 3) Красиво форматируем ВЕСЬ JSON
+      const enc = JsonEncoder.withIndent('  ');
+      final pretty = enc.convert(raw);
+
       if (!mounted) return;
 
       await showDialog(
@@ -3826,22 +8929,38 @@ class _MyHomePageState extends State<MyHomePage> {
         builder: (ctx) => AlertDialog(
           title: const Text('Stockfish analysis'),
           content: SingleChildScrollView(
-            child: SelectableText(
-              (text.isEmpty) ? 'Пустой ответ от анализатора.' : text,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (text.trim().isNotEmpty) ...[
+                  SelectableText(text, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(height: 12),
+                ],
+                const SelectableText(
+                  'Details (raw):',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6),
+                SelectableText(
+                  pretty,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ],
             ),
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Закрыть')),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Закрыть'),
+            ),
           ],
         ),
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Stockfish: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Stockfish: $e')),
+        );
       }
     } finally {
       if (mounted) setState(() => _loadingAnalysis = false);
@@ -3851,16 +8970,58 @@ class _MyHomePageState extends State<MyHomePage> {
   // ================== BUILD (адаптив) ==================
   @override
   Widget build(BuildContext context) {
+    // FEN is the single source of truth for evaluation. This catches every
+    // position change, including history navigation, resets, FEN loading,
+    // editor changes and remote synchronization.
+    final currentFen = game.fen;
+    if (_lastEvalScheduledFen != currentFen) {
+      _lastEvalScheduledFen = currentFen;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && game.fen == currentFen) {
+          unawaited(_refreshEvalBar());
+        }
+      });
+    }
+
     final media = MediaQuery.of(context);
     final w = media.size.width;
     final h = media.size.height;
-    final bool isMobile = w < 900;
+
+    // Телефонный режим: сначала только доска, остальные зоны открываются из меню.
+    final bool isMobile = w < 760;
     final bool isLogged = Supabase.instance.client.auth.currentUser != null;
 
-    // размер доски
-    final double desired = _baseAt100 * (_boardPercent / 100.0);
-    final double sizeLimit = isMobile ? (w - 32) : (math.min(w, h) - 32);
-    final double boardSize = desired.clamp(120.0, sizeLimit);
+    final double requestedBoardSize = _baseAt100 * (_boardPercent / 100);
+
+    // На десктопе весь трехколоночный интерфейс масштабируется как единое целое.
+    // При 100% панели имеют 84% ширины доски: это ровно в 1,2 раза
+    // шире прежних панелей по 70% ширины доски.
+    final double logicalSidePanelWidth = _baseAt100 * 0.7 * 1.2;
+    const double logicalCenterExtra = 92.0;
+    const double logicalDesktopGap = 16.0;
+    final double logicalDesktopWidth = logicalSidePanelWidth * 2 +
+        (_baseAt100 + logicalCenterExtra) +
+        logicalDesktopGap * 2;
+    const double desktopOuterHorizontalPadding = 16.0;
+    final double desktopWidthLimit = math.max(
+      240.0,
+      _baseAt100 * ((w - desktopOuterHorizontalPadding) / logicalDesktopWidth),
+    );
+
+    final double verticalLimit = math.max(240.0, h - 150.0);
+    final double automaticFitLimit = isMobile
+        ? math.max(240.0, w - 32.0)
+        : math.max(240.0, math.min(verticalLimit, desktopWidthLimit));
+
+    // При обычном масштабе сайт автоматически помещается в окно ноутбука.
+    // Масштаб выше 100% считается осознанным увеличением пользователя и
+    // может включить горизонтальную прокрутку.
+    final double boardSize = math.max(
+      240.0,
+      _boardPercent <= 100.0
+          ? math.min(requestedBoardSize, automaticFitLimit)
+          : math.min(requestedBoardSize, verticalLimit),
+    );
 
     // твой «core» контент страницы
     final Widget core = SafeArea(
@@ -3930,7 +9091,7 @@ class _MyHomePageState extends State<MyHomePage> {
           Positioned(
             top: 12,
             right: 12,
-            child: _AuthPanel(
+            child: AuthPanel(
               isLogin: _authIsLogin,
               passCtl: _passCtl,
               nickCtl: _nickCtl,
@@ -4027,7 +9188,7 @@ class _MyHomePageState extends State<MyHomePage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               // 1) ЛОББИ СЛЕВА
-              _LobbyPanel(
+              LobbyPanel(
                 isLoggedIn: isLogged,
                 inLobby: _lobby != null,
                 online: _lobby?.online ?? const [],
@@ -4045,104 +9206,37 @@ class _MyHomePageState extends State<MyHomePage> {
 
               const SizedBox(width: 24),
 
-              // 3) ПРАВАЯ КОЛОНКА: ХОДЫ • СТРЕЛКИ • КНОПКИ
-              SizedBox(
-                width: 300,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _MoveListPanel(
-                      san: _sanMoves,
-                      currentPly: _plyIndex,
-                      controller: _movesScroll,
-                      onCopyPGN: () {
-                        final rows = _rowsFromSan(_sanMoves);
-                        Clipboard.setData(ClipboardData(text: rows.join(' ')));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('PGN скопирован')),
-                        );
-                      },
-                      onClear: () {
-                        setState(() {
-                          _sanMoves.clear();
-                          _fens
-                            ..clear()
-                            ..add(game.fen);
-                          _plyIndex = 0;
-                        });
-                      },
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    // СТРЕЛКИ НАВИГАЦИИ ПОД СПИСКОМ ХОДОВ
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFDFCF9),
-                        border: Border.all(
-                            color: const Color(0xFF333333), width: 1.2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            IconButton(
-                              tooltip: 'В начало',
-                              onPressed: _plyIndex > 0 ? _goStart : null,
-                              icon: const Icon(Icons.first_page),
-                            ),
-                            IconButton(
-                              tooltip: 'Назад',
-                              onPressed: _plyIndex > 0 ? _goPrev : null,
-                              icon: const Icon(Icons.chevron_left),
-                            ),
-                            IconButton(
-                              tooltip: 'Вперёд',
-                              onPressed:
-                                  _plyIndex < _sanMoves.length ? _goNext : null,
-                              icon: const Icon(Icons.chevron_right),
-                            ),
-                            IconButton(
-                              tooltip: 'В конец',
-                              onPressed:
-                                  _plyIndex < _sanMoves.length ? _goEnd : null,
-                              icon: const Icon(Icons.last_page),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    // КНОПКИ ПОД СТРЕЛКАМИ
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed:
-                                (_inRoom && !_isSpectator && !_gameTerminated)
-                                    ? _offerDrawOnline
-                                    : null,
-                            icon: const Icon(Icons.handshake_outlined),
-                            label: const Text('Предложить ничью'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _onResignPressed,
-                            icon: const Icon(Icons.flag),
-                            label: const Text('Сдаться'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              RightSidebarPanel(
+                plyIndex: _plyIndex,
+                sanMoves: _sanMoves,
+                onGoStart: _goStart,
+                onGoPrev: _goPrev,
+                onGoNext: _goNext,
+                onGoEnd: _goEnd,
+                onResignPressed: _onResignPressed,
+                offerDrawUniversal: _offerDrawUniversal,
+                loading: _loading,
+                onBestMove: () async {
+                  final fen = _fenController.text.trim().isEmpty
+                      ? game.fen
+                      : _fenController.text.trim();
+                  await _fetchUciBestMove(fen);
+                },
+                gptLoading: _gptLoading,
+                editMode: _editMode,
+                applyEditor: _applyEditor,
+                enterEditor: _enterEditor,
+                explainHere: _explainHere,
+                showFenInput: _showFenInput,
+                toggleFenInput: () =>
+                    setState(() => _showFenInput = !_showFenInput),
+                loadingBest: _loadingBest,
+                onTakeBestMove: _onTakeBestMove,
+                loadingAnalysis: _loadingAnalysis,
+                onOpenAnalysis: _onOpenAnalysis,
+                openGptPromptDialog: _openGptPromptDialog,
+                inRoom: _inRoom,
+                sharedControl: _sharedControl,
               ),
             ],
           ),
@@ -4223,6 +9317,12 @@ class _MyHomePageState extends State<MyHomePage> {
                     (_vsEngine && !_inRoom) ? _continueVsHuman : null),
                 _icon('Продолжить', Icons.play_circle,
                     (!_inRoom && !_vsEngine) ? _continueVsEngine : null),
+                _icon(
+                  _syncBoard ? 'Совместный (вкл)' : 'Совместный',
+                  Icons.sync,
+                  _inRoom ? _toggleSyncBoard : null,
+                  active: _syncBoard,
+                ),
                 _icon('Контроль', Icons.timer, _pickTimeControl),
                 _icon(
                   'Рейтинг',
@@ -4233,7 +9333,9 @@ class _MyHomePageState extends State<MyHomePage> {
                 _icon(
                   _editMode ? 'Редактор (вкл)' : 'Редактор',
                   Icons.edit,
-                  !_inRoom ? (_editMode ? _applyEditor : _enterEditor) : null,
+                  (_inRoom && !_sharedControl)
+                      ? null
+                      : (_editMode ? _applyEditor : _enterEditor),
                   active: _editMode,
                 ),
               ],
@@ -4265,7 +9367,8 @@ class _MyHomePageState extends State<MyHomePage> {
                   }
                   setState(() {});
                 },
-                child: Text((_lobby == null) ? 'В лобби' : 'Выйти из лобби'),
+                child: Text(
+                    (_lobby == null) ? 'В контакты' : 'Выйти из контактов'),
               ),
             ),
 
@@ -4277,7 +9380,7 @@ class _MyHomePageState extends State<MyHomePage> {
               tabs: [
                 Tab(icon: Icon(Icons.sports_esports), text: 'Игра'),
                 Tab(icon: Icon(Icons.list_alt), text: 'Ходы'),
-                Tab(icon: Icon(Icons.people_alt), text: 'Лобби'),
+                Tab(icon: Icon(Icons.people_alt), text: 'Контакты'),
               ],
             ),
 
@@ -4297,18 +9400,11 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: SizedBox(
                       width: 320,
                       height: tabsHeight - 20,
-                      child: _MoveListPanel(
+                      child: MoveListPanel(
                         san: _sanMoves,
                         currentPly: _plyIndex,
                         controller: _movesScroll,
-                        onCopyPGN: () {
-                          final rows = _rowsFromSan(_sanMoves);
-                          Clipboard.setData(
-                              ClipboardData(text: rows.join(' ')));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('PGN скопирован')),
-                          );
-                        },
+                        onCopyPGN: () => unawaited(_copyPgnAndSaveToCabinet()),
                         onClear: () {
                           setState(() {
                             _sanMoves.clear();
@@ -4316,8 +9412,24 @@ class _MyHomePageState extends State<MyHomePage> {
                               ..clear()
                               ..add(game.fen);
                             _plyIndex = 0;
+                            if (_showPuzzleMoveResultPanel) {
+                              _resetStudentPuzzleMoveCheck();
+                              _studentShowPuzzleAnswer = false;
+                            }
                           });
                         },
+                        puzzleMoveChecked: _showPuzzleMoveResultPanel
+                            ? _puzzleMoveChecked
+                            : false,
+                        puzzleMoveCorrect: _showPuzzleMoveResultPanel
+                            ? _puzzleMoveCorrect
+                            : null,
+                        showPuzzleCorrectAnswer: _showPuzzleMoveResultPanel &&
+                            _studentShowPuzzleAnswer,
+                        correctPuzzleLines: _activePuzzleSolutionMoveLines,
+                        selectedCorrectLineIndex: _shownSolutionLineIndex,
+                        onPreviousCorrectLine: _openPreviousSolutionLine,
+                        onNextCorrectLine: _openNextSolutionLine,
                       ),
                     ),
                   ),
@@ -4327,7 +9439,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: SizedBox(
                       width: 320,
                       height: tabsHeight - 20,
-                      child: _LobbyPanel(
+                      child: LobbyPanel(
                         isLoggedIn: isLoggedIn,
                         inLobby: _lobby != null,
                         online: _lobby?.online ?? const [],
@@ -4471,7 +9583,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 const Divider(),
 
                 item(Icons.videogame_asset, 'Играть', () => notImpl('Играть')),
-                item(Icons.school, 'Учиться', () => notImpl('Учиться')),
+                item(Icons.school, 'Учиться', openLearningPanel),
+
                 item(Icons.task_alt, 'Задачи', () => notImpl('Задачи')),
                 item(Icons.grid_3x3, '2×2', () => notImpl('2×2')),
                 item(Icons.emoji_events, 'Турниры', () => notImpl('Турниры')),
@@ -4577,25 +9690,42 @@ class _MyHomePageState extends State<MyHomePage> {
 
         // Доску тоже жёстко ограничим одной шириной, внутри — она уже центрирована
         SizedBox(
-          width: totalSize,
+          width: totalSize + 56,
           child: RepaintBoundary(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                // доступная ширина под доску (в этой колонке/контейнере)
                 double w = constraints.maxWidth;
                 if (!w.isFinite || w <= 0) {
                   w = MediaQuery.of(context).size.width;
                 }
 
-                // учтём симметричную рамку m с каждой стороны
                 const double m = 18.0;
-                final double rawInner = (w - m * 2).clamp(120.0, w);
-
-                // 👇 ключ: размер клетки целым числом пикселей
+                final double rawInner = (w - m * 2 - 56).clamp(120.0, w);
                 final double cell = (rawInner / 8).floorToDouble();
                 final double boardSize = cell * 8;
 
-                return _buildBoardWithCoords(boardSize);
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildBoardWithCoords(boardSize),
+                    if (!_studentLearningRoomActive ||
+                        _learningStudentEvaluationEnabled) ...[
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 18),
+                        child: SizedBox(
+                          width: 36,
+                          height: boardSize,
+                          child: EvalBar(
+                            eval: _engineEval,
+                            flipped: _isFlipped,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
               },
             ),
           ),
@@ -4633,86 +9763,17 @@ class _MyHomePageState extends State<MyHomePage> {
                           label: const Text('Взять лучший ход'),
                         ),
                         OutlinedButton.icon(
-                          onPressed: _loading
-                              ? null
-                              : () async {
-                                  setState(() => _loading = true);
-
-                                  final fen = _fenController.text.trim().isEmpty
-                                      ? game.fen
-                                      : _fenController.text.trim();
-
-                                  try {
-                                    // БЬЁМ В ТВОЮ NETLIFY-ФУНКЦИЮ, КОТОРАЯ ОТДАЁТ «БОГАТЫЙ» ОБЪЕКТ
-                                    final rich = await sf.getBestMoveRich(
-                                      fen,
-                                      depth: 18, // при желании увеличь
-                                      multiPv: 1,
-                                      maxThinkingTime: 2000,
-                                    );
-
-                                    // Красиво покажем: сначала краткий text, ниже — весь JSON
-                                    final text = (rich['text'] is String)
-                                        ? (rich['text'] as String)
-                                        : '';
-                                    const enc = JsonEncoder.withIndent('  ');
-                                    final pretty = enc.convert(rich);
-
-                                    if (!mounted) return;
-
-                                    await showDialog(
-                                      context: context,
-                                      builder: (ctx) => AlertDialog(
-                                        title: const Text('Stockfish analysis'),
-                                        content: SingleChildScrollView(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              if (text.trim().isNotEmpty) ...[
-                                                SelectableText(text,
-                                                    style: const TextStyle(
-                                                        fontSize: 14)),
-                                                const SizedBox(height: 12),
-                                              ],
-                                              const SelectableText('Details:',
-                                                  style: TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w600)),
-                                              const SizedBox(height: 6),
-                                              SelectableText(
-                                                pretty,
-                                                style: const TextStyle(
-                                                    fontFamily: 'monospace',
-                                                    fontSize: 12),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                              onPressed: () =>
-                                                  Navigator.of(ctx).pop(),
-                                              child: const Text('Закрыть')),
-                                        ],
-                                      ),
-                                    );
-                                  } catch (e) {
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                        SnackBar(
-                                            content: Text('Stockfish: $e')),
-                                      );
-                                    }
-                                  } finally {
-                                    if (mounted)
-                                      setState(() => _loading = false);
-                                  }
-                                },
-                          icon: const Icon(Icons.analytics),
+                          key: const Key('btnAnalysis'),
+                          onPressed: _loadingAnalysis ? null : _onOpenAnalysis,
+                          icon: _loadingAnalysis
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.analytics),
                           label: const Text('Stockfish Analysis'),
-                        )
+                        ),
                       ],
                     ),
 
@@ -4795,10 +9856,12 @@ class _MyHomePageState extends State<MyHomePage> {
             child: _editorPalette(white: true, cellSize: cell), // БЕЛЫЕ СНИЗУ
           ),
 
-        const SizedBox(height: 6),
+        const SizedBox(height: 20),
         _buildClockRow(playerIsTop: false, maxWidth: totalSize),
-        const SizedBox(height: 12),
-        _buildChat(maxWidth: totalSize), // чат той же ширины
+        if (showChat) ...[
+          const SizedBox(height: 12),
+          _buildChat(maxWidth: totalSize),
+        ],
       ],
     );
   }
@@ -5008,6 +10071,14 @@ class _MyHomePageState extends State<MyHomePage> {
         !game.game_over &&
         !_gameTerminated;
 
+    final borderColor = active ? AppColors.borderBright : AppColors.borderSoft;
+    final glowColor =
+        active ? AppColors.accentGlowSoft : const Color(0x00000000);
+    final iconColor = active ? AppColors.accent : AppColors.textDim;
+    final textColor = active ? AppColors.text : AppColors.text;
+    final timeColor = active ? AppColors.accent : AppColors.text;
+    final showLearningStudentReset = !playerIsTop && _studentLearningRoomActive;
+
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxWidth),
       child: Row(
@@ -5016,23 +10087,71 @@ class _MyHomePageState extends State<MyHomePage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: active ? Colors.green.shade100 : Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.black12),
+                gradient: AppDecorations.panelGradient,
+                borderRadius: AppRadius.r10,
+                border: Border.all(
+                  color: borderColor,
+                  width: active ? 1.2 : 1,
+                ),
+                boxShadow: [
+                  const BoxShadow(
+                    color: Color(0x77000000),
+                    blurRadius: 12,
+                    offset: Offset(0, 6),
+                  ),
+                  if (active)
+                    BoxShadow(
+                      color: glowColor,
+                      blurRadius: 14,
+                    ),
+                ],
               ),
               child: Row(
                 children: [
-                  Icon(playerIsTop
-                      ? Icons.arrow_drop_up
-                      : Icons.arrow_drop_down),
+                  Icon(
+                    playerIsTop ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+                    color: iconColor,
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
-                      child: Text('$name  ($rating)',
-                          maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  const SizedBox(width: 12),
-                  Text(_fmtMs(ms),
-                      style: const TextStyle(
-                          fontFeatures: [FontFeature.tabularFigures()])),
+                    child: Text(
+                      '$name  ($rating)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.body.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (showLearningStudentReset) ...[
+                    Tooltip(
+                      message: 'Расставить позицию заново',
+                      child: IconButton(
+                        onPressed: () => unawaited(
+                          _confirmResetLearningStudentPosition(),
+                        ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 30,
+                          height: 30,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        icon: const Icon(Icons.restart_alt),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ] else
+                    const SizedBox(width: 12),
+                  Text(
+                    _fmtMs(ms),
+                    style: AppTextStyles.body.copyWith(
+                      color: timeColor,
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -5047,107 +10166,45 @@ class _MyHomePageState extends State<MyHomePage> {
   int _blackMsIfTop() => (_humanColor == ch.Color.WHITE) ? _blackMs : _whiteMs;
 
   Widget _buildChat({double maxWidth = 560, double height = 220}) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: SizedBox(
-        height: height,
-        child: Column(
-          children: [
-            Row(
-              children: [
-                const Text('Чат'),
-                const Spacer(),
-                if (_roomId != null)
-                  SelectableText('Room: ${_roomId!.substring(0, 8)}...',
-                      style: const TextStyle(fontSize: 12)),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final id = await showDialog<String>(
-                      context: context,
-                      builder: (_) => _PromptDialog(
-                          title: 'Войти как зритель', label: 'roomId'),
-                    );
-                    if (id == null || id.trim().isEmpty) return;
-                    final supa = Supabase.instance.client;
-                    final me = supa.auth.currentUser;
-                    if (me == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                          content: Text('Сначала войдите в аккаунт')));
-                      return;
-                    }
-                    await _openRoom(id.trim(),
-                        opponentId: _opponentId ?? 'unknown',
-                        opponentName: _opponentName ?? 'opponent',
-                        myColor:
-                            (_humanColor == ch.Color.WHITE) ? 'white' : 'black',
-                        spectator: true);
-                  },
-                  icon: const Icon(Icons.visibility),
-                  label: const Text('Зритель'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFDFCF9),
-                  border:
-                      Border.all(color: const Color(0xFF333333), width: 1.0),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(8),
-                  primary: false,
-                  itemCount: _chat.length,
-                  itemBuilder: (_, i) {
-                    final m = _chat[i];
-                    final align = m.mine
-                        ? CrossAxisAlignment.end
-                        : CrossAxisAlignment.start;
-                    final bg =
-                        m.mine ? Colors.blue.shade50 : Colors.grey.shade200;
-                    return Column(
-                      crossAxisAlignment: align,
-                      children: [
-                        Container(
-                          margin: const EdgeInsets.symmetric(vertical: 2),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                              color: bg,
-                              borderRadius: BorderRadius.circular(10)),
-                          child: Text(m.mine ? m.text : '${m.from}: ${m.text}'),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _chatCtl,
-                    enabled: _inRoom,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      hintText: 'Настройки...',
-                    ),
-                    onSubmitted: (_) => _sendChat(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: _sendChat, child: const Text('Send')),
-              ],
-            ),
-          ],
-        ),
-      ),
+    return RoomChatPanel(
+      roomId: _roomId,
+      inRoom: _inRoom,
+      messages: _chat
+          .map((m) => RoomChatItem(
+                from: m.from,
+                text: m.text,
+                mine: m.mine,
+              ))
+          .toList(),
+      chatController: _chatCtl,
+      onSend: _sendChat,
+      onSpectatorPressed: () async {
+        final id = await showDialog<String>(
+          context: context,
+          builder: (_) =>
+              _PromptDialog(title: 'Войти как зритель', label: 'roomId'),
+        );
+        if (id == null || id.trim().isEmpty) return;
+
+        final supa = Supabase.instance.client;
+        final me = supa.auth.currentUser;
+        if (me == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Сначала войдите в аккаунт')),
+          );
+          return;
+        }
+
+        await _openRoom(
+          id.trim(),
+          opponentId: _opponentId ?? 'unknown',
+          opponentName: _opponentName ?? 'opponent',
+          myColor: (_humanColor == ch.Color.WHITE) ? 'white' : 'black',
+          spectator: true,
+        );
+      },
+      maxWidth: maxWidth,
+      height: height,
     );
   }
 
@@ -5208,42 +10265,162 @@ class _MyHomePageState extends State<MyHomePage> {
   // ---- Chessboard ----
 // ---- Chessboard ----
   Widget _buildBoardWithCoords(double boardSize) {
-    const double m = 18; // толщина поля под подписи
+    const double m = 18;
+    const double mb = 26;
+
     final files = _isFlipped
         ? ['H', 'G', 'F', 'E', 'D', 'C', 'B', 'A']
         : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     final ranks = _isFlipped
         ? ['1', '2', '3', '4', '5', '6', '7', '8']
         : ['8', '7', '6', '5', '4', '3', '2', '1'];
+
     final labelStyle = TextStyle(
-      fontSize: math.max(10, boardSize / 32),
-      color: Colors.black.withOpacity(0.7),
+      fontSize: math.max(7, boardSize / 48),
+      color: AppColors.text,
+      fontWeight: FontWeight.w700,
     );
 
-    // Делаем симметричную рамку: сверху/слева/справа/снизу одинаковый отступ m
-    final totalSize = boardSize + m * 2;
+    final double totalW = boardSize + m * 2;
+    final double totalH = boardSize + m + mb;
 
     return SizedBox(
-      width: totalSize,
-      height: totalSize,
-      child: Stack(
-        children: [
-          // Сама доска — со смещением (m, m)
-          Positioned(
-            left: m,
-            top: m,
-            child: _buildChessBoardGrid(boardSize),
-          ),
+      width: totalW,
+      height: totalH,
+      child: Container(
+        decoration: AppDecorations.card(),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned(
+              left: m,
+              top: m,
+              width: boardSize,
+              height: boardSize,
+              child: _buildChessBoardGrid(boardSize),
+            ),
 
-          // Ранги слева (внутри рамки), вдоль доски
-          Positioned(
-            left: 0,
-            top: m,
-            width: m,
-            height: boardSize,
-            child: _editMode
-                ? _deleteZone(
-                    child: Column(
+            // Стрелки рисуются отдельным слоем ПОВЕРХ настоящей доски.
+            Positioned(
+              left: m,
+              top: m,
+              width: boardSize,
+              height: boardSize,
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _PuzzleAnalysisArrowPainter(
+                    arrows: _visiblePuzzleBoardArrows,
+                    boardSize: boardSize,
+                    centerForSquare: (square) =>
+                        _boardCenterForSquare(square, boardSize),
+                    previewFrom: _currentAnalysisPreviewFrom,
+                    previewTo: _currentAnalysisPreviewTo,
+                    previewColor: _puzzleArrowDrawMode
+                        ? _analysisArrowColor(_effectivePuzzleArrowKey)
+                        : null,
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+
+            // В режиме анализа этот слой превращает доску в рисовалку.
+            // Он стоит самым верхним слоем над клетками и фигурами, поэтому ходы блокируются.
+            if (_puzzleArrowDrawMode)
+              Positioned(
+                left: m,
+                top: m,
+                width: boardSize,
+                height: boardSize,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.precise,
+                  child: Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: (event) {
+                      if (_isSecondaryMouseButton(event)) {
+                        _removePuzzleAnalysisElementAt(
+                          event.localPosition,
+                          boardSize,
+                        );
+                        return;
+                      }
+
+                      _startPuzzleAnalysisBoardDrag(
+                        event.localPosition,
+                        boardSize,
+                      );
+                    },
+                    onPointerMove: (event) {
+                      if (_isSecondaryMouseButton(event)) return;
+
+                      _updatePuzzleAnalysisBoardDrag(
+                        event.localPosition,
+                        boardSize,
+                      );
+                    },
+                    onPointerUp: (event) {
+                      if (_isSecondaryMouseButton(event)) return;
+
+                      _finishPuzzleAnalysisBoardDrag(
+                        event.localPosition,
+                        boardSize,
+                      );
+                    },
+                    onPointerCancel: (_) {
+                      setState(() {
+                        if (_puzzleSettingsIsOpen) {
+                          _pendingAnalysisArrowFrom = null;
+                          _analysisPointerPosition = null;
+                        } else if (_showLearningPanel) {
+                          _learningPendingAnalysisArrowFrom = null;
+                          _learningAnalysisPointerPosition = null;
+                        } else {
+                          _studentPendingAnalysisArrowFrom = null;
+                          _studentAnalysisPointerPosition = null;
+                        }
+                      });
+                    },
+                    child: Container(
+                      width: boardSize,
+                      height: boardSize,
+                      color: const Color(0x01000000),
+                    ),
+                  ),
+                ),
+              ),
+
+            Positioned(
+              left: m - 10,
+              top: m + boardSize + 2,
+              child: IgnorePointer(
+                child: Container(
+                  width: boardSize + 20,
+                  height: mb - 4,
+                  decoration: AppDecorations.card(),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              top: m,
+              width: m,
+              height: boardSize,
+              child: _editMode
+                  ? _deleteZone(
+                      child: Column(
+                        children: List.generate(
+                          8,
+                          (i) => SizedBox(
+                            height: boardSize / 8,
+                            child: Align(
+                              alignment: Alignment.center,
+                              child: Text(ranks[i], style: labelStyle),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : Column(
                       children: List.generate(
                         8,
                         (i) => SizedBox(
@@ -5255,322 +10432,424 @@ class _MyHomePageState extends State<MyHomePage> {
                         ),
                       ),
                     ),
-                  )
-                : Column(
-                    children: List.generate(
-                      8,
-                      (i) => SizedBox(
-                        height: boardSize / 8,
-                        child: Align(
-                          alignment: Alignment.center,
-                          child: Text(ranks[i], style: labelStyle),
+            ),
+            Positioned(
+              left: m,
+              top: m + boardSize,
+              width: boardSize,
+              height: mb,
+              child: _editMode
+                  ? _deleteZone(
+                      child: Row(
+                        children: List.generate(
+                          8,
+                          (i) => SizedBox(
+                            width: boardSize / 8,
+                            child: Center(
+                              child: Text(files[i], style: labelStyle),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-          ),
-
-          // Файлы снизу (внутри рамки), вдоль доски
-          Positioned(
-            left: m,
-            top: m + boardSize,
-            width: boardSize,
-            height: m,
-            child: _editMode
-                ? _deleteZone(
-                    child: Row(
+                    )
+                  : Row(
                       children: List.generate(
                         8,
                         (i) => SizedBox(
                           width: boardSize / 8,
-                          child:
-                              Center(child: Text(files[i], style: labelStyle)),
+                          child: Center(
+                            child: Text(files[i], style: labelStyle),
+                          ),
                         ),
                       ),
                     ),
-                  )
-                : Row(
-                    children: List.generate(
-                      8,
-                      (i) => SizedBox(
-                        width: boardSize / 8,
-                        child: Center(child: Text(files[i], style: labelStyle)),
-                      ),
-                    ),
-                  ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
 
+  Widget _buildPuzzleAnalysisBoardOverlay(double boardSize) {
+    // Старый метод оставлен как заглушка, чтобы не ломать возможные ссылки.
+    return const SizedBox.shrink();
+  }
+
   Widget _buildChessBoardGrid(double boardSize) {
-    try {
-      final double cell = boardSize / 8;
-      final double pieceSize = cell * 0.85;
+    return AnimatedBuilder(
+      animation: widget.boardTheme,
+      builder: (context, _) {
+        try {
+          final double cell = boardSize / 8;
+          final double pieceSize = cell * 0.85;
 
-      return SizedBox(
-        width: boardSize,
-        height: boardSize,
-        child: GridView.builder(
-          padding: EdgeInsets.zero, // ✅ без внутренних отступов
-          clipBehavior: Clip.hardEdge, // ✅ обрезка "лишнего" за границей
-          physics: const NeverScrollableScrollPhysics(),
-          primary: false, // ← добавили
-          shrinkWrap: true, // ← добавили
+          final lightSquareColor = widget.boardTheme.lightSquare;
+          final darkSquareColor = widget.boardTheme.darkSquare;
 
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 8,
-            childAspectRatio: 1,
-          ),
-          itemCount: 64,
-          itemBuilder: (context, index) {
-            final square = _displayIndexToSquare(index);
-            final row = index ~/ 8;
-            final col = index % 8;
-            final isWhiteSquare = (row + col) % 2 == 0;
+          return SizedBox(
+            width: boardSize,
+            height: boardSize,
+            child: Stack(
+              children: [
+                GridView.builder(
+                  padding: EdgeInsets.zero, // ✅ без внутренних отступов
+                  clipBehavior:
+                      Clip.hardEdge, // ✅ обрезка "лишнего" за границей
+                  physics: const NeverScrollableScrollPhysics(),
+                  primary: false, // ← добавили
+                  shrinkWrap: true, // ← добавили
 
-            final editing = _editMode;
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 8,
+                    childAspectRatio: 1,
+                  ),
+                  itemCount: 64,
+                  itemBuilder: (context, index) {
+                    final square = _displayIndexToSquare(index);
+                    final row = index ~/ 8;
+                    final col = index % 8;
+                    final isWhiteSquare = (row + col) % 2 == 0;
 
-            // данные для игры
-            final piece = editing ? null : game.get(square);
-            final isSelected = !editing && _selectedSquare == square;
-            final isLegal = !editing && _legalTargets.contains(square);
-            final isCapture = !editing && _captureTargets.contains(square);
+                    final editing = _editMode;
 
-            // данные для редактора
-            final fenChar = editing
-                ? _editBoard[_rankIndex(square)][_fileIndex(square)]
-                : '.';
-            final unicode = editing ? _unicodeForFen(fenChar) : null;
+                    // данные для игры
+                    final piece = editing ? null : game.get(square);
+                    final isSelected = !editing && _selectedSquare == square;
+                    final isLegal = !editing && _legalTargets.contains(square);
+                    final isCapture =
+                        !editing && _captureTargets.contains(square);
 
-            // ----- РЕЖИМ РЕДАКТОРА
-            // ----- РЕЖИМ РЕДАКТОРА (DnD как в lichess)
+                    // данные для редактора
+                    final fenChar = editing
+                        ? _editBoard[_rankIndex(square)][_fileIndex(square)]
+                        : '.';
+                    final unicode = editing ? _unicodeForFen(fenChar) : null;
+
+                    // ----- РЕЖИМ РЕДАКТОРА
+                    // ----- РЕЖИМ РЕДАКТОРА (DnD как в lichess)
 // ----- РЕЖИМ РЕДАКТОРА (DnD как в lichess)
-            // ----- РЕЖИМ РЕДАКТОРА
-            // ----- РЕЖИМ РЕДАКТОРА (ПОЛНАЯ ЗАМЕНА БЛОКА, КОТОРЫЙ НАЧИНАЕТСЯ С if (editing)) -----
-            if (editing) {
-              // каждая клетка — это DragTarget, чтобы принимать перетаскиваемые фигуры
-              return DragTarget<String>(
-                onWillAccept: (data) =>
-                    data !=
-                    null, // принимаем любой код фигуры ('wK', 'bQ' и т.п.)
-                onAccept: (pieceCode) {
-                  setState(() {
-                    // ставим фигуру на цель
-                    final ri = _rankIndex(square);
-                    final fi = _fileIndex(square);
-                    _editBoard[ri][fi] = _fenFromPieceCode(pieceCode);
+                    // ----- РЕЖИМ РЕДАКТОРА
+                    // ----- РЕЖИМ РЕДАКТОРА (ПОЛНАЯ ЗАМЕНА БЛОКА, КОТОРЫЙ НАЧИНАЕТСЯ С if (editing)) -----
+                    if (editing) {
+                      // каждая клетка — это DragTarget, чтобы принимать перетаскиваемые фигуры
+                      return DragTarget<String>(
+                        onWillAccept: (data) =>
+                            data !=
+                            null, // принимаем любой код фигуры ('wK', 'bQ' и т.п.)
+                        onAccept: (pieceCode) {
+                          setState(() {
+                            // ставим фигуру на цель
+                            final ri = _rankIndex(square);
+                            final fi = _fileIndex(square);
+                            _editBoard[ri][fi] = _fenFromPieceCode(pieceCode);
 
-                    // если тащили С ДОСКИ — очистим исходную клетку
-                    if (_dragFromSquare != null) {
-                      final sri = _rankIndex(_dragFromSquare!);
-                      final sfi = _fileIndex(_dragFromSquare!);
-                      _editBoard[sri][sfi] = '.';
-                      _dragFromSquare = null;
+                            // если тащили С ДОСКИ — очистим исходную клетку
+                            if (_dragFromSquare != null) {
+                              final sri = _rankIndex(_dragFromSquare!);
+                              final sfi = _fileIndex(_dragFromSquare!);
+                              _editBoard[sri][sfi] = '.';
+                              _dragFromSquare = null;
+                            }
+                          });
+                        },
+                        builder: (context, candidate, rejected) {
+                          final ri = _rankIndex(square);
+                          final fi = _fileIndex(square);
+                          final fenChar =
+                              _editBoard[ri][fi]; // 'K','p','.' и т.п.
+                          final pieceCode =
+                              _pieceCodeFromFen(fenChar); // 'wK','bP' или null
+
+                          return GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _onSquareEdit(
+                                square), // тап по клетке — быстрый выбор фигуры
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: isWhiteSquare
+                                    ? lightSquareColor
+                                    : darkSquareColor,
+                                border:
+                                    Border.all(color: Colors.black12, width: 1),
+                              ),
+                              child: Center(
+                                  // если клетка пустая — ничего не рисуем
+                                  child: (pieceCode == null)
+                                      ? const SizedBox.shrink()
+                                      : Draggable<String>(
+                                          data: pieceCode,
+                                          onDragStarted: () =>
+                                              _dragFromSquare = square,
+                                          onDragCompleted: () =>
+                                              _dragFromSquare = null,
+
+                                          // БЫЛО:
+                                          // onDraggableCanceled: (_, __) => _dragFromSquare = null,
+
+                                          // СТАЛО: если дроп «в молоко» — удаляем фигуру из исходной клетки
+                                          onDraggableCanceled: (_, __) {
+                                            if (_dragFromSquare != null) {
+                                              final sri =
+                                                  _rankIndex(_dragFromSquare!);
+                                              final sfi =
+                                                  _fileIndex(_dragFromSquare!);
+                                              setState(() {
+                                                _editBoard[sri][sfi] =
+                                                    '.'; // удалить фигуру из исходной клетки
+                                              });
+                                              _dragFromSquare = null;
+                                            }
+                                          },
+
+                                          feedback: Material(
+                                            color: Colors.transparent,
+                                            child: SvgPicture.asset(
+                                              _assetFor(pieceCode),
+                                              width: pieceSize,
+                                              height: pieceSize,
+                                            ),
+                                          ),
+                                          childWhenDragging:
+                                              const SizedBox.shrink(),
+                                          child: SvgPicture.asset(
+                                            _assetFor(pieceCode),
+                                            width: pieceSize,
+                                            height: pieceSize,
+                                          ),
+                                        )),
+                            ),
+                          );
+                        },
+                      );
                     }
-                  });
-                },
-                builder: (context, candidate, rejected) {
-                  final ri = _rankIndex(square);
-                  final fi = _fileIndex(square);
-                  final fenChar = _editBoard[ri][fi]; // 'K','p','.' и т.п.
-                  final pieceCode =
-                      _pieceCodeFromFen(fenChar); // 'wK','bP' или null
 
-                  return GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => _onSquareEdit(
-                        square), // тап по клетке — быстрый выбор фигуры
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: isWhiteSquare
-                            ? const Color(0xFFF0D9B5)
-                            : const Color(0xFFB58863),
-                        border: Border.all(color: Colors.black12, width: 1),
-                      ),
-                      child: Center(
-                          // если клетка пустая — ничего не рисуем
-                          child: (pieceCode == null)
-                              ? const SizedBox.shrink()
-                              : Draggable<String>(
-                                  data: pieceCode,
-                                  onDragStarted: () => _dragFromSquare = square,
-                                  onDragCompleted: () => _dragFromSquare = null,
+                    // ----- ОБЫЧНАЯ ИГРА
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (_) {
+                        if (_puzzleArrowDrawMode) return;
+                        if (!_myTurnNow() || _isSpectator) return;
+                        final p = game.get(square);
+                        if (p != null &&
+                            (p.color == game.turn || _sharedControl))
+                          _computeLegalTargets(square);
+                      },
+                      onTap: () {
+                        if (_handlePuzzleAnalysisSquareTap(square)) return;
+                        if (!_myTurnNow() || _isSpectator) return;
+                        if (_selectedSquare == null) return;
 
-                                  // БЫЛО:
-                                  // onDraggableCanceled: (_, __) => _dragFromSquare = null,
+                        if (_legalTargets.contains(square)) {
+                          _makeMove(_selectedSquare!, square);
+                          return;
+                        }
 
-                                  // СТАЛО: если дроп «в молоко» — удаляем фигуру из исходной клетки
-                                  onDraggableCanceled: (_, __) {
-                                    if (_dragFromSquare != null) {
-                                      final sri = _rankIndex(_dragFromSquare!);
-                                      final sfi = _fileIndex(_dragFromSquare!);
-                                      setState(() {
-                                        _editBoard[sri][sfi] =
-                                            '.'; // удалить фигуру из исходной клетки
-                                      });
-                                      _dragFromSquare = null;
-                                    }
-                                  },
+                        final pHere = game.get(square);
+                        final pSel = _selectedSquare != null
+                            ? game.get(_selectedSquare!)
+                            : null;
+                        if (pHere != null &&
+                            pSel != null &&
+                            pHere.color == pSel.color) {
+                          _computeLegalTargets(square);
+                          return;
+                        }
 
-                                  feedback: Material(
-                                    color: Colors.transparent,
+                        if (square == _selectedSquare) return;
+
+                        setState(() {
+                          _selectedSquare = null;
+                          _legalTargets.clear();
+                          _captureTargets.clear();
+                        });
+                      },
+                      onSecondaryTap: () {
+                        if (_puzzleArrowDrawMode) {
+                          setState(() {
+                            if (_puzzleSettingsIsOpen) {
+                              _pendingAnalysisArrowFrom = null;
+                              _analysisPointerPosition = null;
+                            } else if (_showLearningPanel) {
+                              _learningPendingAnalysisArrowFrom = null;
+                              _learningAnalysisPointerPosition = null;
+                            } else {
+                              _studentPendingAnalysisArrowFrom = null;
+                              _studentAnalysisPointerPosition = null;
+                            }
+                          });
+                          return;
+                        }
+                        if (!_myTurnNow() || _isSpectator) return;
+                        setState(() {
+                          _selectedSquare = null;
+                          _legalTargets.clear();
+                          _captureTargets.clear();
+                        });
+                      },
+                      child: DragTarget<int>(
+                        onAccept: (fromIndex) {
+                          if (!_myTurnNow() || _isSpectator) return;
+                          final from = _displayIndexToSquare(fromIndex);
+                          final to = square;
+                          _makeMove(from, to);
+                        },
+                        builder: (context, _, __) => Container(
+                          decoration: BoxDecoration(
+                            color: isWhiteSquare
+                                ? lightSquareColor
+                                : darkSquareColor,
+                            border: Border.all(
+                              color: isSelected ? Colors.amber : Colors.black12,
+                              width: isSelected ? 3 : 1,
+                            ),
+                          ),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (isLegal && !isCapture)
+                                IgnorePointer(
+                                  child: Center(
+                                    child: Container(
+                                      width: cell * 0.3,
+                                      height: cell * 0.3,
+                                      decoration: const BoxDecoration(
+                                        color: Color(0x5500FF00),
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (isCapture)
+                                IgnorePointer(
+                                  child: Center(
+                                    child: Container(
+                                      width: cell * 0.75,
+                                      height: cell * 0.75,
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                            color: Colors.redAccent, width: 3),
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (piece != null)
+                                Center(
+                                  child: Draggable<int>(
+                                    data: index,
+                                    feedback: Material(
+                                      color: Colors.transparent,
+                                      child: SvgPicture.asset(
+                                        _assetFor(_codeFor(piece)),
+                                        width: pieceSize,
+                                        height: pieceSize,
+                                      ),
+                                    ),
+                                    childWhenDragging: const SizedBox.shrink(),
                                     child: SvgPicture.asset(
-                                      _assetFor(pieceCode),
+                                      _assetFor(_codeFor(piece)),
                                       width: pieceSize,
                                       height: pieceSize,
                                     ),
                                   ),
-                                  childWhenDragging: const SizedBox.shrink(),
-                                  child: SvgPicture.asset(
-                                    _assetFor(pieceCode),
-                                    width: pieceSize,
-                                    height: pieceSize,
-                                  ),
-                                )),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: _PuzzleAnalysisArrowPainter(
+                        arrows: _visiblePuzzleBoardArrows,
+                        boardSize: boardSize,
+                        centerForSquare: (square) =>
+                            _boardCenterForSquare(square, boardSize),
+                        previewFrom: _currentAnalysisPreviewFrom,
+                        previewTo: _currentAnalysisPreviewTo,
+                        previewColor: _puzzleArrowDrawMode
+                            ? _analysisArrowColor(_effectivePuzzleArrowKey)
+                            : null,
+                      ),
                     ),
-                  );
-                },
-              );
-            }
-
-            // ----- ОБЫЧНАЯ ИГРА
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTapDown: (_) {
-                if (!_myTurnNow() || _isSpectator) return;
-                final p = game.get(square);
-                if (p != null && p.color == game.turn)
-                  _computeLegalTargets(square);
-              },
-              onTap: () {
-                if (!_myTurnNow() || _isSpectator) return;
-                if (_selectedSquare == null) return;
-
-                if (_legalTargets.contains(square)) {
-                  _makeMove(_selectedSquare!, square);
-                  return;
-                }
-
-                final pHere = game.get(square);
-                final pSel =
-                    _selectedSquare != null ? game.get(_selectedSquare!) : null;
-                if (pHere != null &&
-                    pSel != null &&
-                    pHere.color == pSel.color) {
-                  _computeLegalTargets(square);
-                  return;
-                }
-
-                if (square == _selectedSquare) return;
-
-                setState(() {
-                  _selectedSquare = null;
-                  _legalTargets.clear();
-                  _captureTargets.clear();
-                });
-              },
-              onSecondaryTap: () {
-                if (!_myTurnNow() || _isSpectator) return;
-                setState(() {
-                  _selectedSquare = null;
-                  _legalTargets.clear();
-                  _captureTargets.clear();
-                });
-              },
-              child: DragTarget<int>(
-                onAccept: (fromIndex) {
-                  if (!_myTurnNow() || _isSpectator) return;
-                  final from = _displayIndexToSquare(fromIndex);
-                  final to = square;
-                  _makeMove(from, to);
-                },
-                builder: (context, _, __) => Container(
-                  decoration: BoxDecoration(
-                    color: isWhiteSquare
-                        ? const Color(0xFFF0D9B5)
-                        : const Color(0xFFB58863),
-                    border: Border.all(
-                      color: isSelected ? Colors.amber : Colors.black12,
-                      width: isSelected ? 3 : 1,
-                    ),
-                  ),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (isLegal && !isCapture)
-                        IgnorePointer(
-                          child: Center(
-                            child: Container(
-                              width: cell * 0.3,
-                              height: cell * 0.3,
-                              decoration: const BoxDecoration(
-                                color: Color(0x5500FF00),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                        ),
-                      if (isCapture)
-                        IgnorePointer(
-                          child: Center(
-                            child: Container(
-                              width: cell * 0.75,
-                              height: cell * 0.75,
-                              decoration: BoxDecoration(
-                                border: Border.all(
-                                    color: Colors.redAccent, width: 3),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                        ),
-                      if (piece != null)
-                        Center(
-                          child: Draggable<int>(
-                            data: index,
-                            feedback: Material(
-                              color: Colors.transparent,
-                              child: SvgPicture.asset(
-                                _assetFor(_codeFor(piece)),
-                                width: pieceSize,
-                                height: pieceSize,
-                              ),
-                            ),
-                            childWhenDragging: const SizedBox.shrink(),
-                            child: SvgPicture.asset(
-                              _assetFor(_codeFor(piece)),
-                              width: pieceSize,
-                              height: pieceSize,
-                            ),
-                          ),
-                        ),
-                    ],
                   ),
                 ),
-              ),
-            );
-          },
-        ),
-      );
-    } catch (e) {
-      return Container(
-        width: boardSize,
-        height: boardSize,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFEBEE),
-          border: Border.all(color: const Color(0xFFD32F2F), width: 2),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(
-          'Ошибка рендера доски: $e',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Color(0xFFD32F2F)),
-        ),
-      );
-    }
+                if (_puzzleArrowDrawMode)
+                  Positioned.fill(
+                    child: Listener(
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (event) {
+                        if (_isSecondaryMouseButton(event)) {
+                          _removePuzzleAnalysisElementAt(
+                            event.localPosition,
+                            boardSize,
+                          );
+                          return;
+                        }
+
+                        _startPuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                        );
+                      },
+                      onPointerMove: (event) {
+                        if (_isSecondaryMouseButton(event)) return;
+
+                        _updatePuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                        );
+                      },
+                      onPointerUp: (event) {
+                        if (_isSecondaryMouseButton(event)) return;
+
+                        _finishPuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                        );
+                      },
+                      onPointerCancel: (_) {
+                        setState(() {
+                          if (_puzzleSettingsIsOpen) {
+                            _pendingAnalysisArrowFrom = null;
+                            _analysisPointerPosition = null;
+                          } else if (_showLearningPanel) {
+                            _learningPendingAnalysisArrowFrom = null;
+                            _learningAnalysisPointerPosition = null;
+                          } else {
+                            _studentPendingAnalysisArrowFrom = null;
+                            _studentAnalysisPointerPosition = null;
+                          }
+                        });
+                      },
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        } catch (e) {
+          return Container(
+            width: boardSize,
+            height: boardSize,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFEBEE),
+              border: Border.all(color: const Color(0xFFD32F2F), width: 2),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              'Ошибка рендера доски: $e',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Color(0xFFD32F2F)),
+            ),
+          );
+        }
+      },
+    );
   }
 
   void _resetBoardToInitial() {
@@ -5597,23 +10876,37 @@ class _MyHomePageState extends State<MyHomePage> {
     _stopTick();
     _resetClocks();
     _gameTerminated = false;
+    unawaited(_refreshEvalBar());
   }
 
   Future<void> _onNewGameUniversal() async {
+    // ← деактивируем Совместный режим и общий редактор
+    final wasSync = _syncBoard;
+    setState(() {
+      _syncBoard = false; // тумблер совместного режима = выкл
+      _sharedControl = false; // общий контроль = выкл
+      _syncEditor = false; // синхрон редактора = выкл
+      _editMode = false; // сам редактор выключим локально
+    });
+    if (wasSync) {
+      _syncSendEditMode(
+          false); // сообщаем второму, что редактор (если был) выключен
+    }
+
     // Онлайн (игра в комнате Supabase)
     if (_inRoom) {
-      await _startNewGameFresh(); // у тебя уже есть
+      await _startNewGameFresh();
       return;
     }
 
     // Против ИИ
     if (_vsEngine == true) {
-      await _startNewGameVsEngine(); // у тебя уже есть
+      await _startNewGameVsEngine();
       return;
     }
 
     // Локально (человек-человек на одном устройстве)
-    _startLocalHumanGame(); // см. ниже
+    _startLocalHumanGame();
   }
 
   Future<bool> _confirmResign() async {
@@ -5713,6 +11006,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _stopTick();
       _resetClocks();
     });
+    unawaited(_refreshEvalBar());
   }
 
   Future<void> _resignOffline() async {
@@ -5768,7 +11062,7 @@ class _MyHomePageState extends State<MyHomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text(
-                'Новая игра: выберите соперника в лобби или начните с ИИ')),
+                'Новый игрок: выберите соперника в контактах или начните с ИИ')),
       );
     }
   }
@@ -5814,7 +11108,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _selectedSquare = null;
     _legalTargets.clear();
     _captureTargets.clear();
-
+    unawaited(_refreshEvalBar());
     // Автоигра: по одному ходу каждые 2 секунды
     while (mounted && _engineDuel && !_gameTerminated) {
       await Future.delayed(Duration(milliseconds: _engineDuelDelayMs));
@@ -5852,6 +11146,8 @@ class _MyHomePageState extends State<MyHomePage> {
       _gameTerminated = false;
     });
 
+    unawaited(_refreshEvalBar());
+
     if (_humanColor == ch.Color.BLACK) {
       await _engineMove();
     }
@@ -5874,15 +11170,16 @@ class _MyHomePageState extends State<MyHomePage> {
       // ВАЖНО: именно поле класса, а не локальная переменная!
       _dragFromSquare = null;
     });
-  }
 
-  void _cancelEditor() {
-    setState(() => _editMode = false);
+    // ← СИНХРОН РЕДАКТОРА (только когда включён «Совместный режим»)
+    _syncSendEditMode(true); // сообщаем второму, что редактор включён
+    _syncSendEditFen(); // отправляем текущую сетку редактора
   }
 
   void _applyEditor() {
     final fen = _boardToFen();
     final ok = game.load(fen);
+
     if (ok) {
       setState(() {
         _fenController.text = game.fen;
@@ -5897,6 +11194,13 @@ class _MyHomePageState extends State<MyHomePage> {
         _result = null;
         _editMode = false;
       });
+
+      // ← ВНЕ setState: синхрон для совместного режима
+      _syncSendFen(); // разослать итоговую позицию
+      _syncSendEditMode(false); // выключить редактор у обоих
+
+      unawaited(_refreshEvalBar());
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Позиция применена')),
       );
@@ -5950,6 +11254,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (choice == null) return;
     setState(() => _editBoard[ri][fi] = choice);
+
+    // ← Живое превью партнёру (в совместном режиме)
+    _syncSendEditFen();
   }
 }
 
@@ -5992,31 +11299,44 @@ class _PromptDialogState extends State<_PromptDialog> {
 
 // ---- Time control dialog ----
 class _TcChoice {
-  _TcChoice(
-      {required this.minutes, required this.increment, required this.rated});
   final int minutes;
   final int increment;
   final bool rated;
+  const _TcChoice(
+      {required this.minutes, required this.increment, required this.rated});
 }
 
 class _TcDialog extends StatefulWidget {
-  const _TcDialog({
-    required this.initialMinutes,
-    required this.initialIncrement,
-    required this.initialRated,
-  });
   final int initialMinutes;
   final int initialIncrement;
   final bool initialRated;
+
+  const _TcDialog({
+    Key? key,
+    required this.initialMinutes,
+    required this.initialIncrement,
+    required this.initialRated,
+  }) : super(key: key);
 
   @override
   State<_TcDialog> createState() => _TcDialogState();
 }
 
 class _TcDialogState extends State<_TcDialog> {
-  late int minutes = widget.initialMinutes;
-  late int inc = widget.initialIncrement;
-  late bool rated = widget.initialRated;
+  late int _minutes;
+  late int _increment;
+  late bool _rated;
+  late bool _noTime; // ← «Без контроля времени»
+
+  @override
+  void initState() {
+    super.initState();
+
+    _minutes = widget.initialMinutes;
+    _increment = widget.initialIncrement;
+    _rated = widget.initialRated;
+    _noTime = (_minutes == 0 && _increment == 0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6025,409 +11345,75 @@ class _TcDialogState extends State<_TcDialog> {
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(children: [
-            const Text('Минуты:'),
-            const SizedBox(width: 8),
-            DropdownButton<int>(
-              value: minutes,
-              items: const [1, 2, 3, 5, 10, 15, 30]
-                  .map((m) => DropdownMenuItem(value: m, child: Text('$m')))
-                  .toList(),
-              onChanged: (v) => setState(() => minutes = v ?? minutes),
-            ),
-          ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            const Text('Инкремент:'),
-            const SizedBox(width: 8),
-            DropdownButton<int>(
-              value: inc,
-              items: const [0, 1, 2, 3, 5, 10]
-                  .map((s) => DropdownMenuItem(value: s, child: Text('+$s')))
-                  .toList(),
-              onChanged: (v) => setState(() => inc = v ?? inc),
-            ),
-          ]),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const Text('Рейтинговая:'),
-              const SizedBox(width: 8),
-              Switch(value: rated, onChanged: (v) => setState(() => rated = v)),
-            ],
+          CheckboxListTile(
+            value: _noTime,
+            onChanged: (v) => setState(() {
+              _noTime = v ?? false;
+              if (_noTime) _rated = false;
+            }),
+            title: const Text('Без контроля времени'),
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
           ),
-          const SizedBox(height: 4),
-          const Text('Смена контроля сбрасывает часы обоих игроков.',
-              style: TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 8),
+          TextField(
+            enabled: !_noTime,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Минуты'),
+            controller: TextEditingController(text: _minutes.toString()),
+            onChanged: (s) {
+              final v = int.tryParse(s) ?? _minutes;
+              _minutes = v.clamp(0, 180);
+            },
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            enabled: !_noTime,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Прибавка (сек)'),
+            controller: TextEditingController(text: _increment.toString()),
+            onChanged: (s) {
+              final v = int.tryParse(s) ?? _increment;
+              _increment = v.clamp(0, 60);
+            },
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            value: _rated,
+            onChanged: _noTime ? null : (v) => setState(() => _rated = v),
+            title: const Text('Рейтинговая'),
+            contentPadding: EdgeInsets.zero,
+          )
         ],
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена')),
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
         FilledButton(
-            onPressed: () => Navigator.pop(context,
-                _TcChoice(minutes: minutes, increment: inc, rated: rated)),
-            child: const Text('Применить')),
+          onPressed: () {
+            final noTime = _noTime;
+            final res = _TcChoice(
+              minutes: noTime ? 0 : _minutes,
+              increment: noTime ? 0 : _increment,
+              rated: noTime ? false : _rated,
+            );
+            Navigator.pop(context, res);
+          },
+          child: const Text('ОК'),
+        ),
       ],
     );
   }
 }
 
 // ---- Move list panel ----
-class _MoveListPanel extends StatelessWidget {
-  const _MoveListPanel({
-    required this.san,
-    required this.currentPly,
-    required this.controller,
-    required this.onCopyPGN,
-    required this.onClear,
-    this.width,
-    this.height,
-    Key? key,
-  }) : super(key: key);
-
-  final List<String> san;
-  final int currentPly;
-  final ScrollController controller;
-  final VoidCallback onCopyPGN;
-  final VoidCallback onClear;
-  final double? width;
-  final double? height;
-
-  @override
-  Widget build(BuildContext context) {
-    final rowsCount = (san.length / 2.0).ceil();
-    final w = width ?? 300;
-    final h = height ?? 480;
-    return SizedBox(
-      width: w,
-      height: h,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: const Color(0xFFFDFCF9),
-          border: Border.all(color: const Color(0xFF333333), width: 1.2),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('Moves',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              Expanded(
-                child: Scrollbar(
-                  controller: controller,
-                  child: ListView.builder(
-                    controller: controller,
-                    itemCount: rowsCount,
-                    itemBuilder: (_, i) {
-                      final moveNo = i + 1;
-                      final whiteIndex = i * 2;
-                      final blackIndex = whiteIndex + 1;
-
-                      final whiteShown = whiteIndex < currentPly;
-                      final blackShown = blackIndex < currentPly;
-
-                      final white = whiteIndex < san.length && whiteShown
-                          ? san[whiteIndex]
-                          : '';
-                      final black = blackIndex < san.length && blackShown
-                          ? san[blackIndex]
-                          : '';
-
-                      final isFutureRow = whiteIndex >= currentPly;
-                      final style = TextStyle(
-                          color: isFutureRow
-                              ? Colors.black.withOpacity(0.45)
-                              : Colors.black);
-
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text(
-                            '$moveNo. $white ${black.isEmpty ? '' : black}',
-                            style: style),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                        onPressed: san.isEmpty ? null : onCopyPGN,
-                        child: const Text('Скопировать PGN')),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                      tooltip: 'Очистить',
-                      onPressed: san.isEmpty ? null : onClear,
-                      icon: const Icon(Icons.delete_outline)),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // ---------- Lobby UI ----------
 // ---------- Lobby UI ----------
-class _LobbyPanel extends StatelessWidget {
-  const _LobbyPanel({
-    required this.isLoggedIn,
-    required this.inLobby,
-    required this.online,
-    required this.onEnterLobby,
-    required this.onLeaveLobby,
-    required this.onInvite,
-    this.myId,
-    required this.myRating,
-    Key? key,
-  }) : super(key: key);
-
-  final bool isLoggedIn;
-  final bool inLobby;
-  final List<Map<String, String>> online;
-  final Future<void> Function() onEnterLobby;
-  final Future<void> Function() onLeaveLobby;
-  final void Function(String id, String name) onInvite;
-
-  // ← добавили
-  final String? myId;
-  final int myRating;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 300,
-      height: 480,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: const Color(0xFFFDFCF9),
-          border: Border.all(color: const Color(0xFF333333), width: 1.2),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                      child: Text('Лобби',
-                          style: TextStyle(fontWeight: FontWeight.w600))),
-                  if (!inLobby)
-                    FilledButton.tonal(
-                        onPressed: isLoggedIn ? onEnterLobby : null,
-                        child: const Text('Войти'))
-                  else
-                    OutlinedButton(
-                        onPressed: onLeaveLobby, child: const Text('Выйти')),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: (inLobby)
-                    ? (online.isEmpty
-                        ? const Center(child: Text('Онлайн никого 😴'))
-                        : ListView.separated(
-                            itemCount: online.length,
-                            separatorBuilder: (_, __) =>
-                                const Divider(height: 8),
-                            itemBuilder: (_, i) {
-                              final u = online[i];
-                              final bool isMe = (u['id'] == myId);
-
-                              final String title = isMe
-                                  ? '${u['username'] ?? 'player'} (вы)'
-                                  : (u['username'] ?? 'player');
-
-// если это мы — берём рейтинг из стейта (_myRating), иначе из лобби
-                              final String subtitle =
-                                  'Рейт: ${isMe ? myRating : (u['rating'] ?? '—')}';
-
-                              return ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.person),
-                                title: Text(title),
-                                subtitle: Text(
-                                  subtitle,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                                trailing: FilledButton(
-                                  onPressed: isMe
-                                      ? null
-                                      : () => onInvite(
-                                          u['id']!, u['username'] ?? 'player'),
-                                  child: const Text('Вызвать'),
-                                ),
-                              );
-                            },
-                          ))
-                    : const Center(
-                        child: Text('Войдите в лобби, чтобы видеть игроков')),
-              ),
-              const SizedBox(height: 8),
-              Text('Онлайн: ${inLobby ? online.length : 0}',
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 12, color: Colors.black54)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // ---------- AUTH UI widgets ----------
-class _AuthButton extends StatelessWidget {
-  final String? nickname;
-  final bool isLoggedIn;
-  final VoidCallback onTap;
-  final Future<void> Function() onLogout;
-
-  const _AuthButton(
-      {required this.nickname,
-      required this.isLoggedIn,
-      required this.onTap,
-      required this.onLogout});
-
-  @override
-  Widget build(BuildContext context) {
-    if (!isLoggedIn) {
-      return FilledButton.tonal(
-          onPressed: onTap, child: const Text('Вход / Регистрация'));
-    }
-    return PopupMenuButton<String>(
-      tooltip: 'Аккаунт',
-      onSelected: (v) async {
-        if (v == 'logout') await onLogout();
-      },
-      itemBuilder: (ctx) => [
-        PopupMenuItem<String>(
-            value: 'nick', enabled: false, child: Text(nickname ?? 'player')),
-        const PopupMenuDivider(),
-        const PopupMenuItem<String>(value: 'logout', child: Text('Выйти')),
-      ],
-      child: Chip(
-          avatar: const Icon(Icons.person, size: 18),
-          label: Text(nickname ?? 'Аккаунт')),
-    );
-  }
-}
-
-class _AuthPanel extends StatelessWidget {
-  final bool isLogin;
-  final TextEditingController passCtl;
-  final TextEditingController nickCtl;
-  final String? authError;
-  final VoidCallback onClose;
-  final VoidCallback onToggleMode;
-  final Future<void> Function() onSubmit;
-
-  const _AuthPanel({
-    required this.isLogin,
-    required this.passCtl,
-    required this.nickCtl,
-    required this.authError,
-    required this.onClose,
-    required this.onToggleMode,
-    required this.onSubmit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final card = ConstrainedBox(
-      constraints: const BoxConstraints.tightFor(width: 360),
-      child: Material(
-        elevation: 8,
-        borderRadius: BorderRadius.circular(12),
-        color: Theme.of(context).colorScheme.surface,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                      child: Text('Вход / Регистрация',
-                          style: Theme.of(context).textTheme.titleMedium)),
-                  IconButton(
-                      onPressed: onClose,
-                      icon: const Icon(Icons.close),
-                      tooltip: 'Закрыть'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                  controller: nickCtl,
-                  decoration: const InputDecoration(
-                      labelText: 'Ник (a-z, 0-9, _)',
-                      border: OutlineInputBorder())),
-              const SizedBox(height: 8),
-              TextField(
-                  controller: passCtl,
-                  decoration: const InputDecoration(
-                      labelText: 'Пароль (≥ 6 символов)',
-                      border: OutlineInputBorder()),
-                  obscureText: true),
-              const SizedBox(height: 8),
-              if (authError != null)
-                Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(authError!,
-                        style: const TextStyle(color: Colors.red))),
-              FilledButton(
-                  onPressed: onSubmit,
-                  child: Text(isLogin ? 'Войти' : 'Зарегистрироваться')),
-              TextButton(
-                  onPressed: onToggleMode,
-                  child: Text(
-                      isLogin ? 'Нет аккаунта?' : 'У меня уже есть аккаунт')),
-              const SizedBox(height: 4),
-              const Text(
-                  'Вход по нику, e-mail не требуется (Confirm email = OFF).',
-                  style: TextStyle(fontSize: 12, color: Colors.black54)),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    return Stack(
-      alignment: Alignment.topRight,
-      children: [
-        IgnorePointer(
-          ignoring: true,
-          child: Container(
-            width: 380,
-            height: 260,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withOpacity(0.12),
-                    blurRadius: 12,
-                    spreadRadius: 2)
-              ],
-            ),
-          ),
-        ),
-        card,
-      ],
-    );
-  }
-}
 
 class _GptExplainSheet extends StatelessWidget {
   const _GptExplainSheet({required this.data});
@@ -6501,4 +11487,126 @@ class _GptExplainSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PuzzleBoardArrow {
+  const _PuzzleBoardArrow({
+    required this.from,
+    required this.to,
+    required this.kind,
+    required this.color,
+    this.isCircle = false,
+    this.side = 'white',
+  });
+
+  final String from;
+  final String to;
+  final String kind;
+  final Color color;
+  final bool isCircle;
+  final String side;
+}
+
+class _PuzzleAnalysisArrowPainter extends CustomPainter {
+  const _PuzzleAnalysisArrowPainter({
+    required this.arrows,
+    required this.boardSize,
+    required this.centerForSquare,
+    this.previewFrom,
+    this.previewTo,
+    this.previewColor,
+  });
+
+  final List<_PuzzleBoardArrow> arrows;
+  final double boardSize;
+  final Offset Function(String square) centerForSquare;
+  final String? previewFrom;
+  final Offset? previewTo;
+  final Color? previewColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final arrow in arrows) {
+      if (arrow.isCircle || arrow.from == arrow.to) {
+        _drawCircle(
+          canvas: canvas,
+          center: centerForSquare(arrow.from),
+          color: arrow.color,
+        );
+      } else {
+        _drawArrow(
+          canvas: canvas,
+          from: centerForSquare(arrow.from),
+          to: centerForSquare(arrow.to),
+          color: arrow.color,
+        );
+      }
+    }
+
+    final fromSquare = previewFrom;
+    final toPoint = previewTo;
+    final color = previewColor;
+    if (fromSquare != null && toPoint != null && color != null) {
+      _drawArrow(
+        canvas: canvas,
+        from: centerForSquare(fromSquare),
+        to: toPoint,
+        color: color,
+        preview: true,
+      );
+    }
+  }
+
+  void _drawCircle({
+    required Canvas canvas,
+    required Offset center,
+    required Color color,
+  }) {
+    final radius = (boardSize / 8) * 0.31;
+    final paint = Paint()
+      ..color = color.withOpacity(0.62)
+      ..strokeWidth = (boardSize / 8) * 0.10
+      ..style = PaintingStyle.stroke;
+    canvas.drawCircle(center, radius, paint);
+  }
+
+  void _drawArrow({
+    required Canvas canvas,
+    required Offset from,
+    required Offset to,
+    required Color color,
+    bool preview = false,
+  }) {
+    final vector = to - from;
+    if (vector.distance < 2) return;
+
+    final unit = vector / vector.distance;
+    final shortenedTo = to - unit * (boardSize / 36);
+    final opacity = preview ? 0.36 : 0.52;
+    final paint = Paint()
+      ..color = color.withOpacity(opacity)
+      ..strokeWidth = (boardSize / 8) * 0.14
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+
+    canvas.drawLine(from, shortenedTo, paint);
+
+    final headLength = (boardSize / 8) * 0.34;
+    final headWidth = (boardSize / 8) * 0.22;
+    final base = shortenedTo - unit * headLength;
+    final normal = Offset(-unit.dy, unit.dx);
+    final path = Path()
+      ..moveTo(shortenedTo.dx, shortenedTo.dy)
+      ..lineTo((base + normal * headWidth).dx, (base + normal * headWidth).dy)
+      ..lineTo((base - normal * headWidth).dx, (base - normal * headWidth).dy)
+      ..close();
+
+    final headPaint = Paint()
+      ..color = color.withOpacity(opacity)
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(path, headPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PuzzleAnalysisArrowPainter oldDelegate) => true;
 }
