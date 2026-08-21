@@ -1,3 +1,4 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // lib/features/call/schools/learn_sheet.dart
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,8 @@ import '../../../classroom/classroom_signaling.dart';
 
 // ✅ Импорт нового диалога школы
 import '../../../classroom/school_dialog_new.dart';
+
+import '../../../localization/makechess_localization.dart';
 
 Future<void> openLearnSheet(BuildContext ctx) async {
   final sb = Supabase.instance.client;
@@ -25,29 +28,31 @@ Future<void> openLearnSheet(BuildContext ctx) async {
             children: [
               ListTile(
                 leading: const Icon(Icons.person_pin_rounded),
-                title: const Text('Школа с реальным учителем'),
-onTap: () async {
-  Navigator.pop(ctx);                // закрыть лист
-  final sb = Supabase.instance.client;
+                title:
+                    const MakeChessLocalizedText('Школа с реальным учителем'),
+                onTap: () async {
+                  Navigator.pop(ctx); // закрыть лист
+                  final sb = Supabase.instance.client;
 
-  await showSchoolDialogNew(
-    context: ctx,
-    client: sb,
-    signaling: ClassroomSignaling(sb),
-    schoolId: 'demo-school', // временно; можно подставить реальный
-    teacherId: sb.auth.currentUser?.id ?? 'teacher_demo',
-  );
-},
-
+                  await showSchoolDialogNew(
+                    context: ctx,
+                    client: sb,
+                    signaling: ClassroomSignaling(sb),
+                    schoolId:
+                        'demo-school', // временно; можно подставить реальный
+                    teacherId: sb.auth.currentUser?.id ?? 'teacher_demo',
+                  );
+                },
               ),
               const Divider(height: 8),
               ListTile(
                 leading: const Icon(Icons.smart_toy),
-                title: const Text('Школа с виртуальным учителем (аватар)'),
+                title: const MakeChessLocalizedText(
+                    'Школа с виртуальным учителем (аватар)'),
                 onTap: () {
                   Navigator.pop(ctx2);
                   ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('Скоро 🤖')),
+                    const SnackBar(content: MakeChessLocalizedText('Скоро 🤖')),
                   );
                 },
               ),

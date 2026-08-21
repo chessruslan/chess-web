@@ -1,6 +1,9 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // lib/dev/smoke_test_button.dart
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../localization/makechess_localization.dart';
 
 class SmokeTestButton extends StatelessWidget {
   const SmokeTestButton({super.key});
@@ -8,7 +11,7 @@ class SmokeTestButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FloatingActionButton.extended(
-      label: const Text('SMOKE'),
+      label: const MakeChessLocalizedText('SMOKE'),
       icon: const Icon(Icons.bolt),
       onPressed: () async {
         final sb = Supabase.instance.client;
@@ -49,7 +52,8 @@ class SmokeTestButton extends StatelessWidget {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('SMOKE: добавлена строка в classroom_signals ✅'),
+                content: MakeChessLocalizedText(
+                    'SMOKE: добавлена строка в classroom_signals ✅'),
               ),
             );
           }
@@ -57,7 +61,7 @@ class SmokeTestButton extends StatelessWidget {
           debugPrint('[SMOKE][ERROR] $e\n$st');
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('SMOKE ошибка: $e')),
+              SnackBar(content: MakeChessLocalizedText('SMOKE ошибка: $e')),
             );
           }
         }

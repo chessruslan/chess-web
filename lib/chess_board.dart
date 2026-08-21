@@ -1,7 +1,10 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
 import 'package:chess/chess.dart' as ch;
 
 import 'ui/app_controls.dart';
+
+import 'localization/makechess_localization.dart';
 
 class ChessBoard extends StatefulWidget {
   const ChessBoard({super.key});
@@ -25,7 +28,7 @@ class _ChessBoardState extends State<ChessBoard> {
     return FilledButton.icon(
       onPressed: onPressed,
       icon: Icon(icon, size: 16),
-      label: Text(label),
+      label: MakeChessLocalizedText(label),
       style: _pillStyle(context),
     );
   }
@@ -41,9 +44,11 @@ class _ChessBoardState extends State<ChessBoard> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(glyph, style: const TextStyle(fontSize: 28)),
+              MakeChessLocalizedText(glyph,
+                  style: const TextStyle(fontSize: 28)),
               const SizedBox(height: 6),
-              Text(label, style: const TextStyle(fontSize: 12)),
+              MakeChessLocalizedText(label,
+                  style: const TextStyle(fontSize: 12)),
             ],
           ),
         ),
@@ -61,7 +66,7 @@ class _ChessBoardState extends State<ChessBoard> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
+              const MakeChessLocalizedText(
                 'Выберите фигуру для превращения',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 textAlign: TextAlign.center,
@@ -80,7 +85,7 @@ class _ChessBoardState extends State<ChessBoard> {
               TextButton(
                 onPressed: () =>
                     Navigator.of(dialogCtx, rootNavigator: true).pop(null),
-                child: const Text('Отмена'),
+                child: const MakeChessLocalizedText('Отмена'),
               ),
             ],
           ),
@@ -174,7 +179,7 @@ class _ChessBoardState extends State<ChessBoard> {
         ),
         child: piece != null
             ? Center(
-                child: Text(
+                child: MakeChessLocalizedText(
                   piece.color == ch.Color.WHITE
                       ? piece.type.name.toUpperCase()
                       : piece.type.name,

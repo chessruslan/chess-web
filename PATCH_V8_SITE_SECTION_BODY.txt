@@ -1,0 +1,27 @@
+  Widget _sectionBody() {
+    switch (_section) {
+      case 1:
+        return _siteDesign();
+      case 2:
+        return _tariffs();
+      case 3:
+        return const AdminManagementPanel(kind: AdminEntityKind.player);
+      case 4:
+        return const AdminManagementPanel(kind: AdminEntityKind.school);
+      case 5:
+        return const AdminManagementPanel(kind: AdminEntityKind.teacher);
+      case 6:
+        return const AdminManagementPanel(kind: AdminEntityKind.tournament);
+      case 7:
+        return _permissions();
+      case 8:
+        return _rulesPanel();
+      case 9:
+        return _messages();
+      case 10:
+        return const AdminArchivePanel();
+      default:
+        return _overview();
+    }
+  }
+

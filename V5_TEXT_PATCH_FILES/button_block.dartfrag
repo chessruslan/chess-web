@@ -1,0 +1,33 @@
+Expanded(
+  child: ValueListenableBuilder<bool>(
+    valueListenable: sf.localStockfishEnabledNotifier,
+    builder: (context, localEnabled, _) {
+      return ValueListenableBuilder<String>(
+        valueListenable: MakeChessLocalizationController.languageCode,
+        builder: (context, languageCode, _) {
+          return AppNeoButton(
+            text: loading
+                ? MakeChessLocalization.text(
+                    MakeChessTextKey.loading,
+                    languageCode: languageCode,
+                  )
+                : MakeChessLocalization.phrase(
+                    localEnabled
+                        ? 'Локальный Stockfish: ВКЛ'
+                        : 'Локальный Stockfish: ВЫКЛ',
+                    languageCode: languageCode,
+                  ),
+            icon: localEnabled ? Icons.memory : Icons.memory_outlined,
+            onTap: assistanceDisabled || loading
+                ? null
+                : () {
+                    onBestMove();
+                  },
+            showIcon: !compact,
+            compact: compact,
+          );
+        },
+      );
+    },
+  ),
+),

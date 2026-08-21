@@ -1,0 +1,36 @@
+{
+  "lib/ui/dialogs/site_settings_dialog.dart": [
+    {
+      "label": "site import",
+      "before": "import 'admin_management_panel.dart';\nimport '../../localization/makechess_localization.dart';",
+      "after": "import 'admin_management_panel.dart';\nimport 'electronic_board_calibration_panel.dart';\nimport '../../localization/makechess_localization.dart';"
+    },
+    {
+      "label": "site navigation",
+      "before": "                      _nav(6, Icons.emoji_events_outlined, 'Турниры'),\n                      _nav(7, Icons.policy_outlined, 'Разрешения'),",
+      "after": "                      _nav(6, Icons.emoji_events_outlined, 'Турниры'),\n                      _nav(11, Icons.sensors_outlined, 'Электронная доска'),\n                      _nav(7, Icons.policy_outlined, 'Разрешения'),"
+    },
+    {
+      "label": "site section",
+      "before": "      case 10:\n        return const AdminArchivePanel();\n      default:",
+      "after": "      case 10:\n        return const AdminArchivePanel();\n      case 11:\n        return const ElectronicBoardCalibrationPanel();\n      default:"
+    }
+  ],
+  "lib/ui/tournament/tournament_manager_dialog.dart": [
+    {
+      "label": "tournament enum",
+      "before": "  current,\n  participants,",
+      "after": "  current,\n  digitalBoard,\n  participants,"
+    },
+    {
+      "label": "tournament navigation",
+      "before": "          item(_TournamentSection.current, Icons.public, 'Текущие турниры'),\n          item(_TournamentSection.participants, Icons.groups, 'Участники'),",
+      "after": "          item(_TournamentSection.current, Icons.public, 'Текущие турниры'),\n          item(_TournamentSection.digitalBoard, Icons.grid_view_outlined,\n              'Цифровая доска'),\n          item(_TournamentSection.participants, Icons.groups, 'Участники'),"
+    },
+    {
+      "label": "tournament section",
+      "before": "      case _TournamentSection.current:\n        return TournamentCurrentTournamentsPanel(\n          userId: Supabase.instance.client.auth.currentUser?.id ?? '',\n          userName: _currentUserDisplayName,\n        );\n      case _TournamentSection.participants:",
+      "after": "      case _TournamentSection.current:\n        return TournamentCurrentTournamentsPanel(\n          userId: Supabase.instance.client.auth.currentUser?.id ?? '',\n          userName: _currentUserDisplayName,\n        );\n      case _TournamentSection.digitalBoard:\n        return _empty('Раздел цифровой доски пока пуст.');\n      case _TournamentSection.participants:"
+    }
+  ]
+}

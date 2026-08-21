@@ -1,0 +1,49 @@
+  Widget _adminPanel() => Column(
+        children: [
+          _header(
+            MakeChessLocalization.phrase('Настройка сайта'),
+            subtitle: MakeChessLocalization.phrase('Панель управления Makechess'),
+          ),
+          const Divider(height: 1, color: AppColors.borderSoft),
+          AdminReminderBar(
+            onOpen: () => setState(() => _section = 3),
+          ),
+          Expanded(
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 220,
+                  child: ListView(
+                    padding: const EdgeInsets.all(12),
+                    children: [
+                      _nav(0, Icons.dashboard_outlined, 'Обзор'),
+                      _nav(1, Icons.palette_outlined, 'Дизайн сайта'),
+                      _nav(2, Icons.workspace_premium_outlined, 'Тарифы'),
+                      _nav(3, Icons.people_outline, 'Игроки'),
+                      _nav(4, Icons.school_outlined, 'Школы'),
+                      _nav(5, Icons.co_present_outlined, 'Учителя'),
+                      _nav(6, Icons.emoji_events_outlined, 'Турниры'),
+                      _nav(7, Icons.policy_outlined, 'Разрешения'),
+                      _nav(8, Icons.gavel_outlined, 'Правила сайта'),
+                      _nav(9, Icons.campaign_outlined, 'Сообщения'),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Divider(height: 1, color: AppColors.borderSoft),
+                      ),
+                      _nav(10, Icons.archive_outlined, 'Архив'),
+                    ],
+                  ),
+                ),
+                const VerticalDivider(width: 1, color: AppColors.borderSoft),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: _sectionBody(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+

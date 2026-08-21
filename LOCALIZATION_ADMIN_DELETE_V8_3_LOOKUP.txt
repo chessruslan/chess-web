@@ -1,0 +1,8 @@
+﻿    final v8DeleteRow = _v8DeletePhraseRows[source];
+    if (v8DeleteRow != null) {
+      final index = _v4LanguageOrder.indexOf(code);
+      if (index >= 0 && index < v8DeleteRow.length) {
+        return v8DeleteRow[index];
+      }
+    }
+

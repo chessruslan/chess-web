@@ -1,6 +1,9 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import 'ui/common_top_bar.dart';
+
+import 'localization/makechess_localization.dart';
 
 /// Стартовая страница (лендинг).
 class LandingPage extends StatelessWidget {
@@ -70,7 +73,7 @@ class LandingPage extends StatelessWidget {
           const SizedBox(height: 28),
 
           // Курсы
-          Text(
+          MakeChessLocalizedText(
             'Учебные курсы',
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   color: Colors.white,
@@ -90,7 +93,7 @@ class LandingPage extends StatelessWidget {
           ),
 
           const SizedBox(height: 24),
-          const Text(
+          const MakeChessLocalizedText(
             '© TwinChess — игра, обучение и командный режим 2×2',
             style: TextStyle(color: Color(0xFF9BA3AF)),
           ),
@@ -122,7 +125,7 @@ class _HeroLeft extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        const MakeChessLocalizedText(
           'Играйте и учитесь\nс голосовым AI-тренером',
           style: TextStyle(
             color: Colors.white,
@@ -132,7 +135,7 @@ class _HeroLeft extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        const Text(
+        const MakeChessLocalizedText(
           'Быстрые матчи, разбор «почему», пазлы и командный режим 2×2.',
           style: TextStyle(color: Color(0xFF9BA3AF), fontSize: 16),
         ),
@@ -153,7 +156,7 @@ class _HeroLeft extends StatelessWidget {
                   ),
                 ),
               ),
-              child: const Text(
+              child: const MakeChessLocalizedText(
                 'Играть сейчас 10×',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
@@ -170,7 +173,7 @@ class _HeroLeft extends StatelessWidget {
                 ),
                 backgroundColor: const Color(0xFF1F242D),
               ),
-              child: const Text(
+              child: const MakeChessLocalizedText(
                 'Попробовать урок',
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
@@ -207,7 +210,7 @@ class _StatDot extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        Text(
+        MakeChessLocalizedText(
           text,
           style: const TextStyle(color: Color(0xFF9BA3AF)),
         ),
@@ -315,7 +318,7 @@ class _FeatureCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                MakeChessLocalizedText(
                   title,
                   style: const TextStyle(
                     color: Colors.white,
@@ -324,7 +327,7 @@ class _FeatureCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
+                MakeChessLocalizedText(
                   text,
                   style: const TextStyle(color: Color(0xFF9BA3AF)),
                 ),
@@ -364,7 +367,7 @@ class _CourseCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          Text(
+          MakeChessLocalizedText(
             title,
             style: const TextStyle(
               color: Colors.white,
@@ -372,7 +375,7 @@ class _CourseCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
+          const MakeChessLocalizedText(
             'Попробовать →',
             style: TextStyle(color: Color(0xFF70A5FF)),
           ),

@@ -1,0 +1,17 @@
+﻿MAKECHESS ADMIN CASES + ARCHIVE V8.1 MANIFEST
+
+Expected current hashes:
+  site: e28a3d489e581b4541f7cbf1ecfd832e2469aa596c49bf04ce938af42a844acf
+  messages: 4363e81f927a4a784cddd7ce9b9c81267bb92b3994038cf67fd94add7f72a91f
+  loc: d7454b07c1aa51af031cad1ff1be4e81ef114897c07eacf9b856b586e09910a2
+
+Package hashes:
+  site: 7e9a0d9fee583339acdc6e11fc04cb254efd94e38609968d51c4f46c85d90367
+  messages: 595a72b3919a911a35429342948063452f335e13b1d64dad4e3837b4d0af78d5
+  loc: 61dd4b2089a781a646be8f4757c066a1f1da85b5c6b23cdb53bd054c14293f96
+  module: cb3c10029ab238dc522112c9d1d9757b34f0cddee43987125e286d0bf7a0e157
+
+Languages: RU EN DE FR ES AR ZH HI JA KO VI
+Admin translation rows: 86
+Current Messages architecture: makechess_messages_v1 + syncFromDatabase()
+Obsolete syncMakeChessMessagesFromDatabase() is NOT required.

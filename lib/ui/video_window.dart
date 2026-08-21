@@ -1,6 +1,9 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+import '../localization/makechess_localization.dart';
 
 /// Плавающее окно с возможностью перетаскивания, изменения размеров,
 /// сворачивания и закрытия. Содержит RTCVideoView.
@@ -108,16 +111,19 @@ class _VideoWindowState extends State<VideoWindow> {
                 ),
                 child: Row(
                   children: [
-                    Text(widget.title, style: theme.textTheme.labelLarge),
+                    MakeChessLocalizedText(widget.title,
+                        style: theme.textTheme.labelLarge),
                     const Spacer(),
                     IconButton(
-                      tooltip: _minimized ? 'Развернуть' : 'Свернуть',
+                      tooltip: _minimized
+                          ? MakeChessLocalization.phrase('Развернуть')
+                          : MakeChessLocalization.phrase('Свернуть'),
                       icon:
                           Icon(_minimized ? Icons.crop_square : Icons.minimize),
                       onPressed: () => setState(() => _minimized = !_minimized),
                     ),
                     IconButton(
-                      tooltip: 'Закрыть',
+                      tooltip: MakeChessLocalization.phrase('Закрыть'),
                       icon: const Icon(Icons.close),
                       onPressed: widget.onClose,
                     ),

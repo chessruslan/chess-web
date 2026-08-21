@@ -1,3 +1,6 @@
+// MAKECHESS_REMAINING_UI_V6_20260807
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+// MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,6 +9,8 @@ import 'package:flutter/services.dart';
 import '../app_style.dart';
 import 'puzzle_file_saver.dart';
 import 'puzzle_task.dart';
+import 'anti_blunder_trainer.dart';
+import '../../localization/makechess_localization.dart';
 
 class PuzzleSettingsDialog extends StatefulWidget {
   const PuzzleSettingsDialog({
@@ -29,6 +34,10 @@ class PuzzleSettingsDialog extends StatefulWidget {
     required this.onTaskTitleChanged,
     required this.onTaskNumberChanged,
     required this.onTaskTypeTitleChanged,
+    this.antiBlunderMode = AntiBlunderMode.direct,
+    this.antiBlunderDepth = 1,
+    this.onAntiBlunderModeChanged,
+    this.onAntiBlunderDepthChanged,
     required this.onSetInitialPosition,
     required this.onStartRecordingLine,
     required this.onFinishRecordingLine,
@@ -36,6 +45,8 @@ class PuzzleSettingsDialog extends StatefulWidget {
     required this.onNewTask,
     required this.onPublished,
     required this.onAnalysisModeChanged,
+    required this.drawingEnabled,
+    required this.onToggleDrawing,
     required this.onFinishAnalysis,
     required this.onShowAnswerChanged,
     required this.onClearAnalysisElements,
@@ -67,6 +78,10 @@ class PuzzleSettingsDialog extends StatefulWidget {
   final ValueChanged<String> onTaskTitleChanged;
   final ValueChanged<int> onTaskNumberChanged;
   final ValueChanged<String> onTaskTypeTitleChanged;
+  final AntiBlunderMode antiBlunderMode;
+  final int antiBlunderDepth;
+  final ValueChanged<AntiBlunderMode>? onAntiBlunderModeChanged;
+  final ValueChanged<int>? onAntiBlunderDepthChanged;
   final VoidCallback onSetInitialPosition;
   final VoidCallback onStartRecordingLine;
   final VoidCallback onFinishRecordingLine;
@@ -74,6 +89,8 @@ class PuzzleSettingsDialog extends StatefulWidget {
   final VoidCallback onNewTask;
   final VoidCallback onPublished;
   final ValueChanged<String?> onAnalysisModeChanged;
+  final bool drawingEnabled;
+  final VoidCallback onToggleDrawing;
   final VoidCallback onFinishAnalysis;
   final ValueChanged<bool> onShowAnswerChanged;
   final VoidCallback onClearAnalysisElements;
@@ -93,6 +110,8 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
   late final TextEditingController _titleCtl;
   late final TextEditingController _numberCtl;
   late String _typeTitle;
+  late AntiBlunderMode _antiBlunderMode;
+  late int _antiBlunderDepth;
 
   String? _folderName;
   List<PuzzleSavedFile> _savedFiles = const [];
@@ -111,6 +130,7 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
     'Задачи на зевки',
     'Мат',
     'Найти лучший ход',
+    'Антизевковый тренажёр',
   ];
 
   @override
@@ -123,6 +143,9 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
         : (_taskTypes.contains(widget.selectedTypeTitle)
             ? widget.selectedTypeTitle
             : _taskTypes.first);
+    _antiBlunderMode = widget.antiBlunderMode;
+    _antiBlunderDepth =
+        widget.antiBlunderDepth < 1 ? 1 : widget.antiBlunderDepth;
     _refreshFolderInfoAndSavedTasks();
   }
 
@@ -222,12 +245,14 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
       await _refreshFolderInfoAndSavedTasks();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Папка выбрана: ${name ?? 'без названия'}')),
+        SnackBar(
+            content: MakeChessLocalizedText(
+                'Папка выбрана: ${name ?? 'без названия'}')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Папка не выбрана: $e')),
+        SnackBar(content: MakeChessLocalizedText('Папка не выбрана: $e')),
       );
     }
   }
@@ -236,15 +261,38 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
     final puzzle = _buildCurrentPuzzle();
     if (puzzle.startFen.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сначала запишите начальную позицию')),
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Сначала запишите начальную позицию')),
       );
       return;
     }
-    if (puzzle.solutionLines.isEmpty) {
+    final isAntiBlunder = puzzle.type == 'antiBlunderTrainer' ||
+        puzzle.typeTitle == 'Антизевковый тренажёр';
+
+    if (!isAntiBlunder && puzzle.solutionLines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сначала запишите хотя бы одну ветку')),
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Сначала запишите хотя бы одну ветку')),
       );
       return;
+    }
+
+    if (isAntiBlunder) {
+      final spec = puzzle.antiBlunder;
+      final hasCorridor = spec?.safetyCorridor.isNotEmpty == true;
+      final hasBlunderZones = spec?.blunderZones.isNotEmpty == true;
+      if (!hasCorridor && !hasBlunderZones) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: MakeChessLocalizedText(
+              'Отметьте коридор безопасности или хотя бы одну зону зевка',
+            ),
+          ),
+        );
+        return;
+      }
     }
 
     setState(() => _publishing = true);
@@ -257,12 +305,15 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
       await _refreshFolderInfoAndSavedTasks();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Задача опубликована в выбранную папку')),
+        const SnackBar(
+            content: MakeChessLocalizedText(
+                'Задача опубликована в выбранную папку')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось опубликовать: $e')),
+        SnackBar(
+            content: MakeChessLocalizedText('Не удалось опубликовать: $e')),
       );
     } finally {
       if (mounted) setState(() => _publishing = false);
@@ -275,18 +326,18 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
         context: context,
         builder: (context) => AlertDialog(
           backgroundColor: AppColors.surface,
-          title: const Text('Создать новую задачу?'),
-          content: const Text(
+          title: const MakeChessLocalizedText('Создать новую задачу?'),
+          content: const MakeChessLocalizedText(
             'Текущая задача ещё не опубликована. Если продолжить, данные в шаблоне будут очищены.',
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Отмена'),
+              child: const MakeChessLocalizedText('Отмена'),
             ),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Создать новую'),
+              child: const MakeChessLocalizedText('Создать новую'),
             ),
           ],
         ),
@@ -311,7 +362,8 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Файл задачи скачан на компьютер')),
+      const SnackBar(
+          content: MakeChessLocalizedText('Файл задачи скачан на компьютер')),
     );
   }
 
@@ -323,7 +375,7 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Supabase подключим следующим шагом.'),
+        content: MakeChessLocalizedText('Supabase подключим следующим шагом.'),
       ),
     );
   }
@@ -333,7 +385,7 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
     await Clipboard.setData(ClipboardData(text: json));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('JSON задачи скопирован')),
+      const SnackBar(content: MakeChessLocalizedText('JSON задачи скопирован')),
     );
   }
 
@@ -500,6 +552,23 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
                               widget.onTaskTypeTitleChanged(value);
                             },
                           ),
+                          if (_typeTitle == 'Антизевковый тренажёр') ...[
+                            const SizedBox(height: 12),
+                            _AntiBlunderSettingsBlock(
+                              mode: _antiBlunderMode,
+                              depth: _antiBlunderDepth,
+                              onModeChanged: (mode) {
+                                setState(() => _antiBlunderMode = mode);
+                                widget.onAntiBlunderModeChanged?.call(mode);
+                              },
+                              onDepthChanged: (depth) {
+                                final cleanDepth = depth < 1 ? 1 : depth;
+                                setState(() => _antiBlunderDepth = cleanDepth);
+                                widget.onAntiBlunderDepthChanged
+                                    ?.call(cleanDepth);
+                              },
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           _FenBlock(
                             title: hasStart
@@ -562,12 +631,16 @@ class _PuzzleSettingsDialogState extends State<PuzzleSettingsDialog> {
                           ),
                           const SizedBox(height: 12),
                           _AuthorAnalysisSetupBlock(
+                            showAntiBlunderTools:
+                                _typeTitle == 'Антизевковый тренажёр',
                             activeKey: widget.activeAnalysisKey,
                             showAnswer: widget.showAnswer,
                             counts: widget.analysisCounts,
                             activeSide: widget.activeAnalysisSide,
                             onSideToggle: widget.onAnalysisSideToggle,
                             onModeChanged: widget.onAnalysisModeChanged,
+                            drawingEnabled: widget.drawingEnabled,
+                            onToggleDrawing: widget.onToggleDrawing,
                             onFinish: widget.onFinishAnalysis,
                             onShowAnswerChanged: widget.onShowAnswerChanged,
                             onClear: widget.onClearAnalysisElements,
@@ -651,7 +724,8 @@ class _TaskMetaBlock extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Данные задачи', style: AppTextStyles.panelTitle),
+          MakeChessLocalizedText('Данные задачи',
+              style: AppTextStyles.panelTitle),
           const SizedBox(height: 10),
           TextField(
             controller: titleController,
@@ -681,7 +755,7 @@ class _TaskMetaBlock extends StatelessWidget {
                       .map(
                         (type) => DropdownMenuItem<String>(
                           value: type,
-                          child: Text(type),
+                          child: MakeChessLocalizedText(type),
                         ),
                       )
                       .toList(),
@@ -700,7 +774,7 @@ class _TaskMetaBlock extends StatelessWidget {
 
   InputDecoration _inputDecoration(String label) {
     return InputDecoration(
-      labelText: label,
+      labelText: MakeChessLocalization.phrase(label),
       labelStyle: AppTextStyles.caption,
       isDense: true,
       filled: true,
@@ -750,7 +824,7 @@ class _FolderBlock extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: Text(
+                child: MakeChessLocalizedText(
                   folderName == null
                       ? 'Папка задач не выбрана'
                       : 'Папка: $folderName',
@@ -760,14 +834,14 @@ class _FolderBlock extends StatelessWidget {
                 ),
               ),
               IconButton(
-                tooltip: 'Обновить список',
+                tooltip: MakeChessLocalization.phrase('Обновить список'),
                 onPressed: onRefresh,
                 icon: const Icon(Icons.refresh, color: AppColors.text),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          Text(
+          MakeChessLocalizedText(
             'После выбора папки окно подтянет сохранённые .json задачи.',
             style: AppTextStyles.caption,
           ),
@@ -777,7 +851,7 @@ class _FolderBlock extends StatelessWidget {
             child: loading
                 ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
                 : savedFiles.isEmpty
-                    ? Text('Сохранённых задач пока нет.',
+                    ? MakeChessLocalizedText('Сохранённых задач пока нет.',
                         style: AppTextStyles.muted)
                     : ListView.separated(
                         itemCount: savedFiles.length,
@@ -785,7 +859,7 @@ class _FolderBlock extends StatelessWidget {
                             const Divider(color: AppColors.borderSoft),
                         itemBuilder: (context, index) {
                           final file = savedFiles[index];
-                          return Text(
+                          return MakeChessLocalizedText(
                             titleBuilder(file),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -800,25 +874,135 @@ class _FolderBlock extends StatelessWidget {
   }
 }
 
+class _AntiBlunderSettingsBlock extends StatelessWidget {
+  const _AntiBlunderSettingsBlock({
+    required this.mode,
+    required this.depth,
+    required this.onModeChanged,
+    required this.onDepthChanged,
+  });
+
+  final AntiBlunderMode mode;
+  final int depth;
+  final ValueChanged<AntiBlunderMode> onModeChanged;
+  final ValueChanged<int> onDepthChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceCard.withOpacity(0.35),
+        borderRadius: AppRadius.r14,
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const MakeChessLocalizedText(
+            'Параметры антизевкового тренажёра',
+            style: AppTextStyles.panelTitle,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _NeoSmallButton(
+                  text: 'Прямой зевок',
+                  icon: Icons.arrow_forward,
+                  selected: mode == AntiBlunderMode.direct,
+                  onTap: () => onModeChanged(AntiBlunderMode.direct),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _NeoSmallButton(
+                  text: 'Обратный зевок',
+                  icon: Icons.reply,
+                  selected: mode == AntiBlunderMode.reverse,
+                  onTap: () => onModeChanged(AntiBlunderMode.reverse),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Expanded(
+                child: MakeChessLocalizedText(
+                  'Глубина',
+                  style: AppTextStyles.buttonCompact,
+                ),
+              ),
+              SizedBox(
+                width: 42,
+                height: 34,
+                child: _NeoSmallButton(
+                  text: '−',
+                  icon: Icons.remove,
+                  onTap: depth <= 1 ? null : () => onDepthChanged(depth - 1),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                width: 58,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.20),
+                  borderRadius: AppRadius.r8,
+                  border: Border.all(color: AppColors.borderSoft),
+                ),
+                child: Text(
+                  '$depth',
+                  style: AppTextStyles.button.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 42,
+                height: 34,
+                child: _NeoSmallButton(
+                  text: '+',
+                  icon: Icons.add,
+                  onTap: () => onDepthChanged(depth + 1),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _AuthorAnalysisSetupBlock extends StatefulWidget {
   const _AuthorAnalysisSetupBlock({
+    required this.showAntiBlunderTools,
     required this.activeKey,
     required this.showAnswer,
     required this.counts,
     required this.activeSide,
     required this.onSideToggle,
     required this.onModeChanged,
+    required this.drawingEnabled,
+    required this.onToggleDrawing,
     required this.onFinish,
     required this.onShowAnswerChanged,
     required this.onClear,
   });
 
+  final bool showAntiBlunderTools;
   final String? activeKey;
   final bool showAnswer;
   final Map<String, Map<String, int>> counts;
   final String activeSide;
   final VoidCallback onSideToggle;
   final ValueChanged<String?> onModeChanged;
+  final bool drawingEnabled;
+  final VoidCallback onToggleDrawing;
   final VoidCallback onFinish;
   final ValueChanged<bool> onShowAnswerChanged;
   final VoidCallback onClear;
@@ -922,18 +1106,28 @@ class _AuthorAnalysisSetupBlockState extends State<_AuthorAnalysisSetupBlock> {
           Row(
             children: [
               Expanded(
-                child: Text(
+                child: MakeChessLocalizedText(
                   'Правильный ответ задачи',
                   style: AppTextStyles.panelTitle,
                 ),
               ),
-              Text(
-                widget.activeKey == null
-                    ? 'режим не выбран'
-                    : 'рисование включено',
+              MakeChessLocalizedText(
+                widget.drawingEnabled
+                    ? 'рисование включено'
+                    : 'рисование выключено',
                 style: AppTextStyles.caption,
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 36,
+            child: _NeoSmallButton(
+              text: 'Установить',
+              icon: Icons.edit_outlined,
+              onTap: widget.onToggleDrawing,
+              selected: widget.drawingEnabled,
+            ),
           ),
           const SizedBox(height: 8),
           _analysisRow(
@@ -999,6 +1193,20 @@ class _AuthorAnalysisSetupBlockState extends State<_AuthorAnalysisSetupBlock> {
               onTap: widget.onClear,
             ),
           ),
+          if (widget.showAntiBlunderTools) ...[
+            const SizedBox(height: 8),
+            _analysisRow(
+              leftTitle: 'Коридор безопасности',
+              leftKey: 'safe_corridor',
+              leftColor: const Color(0xFF00C853),
+              leftIcon: Icons.arrow_forward,
+              rightTitle: 'Зона зевка',
+              rightKey: 'blunder_zone',
+              rightColor: const Color(0xFFFF6D00),
+              rightIcon: Icons.arrow_forward,
+              sideButton: const SizedBox.shrink(),
+            ),
+          ],
           const SizedBox(height: 10),
           Row(
             children: [
@@ -1085,7 +1293,7 @@ class _AnalysisSetupButtonState extends State<_AnalysisSetupButton> {
           child: Row(
             children: [
               Expanded(
-                child: Text(
+                child: MakeChessLocalizedText(
                   widget.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1093,7 +1301,7 @@ class _AnalysisSetupButtonState extends State<_AnalysisSetupButton> {
                 ),
               ),
               const SizedBox(width: 6),
-              Text(
+              MakeChessLocalizedText(
                 widget.count > 0 ? '${widget.count}' : '',
                 style: AppTextStyles.buttonCompact.copyWith(
                   color: AppColors.text.withOpacity(0.78),
@@ -1143,10 +1351,10 @@ class _AnalysisCounterBox extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text('Угроза   ${v('threat')}'),
-                  Text('Рентген  ${v('xray')}'),
-                  Text('P1       ${v('r1')}'),
-                  Text('P3       ${v('r3')}'),
+                  MakeChessLocalizedText('Угроза   ${v('threat')}'),
+                  MakeChessLocalizedText('Рентген  ${v('xray')}'),
+                  MakeChessLocalizedText('P1       ${v('r1')}'),
+                  MakeChessLocalizedText('P3       ${v('r3')}'),
                 ],
               ),
             ),
@@ -1155,10 +1363,10 @@ class _AnalysisCounterBox extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text('Связка   ${v('pin')}'),
-                  Text('Слабость ${v('weakness')}'),
-                  Text('P2       ${v('r2')}'),
-                  Text('P4       ${v('r4')}'),
+                  MakeChessLocalizedText('Связка   ${v('pin')}'),
+                  MakeChessLocalizedText('Слабость ${v('weakness')}'),
+                  MakeChessLocalizedText('P2       ${v('r2')}'),
+                  MakeChessLocalizedText('P4       ${v('r4')}'),
                 ],
               ),
             ),
@@ -1183,7 +1391,7 @@ class _TotalAnalysisBox extends StatelessWidget {
         borderRadius: AppRadius.r10,
         border: Border.all(color: const Color(0xFF83E69C)),
       ),
-      child: Text(
+      child: MakeChessLocalizedText(
         '$value',
         style: const TextStyle(
           color: Color(0xFF002DFF),
@@ -1224,7 +1432,7 @@ class _TimeLimitBox extends StatelessWidget {
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               maxLines: 1,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 isDense: true,
                 border: InputBorder.none,
                 contentPadding: EdgeInsets.zero,
@@ -1236,7 +1444,7 @@ class _TimeLimitBox extends StatelessWidget {
               ),
             ),
           ),
-          Text(
+          MakeChessLocalizedText(
             'Сек',
             style: AppTextStyles.caption.copyWith(color: Colors.white),
           ),
@@ -1252,12 +1460,14 @@ class _NeoSmallButton extends StatefulWidget {
     required this.icon,
     required this.onTap,
     this.iconWidget,
+    this.selected = false,
   });
 
   final String text;
   final IconData icon;
   final VoidCallback? onTap;
   final Widget? iconWidget;
+  final bool selected;
 
   @override
   State<_NeoSmallButton> createState() => _NeoSmallButtonState();
@@ -1270,7 +1480,7 @@ class _NeoSmallButtonState extends State<_NeoSmallButton> {
   @override
   Widget build(BuildContext context) {
     final enabled = widget.onTap != null;
-    final active = enabled && _hover;
+    final active = enabled && (widget.selected || _hover);
     final pressed = enabled && _pressed;
     final fgColor = enabled
         ? (active ? AppColors.accent : AppColors.text)
@@ -1304,7 +1514,7 @@ class _NeoSmallButtonState extends State<_NeoSmallButton> {
               widget.iconWidget ?? Icon(widget.icon, size: 16, color: fgColor),
               const SizedBox(width: 8),
               Flexible(
-                child: Text(
+                child: MakeChessLocalizedText(
                   widget.text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1355,14 +1565,14 @@ class _Header extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    MakeChessLocalizedText(
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: AppTextStyles.sectionTitle,
                     ),
                     if (!minimized)
-                      Text(
+                      MakeChessLocalizedText(
                         subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -1372,7 +1582,9 @@ class _Header extends StatelessWidget {
                 ),
               ),
               IconButton(
-                tooltip: minimized ? 'Развернуть' : 'Свернуть',
+                tooltip: minimized
+                    ? MakeChessLocalization.phrase('Развернуть')
+                    : MakeChessLocalization.phrase('Свернуть'),
                 onPressed: onMinimize,
                 icon: Icon(
                   minimized ? Icons.open_in_full : Icons.remove,
@@ -1381,12 +1593,12 @@ class _Header extends StatelessWidget {
               ),
               if (!minimized)
                 IconButton(
-                  tooltip: 'Увеличить',
+                  tooltip: MakeChessLocalization.phrase('Увеличить'),
                   onPressed: onMaximize,
                   icon: const Icon(Icons.crop_square, color: AppColors.text),
                 ),
               IconButton(
-                tooltip: 'Закрыть',
+                tooltip: MakeChessLocalization.phrase('Закрыть'),
                 onPressed: onClose,
                 icon: const Icon(Icons.close, color: AppColors.text),
               ),
@@ -1443,7 +1655,7 @@ class _FenBlock extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: AppTextStyles.panelTitle),
+          MakeChessLocalizedText(title, style: AppTextStyles.panelTitle),
           const SizedBox(height: 8),
           SelectableText(fen, style: AppTextStyles.mono),
         ],
@@ -1477,11 +1689,11 @@ class _LinesBlock extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, style: AppTextStyles.panelTitle),
+          MakeChessLocalizedText(title, style: AppTextStyles.panelTitle),
           const SizedBox(height: 8),
           Expanded(
             child: visibleLines.isEmpty
-                ? Text(emptyText, style: AppTextStyles.muted)
+                ? MakeChessLocalizedText(emptyText, style: AppTextStyles.muted)
                 : ListView.separated(
                     itemCount: visibleLines.length,
                     separatorBuilder: (_, __) =>

@@ -1,7 +1,12 @@
+// MAKECHESS_REMAINING_UI_V6_20260807
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+// MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
+// MAKECHESS_STUDENT_TRAINING_MENU_V1_20260805
 import 'package:flutter/material.dart';
 
 import '../app_style.dart';
 import 'puzzle_task.dart';
+import '../../localization/makechess_localization.dart';
 
 class PuzzleAnalysisResult {
   const PuzzleAnalysisResult({
@@ -21,6 +26,7 @@ enum PuzzleType {
   blunders,
   mate,
   bestMove,
+  antiBlunderTrainer,
   empty1,
   empty2,
   empty3,
@@ -35,6 +41,8 @@ extension PuzzleTypeTitle on PuzzleType {
         return 'Мат';
       case PuzzleType.bestMove:
         return 'Найти лучший ход';
+      case PuzzleType.antiBlunderTrainer:
+        return 'Антизевковый тренажёр';
       case PuzzleType.empty1:
       case PuzzleType.empty2:
       case PuzzleType.empty3:
@@ -50,6 +58,8 @@ extension PuzzleTypeTitle on PuzzleType {
         return Icons.looks_one;
       case PuzzleType.bestMove:
         return Icons.flash_on;
+      case PuzzleType.antiBlunderTrainer:
+        return Icons.shield_outlined;
       case PuzzleType.empty1:
       case PuzzleType.empty2:
       case PuzzleType.empty3:
@@ -65,6 +75,8 @@ extension PuzzleTypeTitle on PuzzleType {
         return 'Задачи на мат тренируют поиск форсированной атаки на короля. Позже здесь будут уровни: мат в 1, 2, 3, 4 и 5 ходов.';
       case PuzzleType.bestMove:
         return 'Режим поиска лучшего хода учит выбирать самый сильный ход в позиции с учётом тактики, плана и оценки движка.';
+      case PuzzleType.antiBlunderTrainer:
+        return 'Антизевковый тренажёр учит формировать ходы-кандидаты, удерживать их внутри коридора безопасности и видеть зоны зевка на заданной глубине.';
       case PuzzleType.empty1:
       case PuzzleType.empty2:
       case PuzzleType.empty3:
@@ -80,6 +92,10 @@ class PuzzleTypesPanel extends StatefulWidget {
     required this.onTypeSelected,
     this.onSettingsTap,
     this.onOpenTasksTap,
+    this.onAntiBlunderTrainerTap,
+    this.antiBlunderTrainerActive = false,
+    this.onOpeningTrainerTap,
+    this.openingTrainerActive = false,
     this.publishedTasks = const [],
     this.activeTaskIndex = -1,
     this.loadingTasks = false,
@@ -92,6 +108,8 @@ class PuzzleTypesPanel extends StatefulWidget {
     this.analysisResults = const {},
     this.onAnalysisSideToggle,
     this.onAnalysisModeChanged,
+    this.drawingEnabled = false,
+    this.onToggleDrawing,
     this.onFinishAnalysis,
     this.onShowAnswerChanged,
     this.width = 340,
@@ -102,6 +120,10 @@ class PuzzleTypesPanel extends StatefulWidget {
   final ValueChanged<PuzzleType> onTypeSelected;
   final VoidCallback? onSettingsTap;
   final VoidCallback? onOpenTasksTap;
+  final VoidCallback? onAntiBlunderTrainerTap;
+  final bool antiBlunderTrainerActive;
+  final VoidCallback? onOpeningTrainerTap;
+  final bool openingTrainerActive;
 
   final List<PuzzleTask> publishedTasks;
   final int activeTaskIndex;
@@ -116,6 +138,8 @@ class PuzzleTypesPanel extends StatefulWidget {
   final Map<String, PuzzleAnalysisResult> analysisResults;
   final VoidCallback? onAnalysisSideToggle;
   final ValueChanged<String?>? onAnalysisModeChanged;
+  final bool drawingEnabled;
+  final VoidCallback? onToggleDrawing;
   final VoidCallback? onFinishAnalysis;
   final ValueChanged<bool>? onShowAnswerChanged;
 
@@ -124,6 +148,187 @@ class PuzzleTypesPanel extends StatefulWidget {
 
   @override
   State<PuzzleTypesPanel> createState() => _PuzzleTypesPanelState();
+}
+
+/// Единый блок кнопок «Композиции / Тренажеры».
+///
+/// Он используется и в панели «Задачи», и в режиме ученика. Поэтому обе
+/// панели всегда запускают одну и ту же логику, а не две расходящиеся копии.
+class PuzzleTrainingButtons extends StatelessWidget {
+  const PuzzleTrainingButtons({
+    super.key,
+    required this.selectedType,
+    required this.onTypeSelected,
+    this.onAntiBlunderTrainerTap,
+    this.antiBlunderTrainerActive = false,
+    this.onOpeningTrainerTap,
+    this.openingTrainerActive = false,
+    this.compositionsTitle = 'Композиции',
+    this.trainerTitle = 'Тренажеры',
+    this.onAction,
+  });
+
+  final PuzzleType selectedType;
+  final ValueChanged<PuzzleType> onTypeSelected;
+  final VoidCallback? onAntiBlunderTrainerTap;
+  final bool antiBlunderTrainerActive;
+  final VoidCallback? onOpeningTrainerTap;
+  final bool openingTrainerActive;
+  final String compositionsTitle;
+  final String trainerTitle;
+
+  /// Служебное событие для будущей статистики ученика.
+  /// key — стабильный машинный ключ, title — видимое название.
+  final void Function(String key, String title)? onAction;
+
+  void _run(
+    String key,
+    String title,
+    VoidCallback action,
+  ) {
+    onAction?.call(key, title);
+    action();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                MakeChessLocalizedText(
+                  compositionsTitle,
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.panelTitle,
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: PuzzleType.blunders.title,
+                  icon: PuzzleType.blunders.icon,
+                  selected: !openingTrainerActive &&
+                      selectedType == PuzzleType.blunders,
+                  enabled: true,
+                  onTap: () => _run(
+                    'composition_blunders',
+                    PuzzleType.blunders.title,
+                    () => onTypeSelected(PuzzleType.blunders),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: PuzzleType.bestMove.title,
+                  icon: PuzzleType.bestMove.icon,
+                  selected: !openingTrainerActive &&
+                      selectedType == PuzzleType.bestMove,
+                  enabled: true,
+                  onTap: () => _run(
+                    'composition_best_move',
+                    PuzzleType.bestMove.title,
+                    () => onTypeSelected(PuzzleType.bestMove),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: PuzzleType.mate.title,
+                  icon: PuzzleType.mate.icon,
+                  selected:
+                      !openingTrainerActive && selectedType == PuzzleType.mate,
+                  enabled: true,
+                  onTap: () => _run(
+                    'composition_mate',
+                    PuzzleType.mate.title,
+                    () => onTypeSelected(PuzzleType.mate),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: 'Еще',
+                  icon: null,
+                  selected: false,
+                  enabled: true,
+                  onTap: () => _run(
+                    'composition_more',
+                    'Еще композиции',
+                    () {},
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const VerticalDivider(
+            width: 25,
+            thickness: 1,
+            color: AppColors.borderSoft,
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                MakeChessLocalizedText(
+                  trainerTitle,
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.panelTitle,
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: 'Антизевковый',
+                  icon: Icons.shield_outlined,
+                  selected: antiBlunderTrainerActive ||
+                      selectedType == PuzzleType.antiBlunderTrainer,
+                  enabled: onAntiBlunderTrainerTap != null,
+                  onTap: () => _run(
+                    'trainer_anti_blunder',
+                    'Антизевковый',
+                    onAntiBlunderTrainerTap ?? () {},
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: 'Дебютный',
+                  icon: Icons.account_tree_outlined,
+                  selected: openingTrainerActive,
+                  enabled: onOpeningTrainerTap != null,
+                  onTap: () => _run(
+                    'trainer_opening',
+                    'Дебютный',
+                    onOpeningTrainerTap ?? () {},
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: 'Эндшпильный',
+                  icon: null,
+                  selected: false,
+                  enabled: true,
+                  onTap: () => _run(
+                    'trainer_endgame',
+                    'Эндшпильный',
+                    () {},
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PuzzleTypeButton(
+                  title: 'Еще',
+                  icon: null,
+                  selected: false,
+                  enabled: true,
+                  onTap: () => _run(
+                    'trainer_more',
+                    'Еще тренажеры',
+                    () {},
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
@@ -136,12 +341,6 @@ class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
   final TextEditingController _statsReviewerCtl = TextEditingController();
   final TextEditingController _statsPeriodCtl = TextEditingController();
   int _activeStatsTab = 0;
-
-  static const List<PuzzleType> _types = [
-    PuzzleType.blunders,
-    PuzzleType.mate,
-    PuzzleType.bestMove,
-  ];
 
   static const List<_AnalysisButtonData> _analysisButtons = [
     _AnalysisButtonData(
@@ -293,7 +492,7 @@ class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
     showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
-      barrierLabel: 'Закрыть статистику',
+      barrierLabel: MakeChessLocalization.phrase('Закрыть статистику'),
       barrierColor: Colors.transparent,
       transitionDuration: const Duration(milliseconds: 120),
       pageBuilder: (dialogContext, _, __) {
@@ -352,12 +551,13 @@ class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
               Row(
                 children: [
                   const Expanded(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       'Задачи',
                       style: AppTextStyles.panelTitle,
                     ),
                   ),
-                  if (widget.onOpenTasksTap != null) ...[
+                  if (widget.selectedType != PuzzleType.antiBlunderTrainer &&
+                      widget.onOpenTasksTap != null) ...[
                     SizedBox(
                       height: 34,
                       child: _PanelNeoButton(
@@ -369,7 +569,8 @@ class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
                     ),
                     const SizedBox(width: 6),
                   ],
-                  if (widget.onSettingsTap != null)
+                  if (widget.selectedType != PuzzleType.antiBlunderTrainer &&
+                      widget.onSettingsTap != null)
                     SizedBox(
                       height: 34,
                       child: _PanelNeoButton(
@@ -382,158 +583,152 @@ class _PuzzleTypesPanelState extends State<PuzzleTypesPanel> {
                 ],
               ),
               const SizedBox(height: 10),
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _types.length + 1,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisExtent: 42,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
-                ),
-                itemBuilder: (context, index) {
-                  if (index == _types.length) {
-                    return _PuzzleTypeButton(
-                      title: 'Еще',
-                      icon: null,
-                      selected: false,
-                      enabled: true,
-                      onTap: () {},
-                    );
-                  }
-
-                  final type = _types[index];
-                  final isEmpty = type.title.isEmpty;
-
-                  return _PuzzleTypeButton(
-                    title: type.title,
-                    icon: type.icon,
-                    selected: type == widget.selectedType,
-                    enabled: !isEmpty,
-                    onTap: () {
-                      if (!isEmpty) widget.onTypeSelected(type);
-                    },
-                  );
-                },
+              PuzzleTrainingButtons(
+                selectedType: widget.selectedType,
+                onTypeSelected: widget.onTypeSelected,
+                onAntiBlunderTrainerTap: widget.onAntiBlunderTrainerTap,
+                antiBlunderTrainerActive: widget.antiBlunderTrainerActive,
+                onOpeningTrainerTap: widget.onOpeningTrainerTap,
+                openingTrainerActive: widget.openingTrainerActive,
               ),
               const SizedBox(height: 10),
-              Text(
-                widget.selectedType.title.isEmpty
-                    ? 'Задачи'
-                    : widget.selectedType.title,
-                style: AppTextStyles.panelTitle,
-              ),
-              const SizedBox(height: 6),
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: EdgeInsets.zero,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: AppColors.surfaceCard.withOpacity(0.35),
-                          borderRadius: AppRadius.r14,
-                          border: Border.all(color: AppColors.borderSoft),
-                        ),
-                        padding: const EdgeInsets.all(10),
-                        child: SizedBox(
-                          height: 82,
-                          child: widget.loadingTasks
-                              ? const Center(
-                                  child: SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
+              if (widget.selectedType == PuzzleType.antiBlunderTrainer)
+                Expanded(
+                  child: Container(
+                    alignment: Alignment.topCenter,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceCard.withOpacity(0.25),
+                      borderRadius: AppRadius.r12,
+                      border: Border.all(color: AppColors.borderSoft),
+                    ),
+                    child: const MakeChessLocalizedText(
+                      'Всё управление антизевковым тренажёром находится в его отдельном окне.',
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.muted,
+                    ),
+                  ),
+                )
+              else ...[
+                MakeChessLocalizedText(
+                  widget.selectedType.title.isEmpty
+                      ? 'Задачи'
+                      : widget.selectedType.title,
+                  style: AppTextStyles.panelTitle,
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.zero,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: AppColors.surfaceCard.withOpacity(0.35),
+                            borderRadius: AppRadius.r14,
+                            border: Border.all(color: AppColors.borderSoft),
+                          ),
+                          padding: const EdgeInsets.all(10),
+                          child: SizedBox(
+                            height: 82,
+                            child: widget.loadingTasks
+                                ? const Center(
+                                    child: SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     ),
-                                  ),
-                                )
-                              : widget.publishedTasks.isEmpty
-                                  ? Text(
-                                      'Пока нет опубликованных задач этого типа.',
-                                      style: AppTextStyles.muted,
-                                    )
-                                  : ListView.separated(
-                                      padding: EdgeInsets.zero,
-                                      itemCount: widget.publishedTasks.length,
-                                      separatorBuilder: (_, __) =>
-                                          const SizedBox(height: 6),
-                                      itemBuilder: (context, index) {
-                                        final task =
-                                            widget.publishedTasks[index];
-                                        return _PublishedTaskTile(
-                                          task: task,
-                                          selected:
-                                              index == widget.activeTaskIndex,
-                                          onTap: () => widget.onTaskSelected
-                                              ?.call(index),
-                                        );
-                                      },
-                                    ),
+                                  )
+                                : widget.publishedTasks.isEmpty
+                                    ? MakeChessLocalizedText(
+                                        'Пока нет опубликованных задач этого типа.',
+                                        style: AppTextStyles.muted,
+                                      )
+                                    : ListView.separated(
+                                        padding: EdgeInsets.zero,
+                                        itemCount: widget.publishedTasks.length,
+                                        separatorBuilder: (_, __) =>
+                                            const SizedBox(height: 6),
+                                        itemBuilder: (context, index) {
+                                          final task =
+                                              widget.publishedTasks[index];
+                                          return _PublishedTaskTile(
+                                            task: task,
+                                            selected:
+                                                index == widget.activeTaskIndex,
+                                            onTap: () => widget.onTaskSelected
+                                                ?.call(index),
+                                          );
+                                        },
+                                      ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SizedBox(
-                              height: 38,
-                              child: _PanelNeoButton(
-                                text: 'Назад',
-                                icon: Icons.arrow_back,
-                                onTap: widget.publishedTasks.isEmpty
-                                    ? null
-                                    : widget.onPreviousTask,
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 38,
+                                child: _PanelNeoButton(
+                                  text: 'Назад',
+                                  icon: Icons.arrow_back,
+                                  onTap: widget.publishedTasks.isEmpty
+                                      ? null
+                                      : widget.onPreviousTask,
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: SizedBox(
-                              height: 38,
-                              child: _PanelNeoButton(
-                                text: 'Следующая',
-                                icon: Icons.arrow_forward,
-                                onTap: widget.publishedTasks.isEmpty
-                                    ? null
-                                    : widget.onNextTask,
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: SizedBox(
+                                height: 38,
+                                child: _PanelNeoButton(
+                                  text: 'Следующая',
+                                  icon: Icons.arrow_forward,
+                                  onTap: widget.publishedTasks.isEmpty
+                                      ? null
+                                      : widget.onNextTask,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      _AnalysisBlock(
-                        activeTask: activeTask,
-                        analysisButtons: _analysisButtons,
-                        activeAnalysisKey: _activeAnalysisKey,
-                        showAnswer: _showAnswer,
-                        activeAnalysisSide: _activeAnalysisSide,
-                        analysisResults: widget.analysisResults,
-                        finished: _finished,
-                        onAnalysisTap: _toggleAnalysisMode,
-                        onSideTap: _toggleSide,
-                        onFinish: _finishTask,
-                        onShowAnswer: _toggleAnswer,
-                      ),
-                      const SizedBox(height: 8),
-                      _StatisticsBlock(
-                        participantController: _statsStudentCtl,
-                        reviewerController: _statsReviewerCtl,
-                        periodController: _statsPeriodCtl,
-                        activeTab: _activeStatsTab,
-                        onTabChanged: (value) {
-                          setState(() => _activeStatsTab = value);
-                        },
-                        onExpand: _openExpandedStatisticsWindow,
-                      ),
-                    ],
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        _AnalysisBlock(
+                          activeTask: activeTask,
+                          analysisButtons: _analysisButtons,
+                          activeAnalysisKey: _activeAnalysisKey,
+                          showAnswer: _showAnswer,
+                          activeAnalysisSide: _activeAnalysisSide,
+                          analysisResults: widget.analysisResults,
+                          finished: _finished,
+                          onAnalysisTap: _toggleAnalysisMode,
+                          drawingEnabled: widget.drawingEnabled,
+                          onToggleDrawing: widget.onToggleDrawing ?? () {},
+                          onSideTap: _toggleSide,
+                          onFinish: _finishTask,
+                          onShowAnswer: _toggleAnswer,
+                        ),
+                        const SizedBox(height: 8),
+                        _StatisticsBlock(
+                          participantController: _statsStudentCtl,
+                          reviewerController: _statsReviewerCtl,
+                          periodController: _statsPeriodCtl,
+                          activeTab: _activeStatsTab,
+                          onTabChanged: (value) {
+                            setState(() => _activeStatsTab = value);
+                          },
+                          onExpand: _openExpandedStatisticsWindow,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -655,7 +850,8 @@ class _StatisticsBlock extends StatelessWidget {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text('Статистика', style: AppTextStyles.panelTitle),
+                MakeChessLocalizedText('Статистика',
+                    style: AppTextStyles.panelTitle),
                 const SizedBox(height: 7),
                 _buildTabs(),
                 const SizedBox(height: 8),
@@ -673,7 +869,7 @@ class _StatisticsBlock extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Expanded(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       'Статистика',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -749,7 +945,7 @@ class _ExpandedStatisticsWindow extends StatelessWidget {
                 children: [
                   SizedBox(
                     width: 110,
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       'Статистика',
                       style: AppTextStyles.panelTitle,
                     ),
@@ -822,7 +1018,7 @@ class _ExpandedStatisticsWindow extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   IconButton(
-                    tooltip: 'Закрыть',
+                    tooltip: MakeChessLocalization.phrase('Закрыть'),
                     onPressed: onClose,
                     icon: const Icon(Icons.close, color: AppColors.text),
                   ),
@@ -860,7 +1056,7 @@ class _StatisticsLargeResultArea extends StatelessWidget {
               child: _LargeSoprChart(),
             )
           : Center(
-              child: Text(
+              child: MakeChessLocalizedText(
                 _expandedPlaceholderText(activeTab),
                 textAlign: TextAlign.center,
                 style: AppTextStyles.panelTitle.copyWith(
@@ -909,12 +1105,12 @@ class _LargeSoprChart extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: Text(
+              child: MakeChessLocalizedText(
                 'Средний относительный показатель решений',
                 style: AppTextStyles.panelTitle,
               ),
             ),
-            Text(
+            MakeChessLocalizedText(
               'среднее по 10 последним задачам',
               style: AppTextStyles.caption.copyWith(
                 color: AppColors.textDim,
@@ -966,7 +1162,7 @@ class _StatisticsResultArea extends StatelessWidget {
 
   Widget _buildPlaceholder(int index) {
     return Center(
-      child: Text(
+      child: MakeChessLocalizedText(
         _placeholderText(index),
         textAlign: TextAlign.center,
         style: AppTextStyles.caption.copyWith(
@@ -986,7 +1182,7 @@ class _StatisticsResultArea extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: Text(
+                child: MakeChessLocalizedText(
                   'СОПР за период',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -996,7 +1192,7 @@ class _StatisticsResultArea extends StatelessWidget {
                   ),
                 ),
               ),
-              Text(
+              MakeChessLocalizedText(
                 'среднее по 10 задачам',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1206,7 +1402,7 @@ class _StatisticsTextField extends StatelessWidget {
           fontSize: 13,
         ),
         decoration: InputDecoration(
-          labelText: label,
+          labelText: MakeChessLocalization.phrase(label),
           labelStyle: AppTextStyles.caption.copyWith(
             color: AppColors.textDim,
             fontSize: 12,
@@ -1323,7 +1519,7 @@ class _StatisticsTabButtonState extends State<_StatisticsTabButton> {
                 : null,
           ),
           alignment: Alignment.center,
-          child: Text(
+          child: MakeChessLocalizedText(
             widget.text,
             style: AppTextStyles.panelTitle.copyWith(
               color: widget.color,
@@ -1422,6 +1618,8 @@ class _AnalysisBlock extends StatelessWidget {
     required this.analysisResults,
     required this.finished,
     required this.onAnalysisTap,
+    required this.drawingEnabled,
+    required this.onToggleDrawing,
     required this.onSideTap,
     required this.onFinish,
     required this.onShowAnswer,
@@ -1435,6 +1633,8 @@ class _AnalysisBlock extends StatelessWidget {
   final Map<String, PuzzleAnalysisResult> analysisResults;
   final bool finished;
   final ValueChanged<String> onAnalysisTap;
+  final bool drawingEnabled;
+  final VoidCallback onToggleDrawing;
   final VoidCallback onSideTap;
   final VoidCallback onFinish;
   final VoidCallback onShowAnswer;
@@ -1496,6 +1696,14 @@ class _AnalysisBlock extends StatelessWidget {
     );
   }
 
+  Widget _installButton() {
+    return _SmallActionButton(
+      text: 'Установить',
+      onTap: onToggleDrawing,
+      active: drawingEnabled,
+    );
+  }
+
   Widget _finishButton() {
     return _SmallActionButton(
       text: 'Готово',
@@ -1537,15 +1745,19 @@ class _AnalysisBlock extends StatelessWidget {
                     Row(
                       children: [
                         Expanded(
-                          child: SizedBox(height: 48, child: _sideButton()),
+                          child: SizedBox(height: 40, child: _installButton()),
                         ),
                         const SizedBox(width: 6),
                         Expanded(
-                          child: SizedBox(height: 48, child: _finishButton()),
+                          child: SizedBox(height: 40, child: _sideButton()),
                         ),
                         const SizedBox(width: 6),
                         Expanded(
-                          child: SizedBox(height: 48, child: _answerButton()),
+                          child: SizedBox(height: 40, child: _finishButton()),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: SizedBox(height: 40, child: _answerButton()),
                         ),
                       ],
                     ),
@@ -1560,11 +1772,13 @@ class _AnalysisBlock extends StatelessWidget {
                       width: 92,
                       child: Column(
                         children: [
-                          SizedBox(height: 44, child: _sideButton()),
+                          SizedBox(height: 34, child: _installButton()),
                           const SizedBox(height: 6),
-                          SizedBox(height: 44, child: _finishButton()),
+                          SizedBox(height: 34, child: _sideButton()),
                           const SizedBox(height: 6),
-                          SizedBox(height: 52, child: _answerButton()),
+                          SizedBox(height: 34, child: _finishButton()),
+                          const SizedBox(height: 6),
+                          SizedBox(height: 34, child: _answerButton()),
                         ],
                       ),
                     ),
@@ -1577,7 +1791,7 @@ class _AnalysisBlock extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       taskTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1586,7 +1800,7 @@ class _AnalysisBlock extends StatelessWidget {
                   ),
                   const SizedBox(width: 6),
                   Flexible(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       taskType,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1627,7 +1841,7 @@ class _AnalysisBlock extends StatelessWidget {
                         border: Border.all(color: AppColors.border),
                       ),
                       child: const Center(
-                        child: Text(
+                        child: MakeChessLocalizedText(
                           '0,0\nсек',
                           textAlign: TextAlign.center,
                           style: AppTextStyles.buttonCompact,
@@ -1684,10 +1898,10 @@ class _StudentResultBox extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(_line('Угроза', 'threat')),
-                        Text(_line('Рентген', 'xray')),
-                        Text(_line('P1', 'r1')),
-                        Text(_line('P3', 'r3')),
+                        MakeChessLocalizedText(_line('Угроза', 'threat')),
+                        MakeChessLocalizedText(_line('Рентген', 'xray')),
+                        MakeChessLocalizedText(_line('P1', 'r1')),
+                        MakeChessLocalizedText(_line('P3', 'r3')),
                       ],
                     ),
                   ),
@@ -1696,17 +1910,17 @@ class _StudentResultBox extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(_line('Связка', 'pin')),
-                        Text(_line('Слабость', 'weakness')),
-                        Text(_line('P2', 'r2')),
-                        Text(_line('P4', 'r4')),
+                        MakeChessLocalizedText(_line('Связка', 'pin')),
+                        MakeChessLocalizedText(_line('Слабость', 'weakness')),
+                        MakeChessLocalizedText(_line('P2', 'r2')),
+                        MakeChessLocalizedText(_line('P4', 'r4')),
                       ],
                     ),
                   ),
                 ],
               ),
             )
-          : Text(
+          : MakeChessLocalizedText(
               'Результат появится после кнопки «Готово»',
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
@@ -1746,7 +1960,7 @@ class _StudentTotalBox extends StatelessWidget {
         border: Border.all(color: AppColors.borderSoft),
       ),
       child: Center(
-        child: Text(
+        child: MakeChessLocalizedText(
           finished ? '$correct/$total' : '-/-',
           textAlign: TextAlign.center,
           style: const TextStyle(
@@ -1796,7 +2010,7 @@ class _AnalysisArrowButton extends StatelessWidget {
         child: Row(
           children: [
             Expanded(
-              child: Text(
+              child: MakeChessLocalizedText(
                 data.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1826,17 +2040,22 @@ class _EmptyAnalysisSlot extends StatelessWidget {
       height: 34,
       decoration: AppDecorations.neoButton(enabled: false),
       child: const Center(
-        child: Text('-', style: AppTextStyles.buttonCompact),
+        child: MakeChessLocalizedText('-', style: AppTextStyles.buttonCompact),
       ),
     );
   }
 }
 
 class _SmallActionButton extends StatefulWidget {
-  const _SmallActionButton({required this.text, required this.onTap});
+  const _SmallActionButton({
+    required this.text,
+    required this.onTap,
+    this.active = false,
+  });
 
   final String text;
   final VoidCallback onTap;
+  final bool active;
 
   @override
   State<_SmallActionButton> createState() => _SmallActionButtonState();
@@ -1861,11 +2080,13 @@ class _SmallActionButtonState extends State<_SmallActionButton> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
-          decoration:
-              AppDecorations.neoButton(active: _hover, pressed: _pressed),
+          decoration: AppDecorations.neoButton(
+            active: widget.active || _hover,
+            pressed: _pressed,
+          ),
           padding: const EdgeInsets.symmetric(horizontal: 6),
           child: Center(
-            child: Text(
+            child: MakeChessLocalizedText(
               widget.text,
               textAlign: TextAlign.center,
               maxLines: 2,
@@ -1939,7 +2160,7 @@ class _PanelNeoButtonState extends State<_PanelNeoButton> {
               Icon(widget.icon, size: widget.compact ? 15 : 16, color: color),
               const SizedBox(width: 8),
               Flexible(
-                child: Text(
+                child: MakeChessLocalizedText(
                   widget.text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1992,7 +2213,7 @@ class _PublishedTaskTile extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
+              child: MakeChessLocalizedText(
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -2072,7 +2293,7 @@ class _PuzzleTypeButtonState extends State<_PuzzleTypeButton> {
                 const SizedBox(width: 8),
               ],
               Expanded(
-                child: Text(
+                child: MakeChessLocalizedText(
                   widget.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,

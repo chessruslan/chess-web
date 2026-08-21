@@ -1,0 +1,50 @@
+﻿MAKECHESS BIG LOCALIZATION STAGE V4
+
+Built from exact current project files.
+Changed targets and expected pre-install SHA-256:
+
+lib/localization/makechess_localization.dart
+  OLD: 39b9195b587c727e83bd9c026040e096185a54398bad9b94f10f0cb3f233c6a6
+  PACKAGE: 57ee09f56aef1617d4ccae58e7ae7801aea6c756f58dfe74e213b551f6e1cafc
+lib/ui/app_shell.dart
+  OLD: 13803b5153304393e2ca95f51730fe073b2ca0c9ef88eb7d350c48082188bb90
+  PACKAGE: 884bf6eac4d4d701f7786aee8673dfa800415ab796a85df7f6d7b95da7f9059c
+lib/ui/common_top_bar.dart
+  OLD: 7865a138143103cf95ea4b44f7c2c1431df24871a2edc8f969405166cfa1e240
+  PACKAGE: 74726c8b8109caaca33bd3186be3299268871e2284815db85ef365cc3b22196d
+lib/ui/start_modal.dart
+  OLD: 8a8aa9ba43791513a2bc753682cb8dcf911913070535d372cdb310d60b628c56
+  PACKAGE: 4880bc84cdb7b7b9c454aeedf0db937b33ecb92b5463adc4e255d485cc430cf3
+lib/ui/dialogs/site_settings_dialog.dart
+  OLD: a75f8d845606e302530eb0a14e435ec1b54ca070baed26bc8483cda208d5f8a8
+  PACKAGE: 189c635bac484c1403a721d40f1c4613f5dc33c6e613398a6f2ecccc8d578c66
+lib/ui/dialogs/personal_cabinet_dialog.dart
+  OLD: ddb87250aeab72cb95749eb9ffe8384030c2fef5d09218e5dcb20204d8eca477
+  PACKAGE: 842c12efdca2720b8e0e96fc336e669a883121c7bedf26feeb29eecf00e1b905
+lib/ui/dialogs/board_theme_picker_dialog.dart
+  OLD: 7f9eafa440261c0a1ef33348b8b75d6bfabfbf3acae3fe629edc0da8f999a72b
+  PACKAGE: 515f25a25ae21811ac91e811134b71f461d6e16cc16f75e4d0274e5637b1af94
+lib/ui/tournament/tournament_table_editor.dart
+  OLD: 3444c541b6185288a23fcfcd9de303bd2839603f8f9141ec521db1056884fd0f
+  PACKAGE: 137a5fc4e2004a623c5061cf1a09761fba6964431f8cfccd8cbaf5b28de668e7
+lib/ui/tournament/tournament_manager_dialog.dart
+  OLD: be4963fc663f23a4812340c897905fa31edf1d3731083370c06d6880be76d966
+  PACKAGE: 9d792090449f893aa380a0911ccd2d3745403b2df2ac8990bd51d8d1b0aa7b87
+lib/ui/panels/puzzle_types_panel.dart
+  OLD: 5955aeeb901524808e60db9fd89f65dc3a1518710f52f840e2a42cf6f50db6e8
+  PACKAGE: e0f82e181ffa7b726917c9dd3c883c0fe2ff2df1340e939ecc4515e5c4cb10e4
+lib/ui/panels/learn_panel.dart
+  OLD: 519cd1f2f341319d05a22bc9f19672b282a4dcd0989d140c6c3723d8f4a818c5
+  PACKAGE: d335306b174468e024c00b82362ac0016d37a7986808a3056a43b2107007e007
+lib/ui/panels/opening_trainer.dart
+  OLD: 1bdb2d258553f963e81c82d03b544c3a0f0eb20a603ed45baf62345c8178d3ab
+  PACKAGE: 5a79fbc999cd2ca880971ef8f581317c83d610e97498a075d759543bbd57ea0a
+lib/ui/panels/puzzle_settings_dialog.dart
+  OLD: db142f8694e70a2f0c205d9ef4fa6ccfb1901f3872983cba9d79115b6bfc37a7
+  PACKAGE: f24c789e079238bc6cdaaff4001c55bbb902e8d5cdae31ae0f8c7865f7d337e3
+lib/ui/panels/room_chat_panel.dart
+  OLD: f50714ac948569146a17622e8cd93d6c5c945d717557718f5ce02166f468a7eb
+  PACKAGE: 8eca715a97ff0d213cf26ac08bb81642f161268ce3e28492c3dad909356dd21e
+
+Central V4 phrase rows: 528
+Languages: RU EN DE FR ES AR ZH HI JA KO VI

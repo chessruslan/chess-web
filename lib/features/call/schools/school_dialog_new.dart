@@ -1,5 +1,8 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // lib/features/schools/school_dialog.dart
 import 'package:flutter/material.dart';
+
+import '../../../localization/makechess_localization.dart';
 
 /// Диалог "Школы" (пока без логики, но полностью верстается и собирается)
 class SchoolDialog extends StatefulWidget {
@@ -45,7 +48,7 @@ class _SchoolDialogState extends State<SchoolDialog> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Center(
-                  child: Text(
+                  child: MakeChessLocalizedText(
                     'Выбор школы',
                     style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w700,
@@ -55,7 +58,8 @@ class _SchoolDialogState extends State<SchoolDialog> {
                 const SizedBox(height: 16),
 
                 // Поле 1: список школ
-                Text('Школа', style: theme.textTheme.labelLarge),
+                MakeChessLocalizedText('Школа',
+                    style: theme.textTheme.labelLarge),
                 const SizedBox(height: 8),
                 _LinedDropdown<String>(
                   value: _selectedSchool,
@@ -66,7 +70,8 @@ class _SchoolDialogState extends State<SchoolDialog> {
                 const SizedBox(height: 14),
 
                 // Поле 2: избранные
-                Text('Избранное', style: theme.textTheme.labelLarge),
+                MakeChessLocalizedText('Избранное',
+                    style: theme.textTheme.labelLarge),
                 const SizedBox(height: 8),
                 _LinedDropdown<String>(
                   value: _selectedFavorite,
@@ -101,7 +106,7 @@ class _SchoolDialogState extends State<SchoolDialog> {
                         },
                   child: const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Войти как ученик'),
+                    child: MakeChessLocalizedText('Войти как ученик'),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -115,7 +120,7 @@ class _SchoolDialogState extends State<SchoolDialog> {
                         },
                   child: const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Войти как учитель'),
+                    child: MakeChessLocalizedText('Войти как учитель'),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -133,7 +138,7 @@ class _SchoolDialogState extends State<SchoolDialog> {
                   icon: const Icon(Icons.add_business),
                   label: const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Создать школу'),
+                    child: MakeChessLocalizedText('Создать школу'),
                   ),
                 ),
               ],
@@ -188,14 +193,14 @@ class _LinedDropdown<T> extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: DropdownButton<T>(
         value: value,
-        hint: Text(hint ?? ''),
+        hint: MakeChessLocalizedText(hint ?? ''),
         isExpanded: true,
         underline: const SizedBox(),
         borderRadius: BorderRadius.circular(10),
         items: items
             .map((e) => DropdownMenuItem<T>(
                   value: e,
-                  child: Text(e.toString()),
+                  child: MakeChessLocalizedText(e.toString()),
                 ))
             .toList(),
         onChanged: onChanged,
@@ -244,13 +249,14 @@ class _TeacherCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(name,
+                MakeChessLocalizedText(name,
                     style: theme.textTheme.titleLarge
                         ?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 6),
-                Text(meta, style: theme.textTheme.bodyMedium),
+                MakeChessLocalizedText(meta, style: theme.textTheme.bodyMedium),
                 const SizedBox(height: 6),
-                Text(rating, style: theme.textTheme.bodyMedium),
+                MakeChessLocalizedText(rating,
+                    style: theme.textTheme.bodyMedium),
               ],
             ),
           ),
@@ -268,10 +274,10 @@ class CreateSchoolDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AlertDialog(
-      title: const Text('Создать школу'),
+      title: const MakeChessLocalizedText('Создать школу'),
       content: SizedBox(
         width: 420,
-        child: Text(
+        child: MakeChessLocalizedText(
           'Здесь будет форма создания школы (название, описание, обложка, '
           'времена занятий, приватность и т.д.).',
           style: theme.textTheme.bodyMedium,
@@ -280,14 +286,14 @@ class CreateSchoolDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Закрыть'),
+          child: const MakeChessLocalizedText('Закрыть'),
         ),
         FilledButton(
           onPressed: () {
             // TODO: сохранить и обновить список
             Navigator.pop(context);
           },
-          child: const Text('Создать'),
+          child: const MakeChessLocalizedText('Создать'),
         ),
       ],
     );

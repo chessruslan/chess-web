@@ -1,0 +1,261 @@
+
+  // MAKECHESS_ADMIN_CASE_REPLIES_V8_20260808
+  bool _isAdminCaseMessage(MakeChessMessage message) =>
+      message.category == 'admin_info' ||
+      message.category == 'admin_warning' ||
+      message.category == 'admin_block' ||
+      message.category == 'admin_restriction';
+
+  String _formatAdminCaseDate(DateTime value) {
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(local.day)}.${two(local.month)}.${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  Future<void> _openAdminCaseMessage(MakeChessMessage message) async {
+    final replyController = TextEditingController();
+    var replyMode = false;
+    var busy = false;
+    final rawDueAt = '${message.metadata['dueAt'] ?? ''}';
+    final dueAt = DateTime.tryParse(rawDueAt);
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            final canReply = replyController.text.trim().isNotEmpty && !busy;
+            return AlertDialog(
+              backgroundColor: const Color(0xFF111C27),
+              title: Text(
+                MakeChessLocalization.phrase(message.title),
+              ),
+              content: SizedBox(
+                width: 620,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.cyanAccent.withOpacity(.06),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.cyanAccent.withOpacity(.3)),
+                        ),
+                        child: Text(
+                          MakeChessLocalization.phrase(
+                            'MakeChess уважает ваше право знать причину',
+                          ),
+                          style: const TextStyle(
+                            color: Colors.cyanAccent,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        MakeChessLocalization.phrase(
+                          'Отправитель: {name}',
+                          params: <String, Object?>{'name': message.senderName},
+                        ),
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                      if (dueAt != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          MakeChessLocalization.phrase(
+                            'Срок: {date}',
+                            params: <String, Object?>{
+                              'date': _formatAdminCaseDate(dueAt),
+                            },
+                          ),
+                          style: const TextStyle(color: Colors.amberAccent),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      SelectableText(message.body),
+                      if (replyMode) ...[
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: replyController,
+                          autofocus: true,
+                          minLines: 3,
+                          maxLines: 7,
+                          onChanged: (_) => setDialogState(() {}),
+                          decoration: InputDecoration(
+                            labelText:
+                                MakeChessLocalization.phrase('Напишите ответ'),
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy
+                      ? null
+                      : () => Navigator.pop(dialogContext),
+                  child: Text(MakeChessLocalization.phrase('Закрыть')),
+                ),
+                if (!replyMode)
+                  OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () => setDialogState(() => replyMode = true),
+                    icon: const Icon(Icons.reply_outlined),
+                    label: Text(MakeChessLocalization.phrase('Ответить')),
+                  ),
+                if (!replyMode)
+                  FilledButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            setDialogState(() => busy = true);
+                            try {
+                              await _sendAdminCaseReply(
+                                source: message,
+                                fixed: true,
+                                text: '',
+                              );
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    MakeChessLocalization.phrase(
+                                      'Вы сообщили администратору, что проблема исправлена',
+                                    ),
+                                  ),
+                                ),
+                              );
+                              if (dialogContext.mounted) {
+                                Navigator.pop(dialogContext);
+                              }
+                            } catch (error) {
+                              if (dialogContext.mounted) {
+                                setDialogState(() => busy = false);
+                              }
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('$error')),
+                                );
+                              }
+                            }
+                          },
+                    icon: const Icon(Icons.task_alt),
+                    label: Text(
+                      MakeChessLocalization.phrase(
+                        'Сообщить, что исправлено',
+                      ),
+                    ),
+                  ),
+                if (replyMode)
+                  FilledButton.icon(
+                    onPressed: canReply
+                        ? () async {
+                            setDialogState(() => busy = true);
+                            try {
+                              await _sendAdminCaseReply(
+                                source: message,
+                                fixed: false,
+                                text: replyController.text.trim(),
+                              );
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    MakeChessLocalization.phrase(
+                                      'Ваш ответ отправлен администратору',
+                                    ),
+                                  ),
+                                ),
+                              );
+                              if (dialogContext.mounted) {
+                                Navigator.pop(dialogContext);
+                              }
+                            } catch (error) {
+                              if (dialogContext.mounted) {
+                                setDialogState(() => busy = false);
+                              }
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('$error')),
+                                );
+                              }
+                            }
+                          }
+                        : null,
+                    icon: const Icon(Icons.send_outlined),
+                    label: Text(
+                      MakeChessLocalization.phrase('Отправить ответ'),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      replyController.dispose();
+    }
+  }
+
+  Future<void> _sendAdminCaseReply({
+    required MakeChessMessage source,
+    required bool fixed,
+    required String text,
+  }) async {
+    final client = Supabase.instance.client;
+    final user = client.auth.currentUser;
+    if (user == null) {
+      throw StateError(
+        MakeChessLocalization.phrase(
+          'Для административного сообщения требуется вход в аккаунт',
+        ),
+      );
+    }
+    final recipientId = source.senderId.trim();
+    if (recipientId.isEmpty) {
+      throw StateError(
+        MakeChessLocalization.phrase('У объекта нет связанного получателя'),
+      );
+    }
+    final userMetadata = user.userMetadata ?? const <String, dynamic>{};
+    final senderName =
+        '${userMetadata['nickname'] ?? userMetadata['name'] ?? user.email ?? widget.currentUserName}';
+    final caseId = '${source.metadata['adminCaseId'] ?? source.id}';
+
+    await MakeChessMessageRealtimeService.instance.start(client);
+    await MakeChessMessageRealtimeService.instance.send(
+      MakeChessMessage(
+        id: 'admin_case_reply_${DateTime.now().microsecondsSinceEpoch}',
+        recipientId: recipientId,
+        senderId: user.id,
+        senderName: senderName,
+        category: 'admin_case_reply',
+        title: fixed
+            ? 'Пользователь сообщил: исправлено'
+            : 'Ответ на административное сообщение',
+        body: fixed
+            ? (text.trim().isEmpty ? 'Исправлено' : text.trim())
+            : text.trim(),
+        createdAt: DateTime.now(),
+        tournamentId: source.tournamentId,
+        metadata: <String, dynamic>{
+          'adminCaseId': caseId,
+          'replyStatus': fixed ? 'fixed' : 'reply',
+          'targetId': '${source.metadata['targetId'] ?? widget.currentUserId}',
+          'targetKind': '${source.metadata['targetKind'] ?? 'player'}',
+          'sourceMessageId': source.id,
+          'recipientName': source.senderName,
+        },
+      ),
+    );
+  }
+

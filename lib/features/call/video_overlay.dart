@@ -1,7 +1,10 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'video_window.dart';
+
+import '../../localization/makechess_localization.dart';
 
 /// Глобальный Overlay с двумя плавающими окнами видео (поверх всего).
 class VideoOverlay {
@@ -101,19 +104,20 @@ class _OverlayContentState extends State<_OverlayContent> {
     final stop = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Видео загружается дольше обычного'),
-        content: const Text(
+        title:
+            const MakeChessLocalizedText('Видео загружается дольше обычного'),
+        content: const MakeChessLocalizedText(
           'Вы можете продолжить ожидание или остановить соединение '
           'и попробовать ещё раз либо позже.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Продолжить ожидание'),
+            child: const MakeChessLocalizedText('Продолжить ожидание'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Остановить соединение'),
+            child: const MakeChessLocalizedText('Остановить соединение'),
           ),
         ],
       ),

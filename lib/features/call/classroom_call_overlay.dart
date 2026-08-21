@@ -1,8 +1,11 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // lib/features/call/classroom_call_overlay.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../call/voice_service.dart';
+
+import '../../localization/makechess_localization.dart';
 
 /// Простой оверлей «один-на-один».
 class ClassroomCallOverlay extends StatefulWidget {
@@ -69,7 +72,7 @@ class _ClassroomCallOverlayState extends State<ClassroomCallOverlay> {
               // Header
               Row(
                 children: [
-                  Text(
+                  MakeChessLocalizedText(
                     widget.asTeacher ? 'Учитель' : 'Ученик',
                     style: const TextStyle(
                       fontSize: 18,
@@ -78,7 +81,7 @@ class _ClassroomCallOverlayState extends State<ClassroomCallOverlay> {
                   ),
                   const Spacer(),
                   IconButton.filledTonal(
-                    tooltip: 'Завершить',
+                    tooltip: MakeChessLocalization.phrase('Завершить'),
                     onPressed: () => Navigator.of(context).maybePop(),
                     icon: const Icon(Icons.call_end_rounded),
                   ),
@@ -93,7 +96,7 @@ class _ClassroomCallOverlayState extends State<ClassroomCallOverlay> {
               else if (_error != null)
                 Expanded(
                   child: Center(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       'Ошибка видеосвязи:\n$_error',
                       textAlign: TextAlign.center,
                     ),
@@ -173,7 +176,7 @@ class _VideoTile extends StatelessWidget {
                   color: Colors.black54,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
+                child: MakeChessLocalizedText(
                   label,
                   style: const TextStyle(color: Colors.white),
                 ),

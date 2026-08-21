@@ -41,4 +41,43 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
-Новый ключ1.txt
+Новый ключ1.txtlib/secrets.dart
+.codex-gitconfig
+.makechess_current_known_hosts
+.makechess_known_hosts
+COPY_MAKECHESS_ACCESS_*.cmd
+COPY_ONLY_MAKECHESS_KEY*.cmd
+PREPARE_CORRECT_MAKECHESS_KEY.cmd
+TEST_MAKECHESS_ACCESS*.cmd
+TEST_MAKECHESS_ACCESS*_LOG.txt
+makechess_auth_key_fix.tar.gz
+# Local backups and generated archives
+_backup*/
+localization_backups/
+*.bak
+*.zip
+*.tar.gz
+
+# Generated logs/results
+*_LOG.txt
+*_RESULT.txt
+
+# Local machine data
+LOCAL_STOCKFISH_EXE_PATH.txt
+node_modules/
+# Local Codex context
+.agents/
+
+# Local publishing scripts
+PUBLISH_MAKECHESS*.cmd
+# Local Codex context
+.agents/
+
+# Local publishing scripts
+PUBLISH_MAKECHESS*.cmd
+# Local deployment credentials/config
+deploy_makechess_safe.sh
+restore_makechess_working.sh
+makechess_build_config.json
+/lib/secrets.dart
+/stockfish/stockfish.exe

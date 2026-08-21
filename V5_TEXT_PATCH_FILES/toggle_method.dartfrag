@@ -1,0 +1,29 @@
+  Future<void> _toggleLocalStockfish() async {
+    if (LichessPlayGuard.instance.active) return;
+
+    try {
+      final enabled = await sf.toggleLocalStockfish();
+      if (!mounted) return;
+
+      setState(() {});
+      unawaited(_refreshEvalBar());
+
+      final message = MakeChessLocalization.phrase(
+        enabled
+            ? 'Локальный Stockfish включён. Весь анализ сайта выполняется локально.'
+            : 'Локальный Stockfish выключен. Сайт использует сетевой Stockfish.',
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final message = MakeChessLocalization.phrase(
+        'Не удалось переключить локальный Stockfish: {error}',
+        params: <String, Object?>{'error': e},
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }

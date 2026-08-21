@@ -1,3 +1,5 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+// MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -6,12 +8,15 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'common_top_bar.dart';
+import '../localization/makechess_localization.dart';
 import 'app_style.dart';
 import '../features/call/video_overlay.dart';
 import '../features/call/ring_service.dart';
 import '../services/lobby_store.dart';
 import '../services/bg_controller.dart';
 import '../services/site_design_controller.dart';
+import '../services/lichess_service.dart';
+import '../platform/web_compat.dart';
 import '../classroom/classroom_signaling.dart';
 
 import '../features/call/call_coordinator.dart';
@@ -22,6 +27,9 @@ import 'board_theme_controller.dart';
 import 'dialogs/site_settings_dialog.dart';
 import 'dialogs/board_theme_picker_dialog.dart';
 import 'dialogs/personal_cabinet_dialog.dart';
+import 'dialogs/teacher_access_dialog.dart';
+import 'messages/general_messages_dialog.dart';
+import 'tournament/tournament_manager_dialog.dart';
 
 // file_picker используется в проекте рядом с настройками фона.
 // Этот стаб нужен, чтобы анализатор не ругался на импорт, если прямого вызова здесь нет.
@@ -69,8 +77,10 @@ class _AppShellState extends State<AppShell> {
   bool _lessonInvitationDialogOpen = false;
 
   StreamSubscription<AuthState>? _authStateSub;
+  StreamSubscription<MakeChessMessage>? _messageIncomingSub;
   String? _listenersUserId;
   int _listenersGeneration = 0;
+  int _unreadMessages = 0;
 
   String _myUsername = '';
 
@@ -86,13 +96,15 @@ class _AppShellState extends State<AppShell> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Звонок завершён')),
+      const SnackBar(content: MakeChessLocalizedText('Звонок завершён')),
     );
   }
 
   @override
   void initState() {
     super.initState();
+    MakeChessLocalization.validateOrThrow();
+    MakeChessLocalizationController.setLanguage(_currentLanguage);
     _keepFilePickerImport();
     unawaited(
       SiteDesignController.instance.initialize(
@@ -122,12 +134,15 @@ class _AppShellState extends State<AppShell> {
         onFree: () {},
         onPro: () {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Pro: позже подключим оплату')),
+            const SnackBar(
+                content: MakeChessLocalizedText('Pro: позже подключим оплату')),
           );
         },
         onPremium: () {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Premium: позже подключим оплату')),
+            const SnackBar(
+                content:
+                    MakeChessLocalizedText('Premium: позже подключим оплату')),
           );
         },
         onLogin: () {
@@ -138,7 +153,9 @@ class _AppShellState extends State<AppShell> {
         },
         onSchool: () {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('School: позже подключим школу')),
+            const SnackBar(
+                content:
+                    MakeChessLocalizedText('School: позже подключим школу')),
           );
         },
       );
@@ -151,7 +168,7 @@ class _AppShellState extends State<AppShell> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Учитель аватар будет подключён позже'),
+        content: MakeChessLocalizedText('Учитель аватар будет подключён позже'),
       ),
     );
   }
@@ -167,6 +184,129 @@ class _AppShellState extends State<AppShell> {
     boardTheme.setDark(result.$2);
   }
 
+  Future<void> _openGeneralMessages() async {
+    final client = Supabase.instance.client;
+    final user = client.auth.currentUser;
+    final userId = (user?.id ?? '').trim();
+    if (userId.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+              'Сообщения доступны после входа в аккаунт'),
+        ),
+      );
+      _openPlayScreen(openAuth: true);
+      return;
+    }
+
+    var name = await _resolveMyUsernameFromProfile();
+    if (name.trim().isEmpty) name = 'Пользователь';
+    if (!mounted) return;
+    final adminCase = await showGeneralMessagesDialog(
+      context: context,
+      currentUserId: userId,
+      currentUserName: name,
+    );
+    await _refreshUnreadMessages();
+    if (!mounted || adminCase == null || !adminCase.isValid) return;
+    await showSiteSettingsDialog(
+      context,
+      boardTheme: boardTheme,
+      initialAdminCase: adminCase,
+    );
+  }
+
+  Future<void> _openTournamentsFromTopBar() async {
+    final client = Supabase.instance.client;
+    final user = client.auth.currentUser;
+    final userId = (user?.id ?? '').trim();
+    if (userId.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              MakeChessLocalizedText('Турниры доступны после входа в аккаунт'),
+        ),
+      );
+      _openPlayScreen(openAuth: true);
+      return;
+    }
+
+    var students = const <TournamentStudent>[];
+    Object? loadError;
+    try {
+      final rows = await client
+          .from('teacher_students')
+          .select('student_id, student_nickname, created_at')
+          .eq('teacher_id', userId)
+          .order('created_at', ascending: true);
+
+      students = rows
+          .whereType<Map>()
+          .map((raw) => Map<String, dynamic>.from(raw))
+          .map(
+            (row) => TournamentStudent(
+              id: '${row['student_id'] ?? ''}'.trim(),
+              name: '${row['student_nickname'] ?? ''}'.trim(),
+              online: false,
+            ),
+          )
+          .where(
+            (student) =>
+                student.id.isNotEmpty &&
+                student.name.isNotEmpty &&
+                student.id != userId,
+          )
+          .toList(growable: false);
+    } catch (error) {
+      loadError = error;
+    }
+
+    if (!mounted) return;
+    if (loadError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Список учеников не загрузился. '
+            'Турниры открыты без этого списка.',
+          ),
+        ),
+      );
+    }
+    await showTournamentManagerDialog(
+      context: context,
+      students: students,
+    );
+  }
+
+  Future<void> _openTeacherAccess() async {
+    final allowed = await showTeacherAccessDialog(context);
+    if (!mounted || !allowed) return;
+    _openPlayScreen(openLearningTeacher: true);
+  }
+
+  Future<void> _refreshUnreadMessages() async {
+    final userId = (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
+    if (userId.isEmpty) {
+      if (mounted && _unreadMessages != 0) {
+        setState(() => _unreadMessages = 0);
+      }
+      return;
+    }
+    try {
+      final messages =
+          await MakeChessMessageRealtimeService.instance.syncFromDatabase();
+      final count = messages
+          .where((message) =>
+              message.recipientId == userId && message.status == 'unread')
+          .length;
+      if (mounted && count != _unreadMessages) {
+        setState(() => _unreadMessages = count);
+      }
+    } catch (_) {}
+  }
+
   Future<void> _openPersonalCabinet() async {
     final client = Supabase.instance.client;
     final user = client.auth.currentUser;
@@ -174,7 +314,8 @@ class _AppShellState extends State<AppShell> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Личный кабинет доступен после входа в аккаунт'),
+          content: MakeChessLocalizedText(
+              'Личный кабинет доступен после входа в аккаунт'),
         ),
       );
       _openPlayScreen(openAuth: true);
@@ -267,7 +408,7 @@ class _AppShellState extends State<AppShell> {
       return showDialog<Color>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Выберите цвет'),
+          title: const MakeChessLocalizedText('Выберите цвет'),
           content: Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -293,7 +434,7 @@ class _AppShellState extends State<AppShell> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Отмена'),
+              child: const MakeChessLocalizedText('Отмена'),
             ),
           ],
         ),
@@ -311,7 +452,7 @@ class _AppShellState extends State<AppShell> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
+                const MakeChessLocalizedText(
                   'Тема доски',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                 ),
@@ -321,7 +462,7 @@ class _AppShellState extends State<AppShell> {
                     Expanded(
                       child: Column(
                         children: [
-                          const Text('Светлая клетка'),
+                          const MakeChessLocalizedText('Светлая клетка'),
                           const SizedBox(height: 6),
                           GestureDetector(
                             onTap: () async {
@@ -346,7 +487,7 @@ class _AppShellState extends State<AppShell> {
                     Expanded(
                       child: Column(
                         children: [
-                          const Text('Тёмная клетка'),
+                          const MakeChessLocalizedText('Тёмная клетка'),
                           const SizedBox(height: 6),
                           GestureDetector(
                             onTap: () async {
@@ -375,7 +516,7 @@ class _AppShellState extends State<AppShell> {
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('Отмена'),
+                        child: const MakeChessLocalizedText('Отмена'),
                       ),
                     ),
                     const SizedBox(width: 18),
@@ -386,7 +527,7 @@ class _AppShellState extends State<AppShell> {
                           boardTheme.setDark(dark);
                           Navigator.of(ctx).pop();
                         },
-                        child: const Text('Применить'),
+                        child: const MakeChessLocalizedText('Применить'),
                       ),
                     ),
                   ],
@@ -403,6 +544,8 @@ class _AppShellState extends State<AppShell> {
   void dispose() {
     _authStateSub?.cancel();
     _authStateSub = null;
+    _messageIncomingSub?.cancel();
+    _messageIncomingSub = null;
     _incomingSub?.cancel();
     _incomingSub = null;
     _lessonInvitationSub?.cancel();
@@ -419,6 +562,7 @@ class _AppShellState extends State<AppShell> {
     _ringer.dispose();
     _lessonRinger.dispose();
     VideoOverlay.instance.detach();
+    unawaited(MakeChessMessageRealtimeService.instance.stop());
 
     super.dispose();
   }
@@ -489,7 +633,9 @@ class _AppShellState extends State<AppShell> {
 
     if (_listenersUserId == userId &&
         (userId.isEmpty ||
-            (_incomingSub != null && _lessonInvitationSub != null))) {
+            (_incomingSub != null &&
+                _lessonInvitationSub != null &&
+                _messageIncomingSub != null))) {
       return;
     }
 
@@ -499,6 +645,8 @@ class _AppShellState extends State<AppShell> {
     _incomingSub = null;
     await _lessonInvitationSub?.cancel();
     _lessonInvitationSub = null;
+    await _messageIncomingSub?.cancel();
+    _messageIncomingSub = null;
 
     try {
       await _ringer.stop();
@@ -508,6 +656,7 @@ class _AppShellState extends State<AppShell> {
     } catch (_) {}
 
     await LessonInvitationService.instance.stop();
+    await MakeChessMessageRealtimeService.instance.stop();
 
     if (generation != _listenersGeneration) return;
 
@@ -515,11 +664,20 @@ class _AppShellState extends State<AppShell> {
       if (mounted && _incoming != null) {
         setState(() => _incoming = null);
       }
+      if (mounted && _unreadMessages != 0) {
+        setState(() => _unreadMessages = 0);
+      }
       return;
     }
 
     _listenIncoming(userId);
     await _listenLessonInvitations(userId);
+    await MakeChessMessageRealtimeService.instance.start(client);
+    _messageIncomingSub =
+        MakeChessMessageRealtimeService.instance.incoming.listen((_) {
+      unawaited(_refreshUnreadMessages());
+    });
+    await _refreshUnreadMessages();
   }
 
   void _listenIncoming(String expectedUserId) {
@@ -554,8 +712,8 @@ class _AppShellState extends State<AppShell> {
         context: context,
         barrierDismissible: false,
         builder: (_) => AlertDialog(
-          title: const Text('Входящий звонок'),
-          content: Text(
+          title: const MakeChessLocalizedText('Входящий звонок'),
+          content: MakeChessLocalizedText(
             '${p.fromName} звонит вам\n'
             '(${p.audioOnly ? "аудио" : "видео"})\n'
             'Комната: ${p.roomId}',
@@ -563,11 +721,11 @@ class _AppShellState extends State<AppShell> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Отклонить'),
+              child: const MakeChessLocalizedText('Отклонить'),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Принять'),
+              child: const MakeChessLocalizedText('Принять'),
             ),
           ],
         ),
@@ -587,7 +745,8 @@ class _AppShellState extends State<AppShell> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Вызов принят, устанавливается соединение'),
+            content: MakeChessLocalizedText(
+                'Вызов принят, устанавливается соединение'),
           ),
         );
       }
@@ -666,10 +825,10 @@ class _AppShellState extends State<AppShell> {
         context: context,
         barrierDismissible: false,
         builder: (dialogContext) => AlertDialog(
-          title: Text(
+          title: MakeChessLocalizedText(
             invitation.isVideo ? 'Входящий видеовызов' : 'Приглашение на урок',
           ),
-          content: Text(
+          content: MakeChessLocalizedText(
             invitation.isVideo
                 ? '${invitation.teacherName} приглашает вас на видеосвязь.'
                 : '${invitation.teacherName} приглашает вас на урок.\n\n'
@@ -679,11 +838,11 @@ class _AppShellState extends State<AppShell> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Отклонить'),
+              child: const MakeChessLocalizedText('Отклонить'),
             ),
             FilledButton(
               onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Принять'),
+              child: const MakeChessLocalizedText('Принять'),
             ),
           ],
         ),
@@ -717,7 +876,9 @@ class _AppShellState extends State<AppShell> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка приглашения на урок: $error')),
+          SnackBar(
+              content:
+                  MakeChessLocalizedText('Ошибка приглашения на урок: $error')),
         );
       }
     } finally {
@@ -755,6 +916,8 @@ class _AppShellState extends State<AppShell> {
   void _openPlayScreen({
     bool openPuzzles = false,
     bool openLearning = false,
+    bool openLearningTeacher = false,
+    bool openLearningStudent = false,
     bool openAuth = false,
     bool boardOnly = false,
     bool openLobby = false,
@@ -790,6 +953,10 @@ class _AppShellState extends State<AppShell> {
             lessonInvitation.teacherName,
           );
         }
+      } else if (openLearningTeacher) {
+        st?.openLearningAsTeacherFromMenu?.call();
+      } else if (openLearningStudent) {
+        st?.openLearningAsStudentFromMenu?.call();
       } else if (openLearning) {
         st?.openLearningPanel?.call();
       } else if (openPuzzles) {
@@ -817,14 +984,15 @@ class _AppShellState extends State<AppShell> {
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: AppColors.surface,
-          title: const Text('Своя настройка'),
+          title: const MakeChessLocalizedText('Своя настройка'),
           content: Row(
             children: [
               Expanded(
                 child: TextField(
                   controller: minutesCtl,
                   keyboardType: TextInputType.number,
-                  decoration: AppInputs.dark(labelText: 'Минуты'),
+                  decoration: AppInputs.dark(
+                      labelText: MakeChessLocalization.phrase('Минуты')),
                 ),
               ),
               const SizedBox(width: 10),
@@ -832,7 +1000,9 @@ class _AppShellState extends State<AppShell> {
                 child: TextField(
                   controller: incrementCtl,
                   keyboardType: TextInputType.number,
-                  decoration: AppInputs.dark(labelText: 'Добавление, сек'),
+                  decoration: AppInputs.dark(
+                      labelText:
+                          MakeChessLocalization.phrase('Добавление, сек')),
                 ),
               ),
             ],
@@ -840,7 +1010,7 @@ class _AppShellState extends State<AppShell> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Отмена'),
+              child: const MakeChessLocalizedText('Отмена'),
             ),
             FilledButton(
               onPressed: () {
@@ -857,7 +1027,7 @@ class _AppShellState extends State<AppShell> {
                   ),
                 );
               },
-              child: const Text('Искать'),
+              child: const MakeChessLocalizedText('Искать'),
             ),
           ],
         );
@@ -881,88 +1051,115 @@ class _AppShellState extends State<AppShell> {
       _AutoSearchMode('15 + 10', 15, 10, 'Классика'),
     ];
 
+    var lichessEnabled = false;
     var selected = await showModalBottomSheet<_AutoSearchMode>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: AppColors.surface,
       builder: (sheetContext) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Автоматический поиск',
-                      style: AppTextStyles.sectionTitle,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(sheetContext).pop(),
-                    icon: const Icon(Icons.close, color: AppColors.text),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Выберите контроль времени',
-                style: AppTextStyles.bodyDim,
-              ),
-              const SizedBox(height: 12),
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: modes.length,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  childAspectRatio: 2.4,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                ),
-                itemBuilder: (_, index) {
-                  final mode = modes[index];
-                  return InkWell(
-                    onTap: () => Navigator.of(sheetContext).pop(mode),
-                    borderRadius: AppRadius.r12,
-                    child: Container(
-                      decoration: AppDecorations.neoButton(),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
+        return StatefulBuilder(
+            builder: (sheetContext, setSheetState) => Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
                         children: [
-                          const Icon(Icons.timer, color: AppColors.text),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(mode.label, style: AppTextStyles.button),
-                                Text(mode.category,
-                                    style: AppTextStyles.caption),
-                              ],
+                          const Expanded(
+                            child: MakeChessLocalizedText(
+                              'Автоматический поиск',
+                              style: AppTextStyles.sectionTitle,
                             ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon:
+                                const Icon(Icons.close, color: AppColors.text),
                           ),
                         ],
                       ),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () => Navigator.of(sheetContext).pop(
-                  const _AutoSearchMode('custom', 0, 0, 'Своя настройка'),
-                ),
-                icon: const Icon(Icons.tune),
-                label: const Text('Своя настройка'),
-              ),
-            ],
-          ),
-        );
+                      const SizedBox(height: 8),
+                      Container(
+                        decoration: AppDecorations.neoButton(),
+                        child: SwitchListTile(
+                          title: const MakeChessLocalizedText('+ Lichess',
+                              style: AppTextStyles.button),
+                          subtitle: const MakeChessLocalizedText(
+                            'Добавить поиск соперника на Lichess',
+                            style: AppTextStyles.caption,
+                          ),
+                          secondary:
+                              const Icon(Icons.public, color: AppColors.accent),
+                          value: lichessEnabled,
+                          onChanged: (value) =>
+                              setSheetState(() => lichessEnabled = value),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      MakeChessLocalizedText(
+                        'Выберите контроль времени',
+                        style: AppTextStyles.bodyDim,
+                      ),
+                      const SizedBox(height: 12),
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: modes.length,
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 2.4,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                        ),
+                        itemBuilder: (_, index) {
+                          final mode = modes[index];
+                          return InkWell(
+                            onTap: () => Navigator.of(sheetContext).pop(mode),
+                            borderRadius: AppRadius.r12,
+                            child: Container(
+                              decoration: AppDecorations.neoButton(),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.timer,
+                                      color: AppColors.text),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        MakeChessLocalizedText(mode.label,
+                                            style: AppTextStyles.button),
+                                        MakeChessLocalizedText(mode.category,
+                                            style: AppTextStyles.caption),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () => Navigator.of(sheetContext).pop(
+                          const _AutoSearchMode(
+                              'custom', 0, 0, 'Своя настройка'),
+                        ),
+                        icon: const Icon(Icons.tune),
+                        label: const MakeChessLocalizedText('Своя настройка'),
+                      ),
+                    ],
+                  ),
+                ));
       },
     );
 
@@ -972,30 +1169,116 @@ class _AppShellState extends State<AppShell> {
       if (!mounted || selected == null) return;
     }
 
+    if (lichessEnabled) {
+      LichessConnection link;
+      try {
+        link = await LichessService.instance.status();
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: MakeChessLocalizedText(
+                  'Не удалось проверить Lichess: $error')),
+        );
+        return;
+      }
+      if (!link.connected) {
+        if (!mounted) return;
+        final connect = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: AppColors.surface,
+            title: const MakeChessLocalizedText('Подключите Lichess'),
+            content: const MakeChessLocalizedText(
+              'MakeChess автоматически откроет официальный Lichess. '
+              'Войдите там и разрешите доступ, после чего Lichess сам вернёт вас сюда.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const MakeChessLocalizedText('Отмена'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop(false);
+                  navigateToUrl('https://lichess.org/signup');
+                },
+                child: const MakeChessLocalizedText('Регистрация'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const MakeChessLocalizedText('Подключить'),
+              ),
+            ],
+          ),
+        );
+        if (connect == true) {
+          await LichessService.instance.connect();
+        }
+        return;
+      }
+    }
+
     final activeMode = selected;
+    if (lichessEnabled && activeMode.minutes < 10) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Lichess Board API разрешает автоматический поиск только для рапида и классики. '
+            'Для блица и пули позднее добавим прямые вызовы игроков.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (lichessEnabled) {
+      unawaited(
+        LichessSessionController.instance.startSearch(
+          minutes: activeMode.minutes,
+          increment: activeMode.increment,
+        ),
+      );
+    }
     _openPlayScreen(boardOnly: true);
     await Future<void>.delayed(const Duration(milliseconds: 100));
     if (!mounted) return;
 
+    var searchDialogOpen = true;
+    void onLichessSearchChanged() {
+      final controller = LichessSessionController.instance;
+      if (searchDialogOpen &&
+          (controller.snapshot != null || controller.error != null) &&
+          mounted) {
+        searchDialogOpen = false;
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+
+    if (lichessEnabled) {
+      LichessSessionController.instance.addListener(onLichessSearchChanged);
+    }
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: AppColors.surface,
-          title: const Text('Поиск соперника…'),
+          title: const MakeChessLocalizedText('Поиск соперника…'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const CircularProgressIndicator(),
               const SizedBox(height: 16),
-              Text(
+              MakeChessLocalizedText(
                 '${activeMode.label} · ${activeMode.category}',
                 style: AppTextStyles.body,
               ),
               const SizedBox(height: 8),
-              Text(
-                'Подбор по этому режиму будет подключён следующим шагом.',
+              MakeChessLocalizedText(
+                lichessEnabled
+                    ? 'Ищем соперника также на Lichess. Анализ и подсказки отключены.'
+                    : 'Подбор по этому режиму будет подключён следующим шагом.',
                 textAlign: TextAlign.center,
                 style: AppTextStyles.bodyDim,
               ),
@@ -1003,13 +1286,34 @@ class _AppShellState extends State<AppShell> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Отменить поиск'),
+              onPressed: () {
+                if (lichessEnabled) {
+                  unawaited(LichessSessionController.instance.stop());
+                }
+                searchDialogOpen = false;
+                Navigator.of(dialogContext).pop();
+              },
+              child: const MakeChessLocalizedText('Отменить поиск'),
             ),
           ],
         );
       },
     );
+    searchDialogOpen = false;
+    if (lichessEnabled) {
+      LichessSessionController.instance.removeListener(onLichessSearchChanged);
+      final controller = LichessSessionController.instance;
+      if (controller.error != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: MakeChessLocalizedText(
+                  'Поиск Lichess остановлен: ${controller.error}')),
+        );
+      }
+      if (controller.snapshot == null && controller.searching) {
+        await controller.stop();
+      }
+    }
   }
 
   Future<void> _startCallFromTopBar({required bool audioOnly}) async {
@@ -1018,7 +1322,8 @@ class _AppShellState extends State<AppShell> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Для звонка войдите в зарегистрированный аккаунт'),
+          content: MakeChessLocalizedText(
+              'Для звонка войдите в зарегистрированный аккаунт'),
         ),
       );
       return;
@@ -1049,13 +1354,17 @@ class _AppShellState extends State<AppShell> {
         RoomSelection.instance.setRoom(toName);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Room ID: $toName выбран автоматически')),
+            SnackBar(
+                content: MakeChessLocalizedText(
+                    'Room ID: $toName выбран автоматически')),
           );
         }
       } else {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Нет доступных игроков в контактах')),
+          const SnackBar(
+              content:
+                  MakeChessLocalizedText('Нет доступных игроков в контактах')),
         );
         return;
       }
@@ -1070,7 +1379,8 @@ class _AppShellState extends State<AppShell> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Выберите другого зарегистрированного игрока'),
+          content: MakeChessLocalizedText(
+              'Выберите другого зарегистрированного игрока'),
         ),
       );
       return;
@@ -1082,7 +1392,9 @@ class _AppShellState extends State<AppShell> {
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось начать звонок: $error')),
+        SnackBar(
+            content:
+                MakeChessLocalizedText('Не удалось начать звонок: $error')),
       );
     }
   }
@@ -1120,6 +1432,8 @@ class _AppShellState extends State<AppShell> {
             onSearchFromList: () => _openPlayScreen(openLobby: true),
             onLearn: () => _openPlayScreen(openLearning: true),
             onTeacherAvatar: _openTeacherAvatar,
+            onLearnAsTeacher: _openTeacherAccess,
+            onLearnAsStudent: () => _openPlayScreen(openLearningStudent: true),
             onSchool: () => _openPlayScreen(openLearning: true),
             onPuzzles: () => _openPlayScreen(openPuzzles: true),
             onOpenLobby: () => _openPlayScreen(openLobby: true),
@@ -1127,7 +1441,7 @@ class _AppShellState extends State<AppShell> {
             onOpenMoves: () => _openPlayScreen(openMoves: true),
             onOpenChat: () => _openPlayScreen(openChat: true),
             onTeams: () => _go('/teams'),
-            onTournaments: () => _go('/tournaments'),
+            onTournaments: _openTournamentsFromTopBar,
             onWatch: () => _go('/watch'),
             onCommunity: () => _go('/community'),
             onVoiceCall: () => _startCallFromTopBar(audioOnly: true),
@@ -1167,11 +1481,14 @@ class _AppShellState extends State<AppShell> {
               context,
               boardTheme: boardTheme,
             ),
+            onMessages: _openGeneralMessages,
+            unreadMessages: _unreadMessages,
             onPersonalCabinet: _openPersonalCabinet,
             currentLanguage: _currentLanguage,
             onLanguageChanged: (lang) {
+              MakeChessLocalizationController.setLanguage(lang);
               setState(() {
-                _currentLanguage = lang;
+                _currentLanguage = MakeChessLocalizationController.currentCode;
               });
             },
           ),
@@ -1281,7 +1598,7 @@ class _PuzzlesScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
+              MakeChessLocalizedText(
                 'Задачи',
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.w800,
@@ -1298,11 +1615,13 @@ class _PuzzlesScreen extends StatelessWidget {
                     child: FilledButton.icon(
                       onPressed: () {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('${t.title}: скоро')),
+                          SnackBar(
+                              content:
+                                  MakeChessLocalizedText('${t.title}: скоро')),
                         );
                       },
                       icon: Icon(t.icon),
-                      label: Text(
+                      label: MakeChessLocalizedText(
                         t.title,
                         style: const TextStyle(fontSize: 16),
                       ),
@@ -1333,7 +1652,7 @@ class _StubScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(
+      child: MakeChessLocalizedText(
         '$title (скоро)',
         style: Theme.of(context).textTheme.headlineSmall,
       ),

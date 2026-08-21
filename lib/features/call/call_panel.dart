@@ -1,7 +1,10 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/lobby_store.dart';
 import 'room_selection.dart';
+
+import '../../localization/makechess_localization.dart';
 
 class CallPanel extends StatefulWidget {
   const CallPanel({super.key});
@@ -25,7 +28,7 @@ class _CallPanelState extends State<CallPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Контакты',
+          const MakeChessLocalizedText('Контакты',
               style: TextStyle(color: Colors.white70, fontSize: 16)),
           const SizedBox(height: 8),
 
@@ -36,7 +39,7 @@ class _CallPanelState extends State<CallPanel> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.white24),
             ),
-            child: Text(
+            child: MakeChessLocalizedText(
               _selectedName == null
                   ? 'Room ID: (не выбран)'
                   : 'Room ID: $_selectedName',
@@ -52,7 +55,7 @@ class _CallPanelState extends State<CallPanel> {
                 final users = LobbyStore.instance.users.value;
                 if (users.isEmpty) {
                   return const Center(
-                    child: Text('Пока никого нет',
+                    child: MakeChessLocalizedText('Пока никого нет',
                         style: TextStyle(color: Colors.white54)),
                   );
                 }
@@ -72,14 +75,14 @@ class _CallPanelState extends State<CallPanel> {
                       dense: true,
                       selected: selected,
                       selectedTileColor: Colors.white10,
-                      title: Text(
+                      title: MakeChessLocalizedText(
                         isMe ? '${u.username} (вы)' : u.username,
                         style: TextStyle(
                             color: isMe ? Colors.white54 : Colors.white),
                       ),
                       subtitle: u.rating == null
                           ? null
-                          : Text('Рейт: ${u.rating}',
+                          : MakeChessLocalizedText('Рейт: ${u.rating}',
                               style: const TextStyle(color: Colors.white54)),
 
                       // 👇 КЛИК — ВЫБОР ROOM ID
@@ -88,7 +91,8 @@ class _CallPanelState extends State<CallPanel> {
                         setState(() => _selectedName = u.username);
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                              content: Text('Room ID: ${u.username} выбран')),
+                              content: MakeChessLocalizedText(
+                                  'Room ID: ${u.username} выбран')),
                         );
                       },
 
@@ -98,7 +102,7 @@ class _CallPanelState extends State<CallPanel> {
                           // оставь тут свою логику вызова на игру,
                           // мы не вмешиваемся
                         },
-                        child: const Text('Вызвать'),
+                        child: const MakeChessLocalizedText('Вызвать'),
                       ),
                     );
                   },

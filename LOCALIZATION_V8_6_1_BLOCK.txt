@@ -1,0 +1,17 @@
+﻿  // MAKECHESS_ADMIN_RECIPIENT_LABEL_V8_6_1_TRANSLATIONS_20260808
+  static const Map<String, List<String>> _v861AdminRecipientRows =
+      <String, List<String>>{
+    'Администратор': <String>[
+      'Администратор',
+      'Administrator',
+      'Administrator',
+      'Administrateur',
+      'Administrador',
+      'المسؤول',
+      '管理员',
+      'प्रशासक',
+      '管理者',
+      '관리자',
+      'Quản trị viên',
+    ],
+  };

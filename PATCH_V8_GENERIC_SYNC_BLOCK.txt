@@ -1,0 +1,18 @@
+
+  // MAKECHESS_ADMIN_GENERIC_MESSAGES_V8_20260808
+  // Administrative communication belongs in the generic message table.
+  try {
+    final generalRows = await client
+        .from('makechess_messages_v1')
+        .select()
+        .eq('recipient_id', userId)
+        .order('created_at', ascending: false);
+    for (final raw in (generalRows as List)) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final message = _messageFromGeneralRow(row);
+      if (message.id.isNotEmpty) byId[message.id] = message;
+    }
+  } catch (_) {
+    // Keep tournament/local messages usable if the generic table is unavailable.
+  }
+

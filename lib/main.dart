@@ -1,3 +1,7 @@
+// MAKECHESS_REMAINING_UI_V6_20260807
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+// MAKECHESS_STUDENT_TRAINING_MENU_V1_20260805
+// MAKECHESS_TASK_PANEL_EXACT_V3_20260803_2315
 // main.dart
 import 'dart:async';
 import 'dart:convert';
@@ -60,6 +64,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'classroom/school_dialog_new.dart';
 import 'classroom/classroom_signaling.dart' as cls;
 import 'classroom/classroom_call_service.dart';
+import 'classroom/classroom_overlay.dart';
 
 import 'ui/start_modal.dart';
 
@@ -75,6 +80,8 @@ import 'ui/panels/learn_panel.dart';
 import 'ui/panels/puzzle_task.dart';
 import 'ui/panels/puzzle_settings_dialog.dart';
 import 'ui/panels/puzzle_file_saver.dart';
+import 'ui/panels/opening_trainer.dart';
+import 'ui/panels/anti_blunder_trainer.dart';
 import 'ui/panels/game_mode_panel.dart';
 import 'ui/panels/right_sidebar_panel.dart';
 import 'ui/panels/room_chat_panel.dart';
@@ -84,6 +91,9 @@ import 'profile/personal_cabinet_store.dart';
 
 import '../ui/board_theme_controller.dart';
 import 'widgets/eval_bar.dart';
+import 'services/lichess_service.dart';
+
+import 'localization/makechess_localization.dart';
 
 class BackgroundView extends StatelessWidget {
   const BackgroundView({super.key});
@@ -829,6 +839,216 @@ class _MyHomePageState extends State<MyHomePage> {
 
   static const double _leftColWidth = 360; // ширина левой колонки в пикселях
 
+  // ================== ДЕБЮТНЫЙ ТРЕНАЖЁР ==================
+  late final OpeningTrainerController _openingTrainer;
+  Offset? _openingTrainerDialogOffset;
+  bool _showOpeningTrainerDialog = false;
+
+  // ================== АНТИЗЕВКОВЫЙ ТРЕНАЖЁР ==================
+  late final AntiBlunderTrainerController _antiBlunderTrainer;
+  Offset? _antiBlunderTrainerDialogOffset;
+  Size? _antiBlunderTrainerDialogSize;
+  bool _showAntiBlunderTrainerDialog = false;
+  bool _antiBlunderTrainerSettingsMode = false;
+
+  void _openAntiBlunderTrainerDialog() {
+    if (_openingTrainer.sessionActive) {
+      _openingTrainer.stopSession();
+    }
+
+    final switchingType = _selectedPuzzleType != PuzzleType.antiBlunderTrainer;
+
+    setState(() {
+      _showOpeningTrainerDialog = false;
+      _showAntiBlunderTrainerDialog = true;
+      _selectedPuzzleType = PuzzleType.antiBlunderTrainer;
+
+      if (switchingType) {
+        _activePublishedPuzzleIndex = -1;
+        _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
+        _studentPendingAnalysisArrowFrom = null;
+        _studentAnalysisPointerPosition = null;
+        _studentBoardArrows.removeWhere(
+          (element) => element.kind == 'anti_candidate',
+        );
+        _antiBlunderTrainer.clearTask();
+      }
+    });
+  }
+
+  void _closeAntiBlunderTrainerDialog() {
+    if (!mounted) {
+      _showAntiBlunderTrainerDialog = false;
+      return;
+    }
+
+    setState(() {
+      _showAntiBlunderTrainerDialog = false;
+      _antiBlunderTrainerSettingsMode = false;
+      _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      if (_studentAnalysisArrowKey == 'anti_candidate') {
+        _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
+        _studentPendingAnalysisArrowFrom = null;
+        _studentAnalysisPointerPosition = null;
+      }
+    });
+  }
+
+  void _setAntiBlunderTrainerSettingsMode(bool enabled) {
+    if (!mounted) {
+      _antiBlunderTrainerSettingsMode = enabled;
+      return;
+    }
+
+    setState(() {
+      _antiBlunderTrainerSettingsMode = enabled;
+      _showAntiBlunderTrainerDialog = true;
+      _selectedPuzzleType = PuzzleType.antiBlunderTrainer;
+
+      // При переходе между режимами полностью завершаем незаконченный жест
+      // рисования, чтобы стрелка ученика не превратилась в стрелку учителя
+      // и наоборот.
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+
+      if (enabled) {
+        _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
+        _studentShowPuzzleAnswer = false;
+      } else {
+        _activeAnalysisArrowKey = null;
+        _teacherPuzzleDrawingEnabled = false;
+        _showPuzzleAnswerArrows = false;
+      }
+    });
+  }
+
+  bool get _antiBlunderCandidateDrawing =>
+      _studentPuzzleDrawingEnabled &&
+      _studentAnalysisArrowKey == 'anti_candidate';
+
+  int get _antiBlunderCandidateCount => _studentBoardArrows
+      .where((element) => element.kind == 'anti_candidate')
+      .length;
+
+  void _toggleAntiBlunderCandidateDrawing() {
+    if (!_antiBlunderTrainer.hasTask) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Сначала откройте задачу антизевкового тренажёра',
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      final nextEnabled = !_antiBlunderCandidateDrawing;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+
+      if (nextEnabled) {
+        _studentAnalysisArrowKey = 'anti_candidate';
+        _studentPuzzleDrawingEnabled = true;
+      } else {
+        _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
+      }
+    });
+  }
+
+  void _clearAntiBlunderCandidates() {
+    setState(() {
+      _studentBoardArrows.removeWhere(
+        (element) => element.kind == 'anti_candidate',
+      );
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+    });
+    _antiBlunderTrainer.clearStudentCandidates();
+  }
+
+  void _syncAntiBlunderCandidatesFromBoard() {
+    _antiBlunderTrainer.clearStudentCandidates();
+    for (final element in _studentBoardArrows) {
+      if (element.kind != 'anti_candidate') continue;
+      _antiBlunderTrainer.addStudentCandidate(
+        AntiBlunderMove(from: element.from, to: element.to),
+      );
+    }
+  }
+
+  void _onOpeningTrainerChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _openOpeningTrainerDialog() {
+    if (LichessPlayGuard.instance.active) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Сначала завершите рейтинговую партию Lichess.',
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _showAntiBlunderTrainerDialog = false;
+      _antiBlunderTrainerSettingsMode = false;
+      _showOpeningTrainerDialog = true;
+    });
+  }
+
+  void _closeOpeningTrainerDialog() {
+    if (_openingTrainer.sessionActive) {
+      _openingTrainer.stopSession();
+    }
+    if (!mounted) {
+      _showOpeningTrainerDialog = false;
+      return;
+    }
+    setState(() {
+      _showOpeningTrainerDialog = false;
+      _vsEngine = false;
+      _engineThinking = false;
+    });
+  }
+
+  void _dismissOpeningTrainerForNavigation() {
+    if (_openingTrainer.sessionActive) {
+      _openingTrainer.stopSession();
+    }
+    _showOpeningTrainerDialog = false;
+  }
+
+  void _selectStudentTrainingPuzzleType(PuzzleType type) {
+    if (_openingTrainer.sessionActive) {
+      _openingTrainer.stopSession();
+    }
+    setState(() {
+      _showOpeningTrainerDialog = false;
+      _showAntiBlunderTrainerDialog = false;
+      _antiBlunderTrainerSettingsMode = false;
+      _selectedPuzzleType = type;
+      _activePublishedPuzzleIndex = -1;
+      _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+    });
+  }
+
   final TextEditingController _fenController = TextEditingController(
     text: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
   );
@@ -904,6 +1124,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Контур тренера: эталонные стрелки/кружки из окна «Настройка».
   String? _activeAnalysisArrowKey;
+  bool _teacherPuzzleDrawingEnabled = false;
   String? _pendingAnalysisArrowFrom;
   Offset? _analysisPointerPosition;
   bool _showPuzzleAnswerArrows = false;
@@ -914,6 +1135,7 @@ class _MyHomePageState extends State<MyHomePage> {
   // Контур ученика: ответ в окне «Задачи».
   // Эти кнопки и элементы НЕ связаны напрямую с окном «Настройка».
   String? _studentAnalysisArrowKey;
+  bool _studentPuzzleDrawingEnabled = false;
   String? _studentPendingAnalysisArrowFrom;
   Offset? _studentAnalysisPointerPosition;
   bool _studentShowPuzzleAnswer = false;
@@ -945,6 +1167,42 @@ class _MyHomePageState extends State<MyHomePage> {
       <String, _PendingLearningGameInvite>{};
   bool _learningShowAllBoards = false;
   String? _learningFocusedStudentId;
+  LearningTeacherLayoutMode _learningTeacherLayoutMode =
+      LearningTeacherLayoutMode.videoAboveBoards;
+
+  // Девятая общая доска: учитель меняет её — новая позиция немедленно
+  // становится базовой позицией всех подключённых учеников. Между такими
+  // изменениями ученики продолжают играть независимо.
+  static const String _learningCommonAnalysisBoardId =
+      '__learning_common_board__';
+  bool _learningCommonBoardEnabled = false;
+  OverlayEntry? _learningCommonBoardOverlay;
+  Offset _learningCommonBoardOffset = const Offset(72, 170);
+  double _learningCommonBoardSize = 360.0;
+  bool _learningCommonBoardSelected = false;
+  String? _learningCommonPendingAnalysisArrowFrom;
+  Offset? _learningCommonAnalysisPointerPosition;
+  bool _learningTeacherPanelsExpanded = false;
+  final ch.Chess _learningCommonGame = ch.Chess();
+  String? _learningCommonSelectedSquare;
+  final Set<String> _learningCommonLegalTargets = <String>{};
+  final Set<String> _learningCommonCaptureTargets = <String>{};
+
+  // Черновик задачи на независимой общей доске учителя.
+  String _learningCommonTaskTitle = 'Новая задача';
+  int _learningCommonTaskNumber = 1;
+  String _learningCommonTaskTypeTitle = 'Задачи на зевки';
+  String? _learningCommonTaskStartFen;
+  final List<List<String>> _learningCommonTaskSavedLines = <List<String>>[];
+  final List<String> _learningCommonTaskCurrentLine = <String>[];
+  bool _learningCommonTaskRecording = false;
+  bool _learningCommonTaskPublished = false;
+  bool _learningCommonTaskPublishing = false;
+  String? _learningCommonTaskFolderName;
+
+  // Последняя общая позиция, полученная учеником. Используется кнопкой
+  // двойной стрелки возле часов.
+  String? _studentLearningCommonFen;
 
   // Отдельное присутствие школы. Обычный игровой лобби-режим сюда не входит.
   rt.RealtimeChannel? _learningPresenceChannel;
@@ -988,15 +1246,27 @@ class _MyHomePageState extends State<MyHomePage> {
     'r2',
     'r3',
     'r4',
+    'safe_corridor',
+    'blunder_zone',
+    'anti_candidate',
   };
 
   bool get _puzzleSettingsIsOpen => _puzzleSettingsOverlay != null;
 
+  /// Источник истины для режима учителя на доске. Обычные композиции
+  /// используют старое окно PuzzleSettingsDialog, а антизевковый тренажёр
+  /// включает тот же контур рисования прямо из своего собственного окна.
+  bool get _teacherPuzzleAuthoringMode =>
+      _puzzleSettingsIsOpen ||
+      (_showAntiBlunderTrainerDialog && _antiBlunderTrainerSettingsMode);
+
   bool get _teacherPuzzleArrowDrawMode =>
+      _teacherPuzzleDrawingEnabled &&
       _activeAnalysisArrowKey != null &&
       _validAnalysisArrowKeys.contains(_activeAnalysisArrowKey);
 
   bool get _studentPuzzleArrowDrawMode =>
+      _studentPuzzleDrawingEnabled &&
       _studentAnalysisArrowKey != null &&
       _validAnalysisArrowKeys.contains(_studentAnalysisArrowKey);
 
@@ -1006,14 +1276,20 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisArrowKey != null &&
       _validAnalysisArrowKeys.contains(_learningAnalysisArrowKey);
 
+  bool get _learningCommonArrowDrawMode =>
+      _learningCommonBoardEnabled &&
+      _learningDrawingEnabled &&
+      _learningAnalysisArrowKey != null &&
+      _validAnalysisArrowKeys.contains(_learningAnalysisArrowKey);
+
   bool get _puzzleArrowDrawMode {
-    if (_puzzleSettingsIsOpen) return _teacherPuzzleArrowDrawMode;
+    if (_teacherPuzzleAuthoringMode) return _teacherPuzzleArrowDrawMode;
     if (_showLearningPanel) return _learningArrowDrawMode;
     return _studentPuzzleArrowDrawMode;
   }
 
   String get _effectivePuzzleArrowKey {
-    if (_puzzleSettingsIsOpen) {
+    if (_teacherPuzzleAuthoringMode) {
       return _activeAnalysisArrowKey ?? 'threat';
     }
     if (_showLearningPanel) {
@@ -1023,13 +1299,13 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   String? get _currentAnalysisPreviewFrom {
-    if (_puzzleSettingsIsOpen) return _pendingAnalysisArrowFrom;
+    if (_teacherPuzzleAuthoringMode) return _pendingAnalysisArrowFrom;
     if (_showLearningPanel) return _learningPendingAnalysisArrowFrom;
     return _studentPendingAnalysisArrowFrom;
   }
 
   Offset? get _currentAnalysisPreviewTo {
-    if (_puzzleSettingsIsOpen) return _analysisPointerPosition;
+    if (_teacherPuzzleAuthoringMode) return _analysisPointerPosition;
     if (_showLearningPanel) return _learningAnalysisPointerPosition;
     return _studentAnalysisPointerPosition;
   }
@@ -1044,6 +1320,9 @@ class _MyHomePageState extends State<MyHomePage> {
           'r2': 0,
           'r3': 0,
           'r4': 0,
+          'safe_corridor': 0,
+          'blunder_zone': 0,
+          'anti_candidate': 0,
         };
 
     final result = <String, Map<String, int>>{
@@ -1104,6 +1383,8 @@ class _MyHomePageState extends State<MyHomePage> {
         return PuzzleType.mate.name;
       case 'Найти лучший ход':
         return PuzzleType.bestMove.name;
+      case 'Антизевковый тренажёр':
+        return PuzzleType.antiBlunderTrainer.name;
       default:
         return _selectedPuzzleType.name;
     }
@@ -1124,6 +1405,29 @@ class _MyHomePageState extends State<MyHomePage> {
       );
     }
     return result;
+  }
+
+  AntiBlunderTaskSpec _buildAntiBlunderTaskSpec() {
+    final safeByKey = <String, AntiBlunderMove>{};
+    final zonesByKey = <String, AntiBlunderZone>{};
+
+    for (final element in _puzzleBoardArrows) {
+      final move = AntiBlunderMove(from: element.from, to: element.to);
+      if (!move.isValid) continue;
+
+      if (element.kind == 'safe_corridor') {
+        safeByKey[move.key] = move;
+      } else if (element.kind == 'blunder_zone') {
+        zonesByKey[move.key] = AntiBlunderZone(candidate: move);
+      }
+    }
+
+    return AntiBlunderTaskSpec(
+      mode: _antiBlunderTrainer.authorMode,
+      depth: _antiBlunderTrainer.authorDepth,
+      safetyCorridor: List<AntiBlunderMove>.unmodifiable(safeByKey.values),
+      blunderZones: List<AntiBlunderZone>.unmodifiable(zonesByKey.values),
+    );
   }
 
   PuzzleTask _buildPuzzleDraft({
@@ -1153,6 +1457,9 @@ class _MyHomePageState extends State<MyHomePage> {
           .toList(),
       description: _selectedPuzzleType.description,
       analysisArrows: _buildPuzzleAnalysisArrows(),
+      antiBlunder: cleanTypeTitle == 'Антизевковый тренажёр'
+          ? _buildAntiBlunderTaskSpec()
+          : null,
     );
   }
 
@@ -1165,7 +1472,8 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Начальная позиция задачи записана')),
+      const SnackBar(
+          content: MakeChessLocalizedText('Начальная позиция задачи записана')),
     );
   }
 
@@ -1179,7 +1487,9 @@ class _MyHomePageState extends State<MyHomePage> {
     final ok = game.load(fen);
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось загрузить начальную позицию')),
+        const SnackBar(
+            content: MakeChessLocalizedText(
+                'Не удалось загрузить начальную позицию')),
       );
       return;
     }
@@ -1201,14 +1511,17 @@ class _MyHomePageState extends State<MyHomePage> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-          content: Text('Запись ветки началась. Делайте ходы на доске')),
+          content: MakeChessLocalizedText(
+              'Запись ветки началась. Делайте ходы на доске')),
     );
   }
 
   void _puzzleFinishRecordingLine() {
     if (_puzzleCurrentLine.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ветка пустая. Сначала сделайте ходы')),
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Ветка пустая. Сначала сделайте ходы')),
       );
       return;
     }
@@ -1221,7 +1534,7 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Ветка решения записана')),
+      const SnackBar(content: MakeChessLocalizedText('Ветка решения записана')),
     );
   }
 
@@ -1239,17 +1552,21 @@ class _MyHomePageState extends State<MyHomePage> {
       _hiddenPuzzleAnalysisKinds.clear();
       _teacherAnalysisSide = 'white';
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
       _studentBoardArrows.clear();
       _studentHiddenAnalysisKinds.clear();
       _studentAnalysisSide = 'white';
+      _antiBlunderTrainer.clearTask();
       _resetStudentPuzzleMoveCheck();
     });
+    _antiBlunderTrainer.resetAuthoring();
   }
 
   void _puzzleNewTask() {
@@ -1266,17 +1583,21 @@ class _MyHomePageState extends State<MyHomePage> {
       _hiddenPuzzleAnalysisKinds.clear();
       _teacherAnalysisSide = 'white';
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
       _studentBoardArrows.clear();
       _studentHiddenAnalysisKinds.clear();
       _studentAnalysisSide = 'white';
+      _antiBlunderTrainer.clearTask();
       _resetStudentPuzzleMoveCheck();
     });
+    _antiBlunderTrainer.resetAuthoring();
   }
 
   void _puzzleMarkPublished() {
@@ -1284,6 +1605,101 @@ class _MyHomePageState extends State<MyHomePage> {
       _puzzleDraftPublished = true;
       _puzzleRecordingLine = false;
     });
+  }
+
+  PuzzleTask _buildCurrentAntiBlunderDraft() {
+    return _buildPuzzleDraft(
+      title: _puzzleDraftTitle,
+      number: _puzzleDraftNumber,
+      typeTitle: 'Антизевковый тренажёр',
+    );
+  }
+
+  String _antiBlunderFileNameFor(PuzzleTask puzzle) {
+    final safeTitle = '${puzzle.number}_${puzzle.title}'
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-zа-яё0-9]+', caseSensitive: false), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return '${safeTitle.isEmpty ? 'anti_blunder' : safeTitle}.json';
+  }
+
+  bool _validateAntiBlunderDraft(PuzzleTask puzzle) {
+    if (puzzle.startFen.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText('Сначала запишите начальную позицию'),
+        ),
+      );
+      return false;
+    }
+
+    final spec = puzzle.antiBlunder;
+    final hasCorridor = spec?.safetyCorridor.isNotEmpty == true;
+    final hasBlunderZones = spec?.blunderZones.isNotEmpty == true;
+    if (!hasCorridor && !hasBlunderZones) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Отметьте коридор безопасности или хотя бы одну зону зевка',
+          ),
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _publishAntiBlunderDraft() async {
+    final puzzle = _buildCurrentAntiBlunderDraft();
+    if (!_validateAntiBlunderDraft(puzzle)) return;
+
+    try {
+      await publishPuzzleTextFile(
+        fileName: _antiBlunderFileNameFor(puzzle),
+        content: puzzle.toPrettyJson(),
+      );
+      _puzzleMarkPublished();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: MakeChessLocalizedText(
+            'Задача опубликована в выбранную папку',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText('Не удалось опубликовать: $e'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _downloadAntiBlunderDraft() async {
+    final puzzle = _buildCurrentAntiBlunderDraft();
+    await savePuzzleTextFile(
+      fileName: _antiBlunderFileNameFor(puzzle),
+      content: puzzle.toPrettyJson(),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: MakeChessLocalizedText('Файл задачи скачан на компьютер'),
+      ),
+    );
+  }
+
+  Future<void> _copyAntiBlunderDraftJson() async {
+    final puzzle = _buildCurrentAntiBlunderDraft();
+    await Clipboard.setData(ClipboardData(text: puzzle.toPrettyJson()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: MakeChessLocalizedText('JSON задачи скопирован')),
+    );
   }
 
   Future<void> _openPublishedPuzzlesFolder() async {
@@ -1330,12 +1746,13 @@ class _MyHomePageState extends State<MyHomePage> {
           : 'Загружено задач: ${parsedTasks.length}. Пропущено файлов: $failed. В текущем типе: $visibleCount.';
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
+        SnackBar(content: MakeChessLocalizedText(message)),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось открыть задачи: $e')),
+        SnackBar(
+            content: MakeChessLocalizedText('Не удалось открыть задачи: $e')),
       );
     } finally {
       if (mounted) {
@@ -1352,7 +1769,8 @@ class _MyHomePageState extends State<MyHomePage> {
     final ok = game.load(task.startFen);
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось загрузить FEN задачи')),
+        const SnackBar(
+            content: MakeChessLocalizedText('Не удалось загрузить FEN задачи')),
       );
       return;
     }
@@ -1373,11 +1791,13 @@ class _MyHomePageState extends State<MyHomePage> {
       _vsEngine = false;
       _engineThinking = false;
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _showPuzzleAnswerArrows = false;
       _puzzleBoardArrows.clear();
       _hiddenPuzzleAnalysisKinds.clear();
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -1387,10 +1807,19 @@ class _MyHomePageState extends State<MyHomePage> {
       _resetStudentPuzzleMoveCheck();
     });
 
+    final antiSpec = task.antiBlunder;
+    if (antiSpec != null) {
+      _antiBlunderTrainer.loadTask(antiSpec);
+    } else {
+      _antiBlunderTrainer.clearTask();
+    }
+
     _syncSendFen();
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Открыта задача: №${task.number} ${task.title}')),
+      SnackBar(
+          content: MakeChessLocalizedText(
+              'Открыта задача: №${task.number} ${task.title}')),
     );
   }
 
@@ -1430,6 +1859,12 @@ class _MyHomePageState extends State<MyHomePage> {
         return const Color(0x9940F7F7); // P3
       case 'r4':
         return const Color(0x99FF5F93); // P4
+      case 'safe_corridor':
+        return const Color(0x9900C853);
+      case 'blunder_zone':
+        return const Color(0x99FF6D00);
+      case 'anti_candidate':
+        return const Color(0x9900A8FF);
       default:
         return const Color(0x9900CFFF);
     }
@@ -1456,9 +1891,16 @@ class _MyHomePageState extends State<MyHomePage> {
         .toList(growable: false);
   }
 
-  List<_PuzzleBoardArrow> get _visibleLearningBoardArrows {
-    final arrows = _learningBoardArrows
-        .where((element) => element.side == _learningAnalysisSide);
+  String? get _activeLearningAnalysisBoardId =>
+      _learningRole == LearningPanelRole.teacher
+          ? (_learningFocusedStudentId ?? _firstLearningBoardStudentId)
+          : null;
+
+  List<_PuzzleBoardArrow> _visibleLearningBoardArrowsFor(String? boardId) {
+    final arrows = _learningBoardArrows.where(
+      (element) =>
+          element.side == _learningAnalysisSide && element.boardId == boardId,
+    );
 
     if (_learningShowAnswer) {
       return arrows.toList(growable: false);
@@ -1471,8 +1913,11 @@ class _MyHomePageState extends State<MyHomePage> {
         .toList(growable: false);
   }
 
+  List<_PuzzleBoardArrow> get _visibleLearningBoardArrows =>
+      _visibleLearningBoardArrowsFor(_activeLearningAnalysisBoardId);
+
   List<_PuzzleBoardArrow> get _visiblePuzzleBoardArrows {
-    if (_puzzleSettingsIsOpen) {
+    if (_teacherPuzzleAuthoringMode) {
       return _visibleTeacherPuzzleBoardArrows;
     }
 
@@ -1506,20 +1951,31 @@ class _MyHomePageState extends State<MyHomePage> {
     return (point - projection).distance;
   }
 
-  bool _removePuzzleAnalysisElementAt(Offset localPosition, double boardSize) {
+  bool _removePuzzleAnalysisElementAt(
+    Offset localPosition,
+    double boardSize, {
+    bool? flipped,
+    String? learningBoardId,
+  }) {
     final cell = boardSize / 8;
     final circleTolerance = cell * 0.42;
     final arrowTolerance = cell * 0.22;
 
-    final visible = _visiblePuzzleBoardArrows;
+    final visible = _showLearningPanel && learningBoardId != null
+        ? _visibleLearningBoardArrowsFor(learningBoardId)
+        : _visiblePuzzleBoardArrows;
     for (var i = visible.length - 1; i >= 0; i--) {
       final element = visible[i];
-      final fromCenter = _boardCenterForSquare(element.from, boardSize);
+      final fromCenter = _boardCenterForSquare(
+        element.from,
+        boardSize,
+        flipped: flipped,
+      );
 
       if (element.isCircle || element.from == element.to) {
         if ((localPosition - fromCenter).distance <= circleTolerance) {
           setState(() {
-            if (_puzzleSettingsIsOpen) {
+            if (_teacherPuzzleAuthoringMode) {
               _puzzleBoardArrows.remove(element);
               _pendingAnalysisArrowFrom = null;
               _analysisPointerPosition = null;
@@ -1540,11 +1996,15 @@ class _MyHomePageState extends State<MyHomePage> {
         continue;
       }
 
-      final toCenter = _boardCenterForSquare(element.to, boardSize);
+      final toCenter = _boardCenterForSquare(
+        element.to,
+        boardSize,
+        flipped: flipped,
+      );
       if (_distanceToSegment(localPosition, fromCenter, toCenter) <=
           arrowTolerance) {
         setState(() {
-          if (_puzzleSettingsIsOpen) {
+          if (_teacherPuzzleAuthoringMode) {
             _puzzleBoardArrows.remove(element);
             _pendingAnalysisArrowFrom = null;
             _analysisPointerPosition = null;
@@ -1570,7 +2030,7 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _handlePuzzleAnalysisSquareTap(String square) {
     if (!_puzzleArrowDrawMode) return false;
 
-    final isSettings = _puzzleSettingsIsOpen;
+    final isSettings = _teacherPuzzleAuthoringMode;
     final isLearning = !isSettings && _showLearningPanel;
     final key = _effectivePuzzleArrowKey;
 
@@ -1591,6 +2051,7 @@ class _MyHomePageState extends State<MyHomePage> {
           color: _analysisArrowColor(key),
           isCircle: true,
           side: side,
+          boardId: isLearning ? _activeLearningAnalysisBoardId : null,
         );
 
         if (isSettings) {
@@ -1644,6 +2105,7 @@ class _MyHomePageState extends State<MyHomePage> {
         kind: key,
         color: _analysisArrowColor(key),
         side: side,
+        boardId: isLearning ? _activeLearningAnalysisBoardId : null,
       );
 
       if (isSettings) {
@@ -1670,20 +2132,40 @@ class _MyHomePageState extends State<MyHomePage> {
 
       if (key == null || !_validAnalysisArrowKeys.contains(key)) {
         _activeAnalysisArrowKey = null;
+        _teacherPuzzleDrawingEnabled = false;
         return;
       }
 
       final wasActive = _activeAnalysisArrowKey == key;
       if (wasActive) {
         _activeAnalysisArrowKey = null;
+        _teacherPuzzleDrawingEnabled = false;
         _hiddenPuzzleAnalysisKinds.add(key);
         _showPuzzleAnswerArrows = false;
         return;
       }
 
       _activeAnalysisArrowKey = key;
+      _teacherPuzzleDrawingEnabled = true;
       _hiddenPuzzleAnalysisKinds.remove(key);
       _showPuzzleAnswerArrows = false;
+    });
+    _refreshPuzzleSettingsOverlay();
+  }
+
+  void _toggleTeacherPuzzleDrawing() {
+    setState(() {
+      final enable = !_teacherPuzzleDrawingEnabled;
+      _teacherPuzzleDrawingEnabled = enable;
+      if (enable && _activeAnalysisArrowKey == null) {
+        _activeAnalysisArrowKey = 'threat';
+        _hiddenPuzzleAnalysisKinds.remove('threat');
+      }
+      if (enable) {
+        _showPuzzleAnswerArrows = false;
+      }
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
     });
     _refreshPuzzleSettingsOverlay();
   }
@@ -1703,6 +2185,7 @@ class _MyHomePageState extends State<MyHomePage> {
           _studentHiddenAnalysisKinds.add(currentKey);
         }
         _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
         _studentShowPuzzleAnswer = false;
         return;
       }
@@ -1710,14 +2193,32 @@ class _MyHomePageState extends State<MyHomePage> {
       final wasActive = _studentAnalysisArrowKey == key;
       if (wasActive) {
         _studentAnalysisArrowKey = null;
+        _studentPuzzleDrawingEnabled = false;
         _studentHiddenAnalysisKinds.add(key);
         _studentShowPuzzleAnswer = false;
         return;
       }
 
       _studentAnalysisArrowKey = key;
+      _studentPuzzleDrawingEnabled = true;
       _studentHiddenAnalysisKinds.remove(key);
       _studentShowPuzzleAnswer = false;
+    });
+  }
+
+  void _toggleStudentPuzzleDrawing() {
+    setState(() {
+      final enable = !_studentPuzzleDrawingEnabled;
+      _studentPuzzleDrawingEnabled = enable;
+      if (enable && _studentAnalysisArrowKey == null) {
+        _studentAnalysisArrowKey = 'threat';
+        _studentHiddenAnalysisKinds.remove('threat');
+      }
+      if (enable) {
+        _studentShowPuzzleAnswer = false;
+      }
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
     });
   }
 
@@ -1727,6 +2228,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     setState(() {
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -1738,7 +2240,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (!mounted || !hasTask) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
+        content: MakeChessLocalizedText(
           movesCorrect ? 'Ходы решения верные' : 'Ответ по ходам неверный',
         ),
       ),
@@ -1758,6 +2260,7 @@ class _MyHomePageState extends State<MyHomePage> {
       }
 
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
 
@@ -1774,6 +2277,8 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _learningPendingAnalysisArrowFrom = null;
       _learningAnalysisPointerPosition = null;
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
 
       if (key == null || !_validAnalysisArrowKeys.contains(key)) {
         final currentKey = _learningAnalysisArrowKey;
@@ -1799,7 +2304,12 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisArrowKey = key;
       _learningHiddenAnalysisKinds.remove(key);
       _learningShowAnswer = false;
+
+      // Как в режиме ученика: выбор «Угроза/Связка/Слабость/...»
+      // сразу включает управление стрелками на активной учебной доске.
+      _learningDrawingEnabled = true;
     });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _toggleLearningDrawing() {
@@ -1812,7 +2322,10 @@ class _MyHomePageState extends State<MyHomePage> {
       }
       _learningPendingAnalysisArrowFrom = null;
       _learningAnalysisPointerPosition = null;
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
     });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _toggleLearningAnalysisSide() {
@@ -1822,9 +2335,12 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisArrowKey = null;
       _learningPendingAnalysisArrowFrom = null;
       _learningAnalysisPointerPosition = null;
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
       _learningShowAnswer = false;
       _learningDrawingEnabled = false;
     });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _finishLearningAnalysisTask() {
@@ -1832,9 +2348,12 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisArrowKey = null;
       _learningPendingAnalysisArrowFrom = null;
       _learningAnalysisPointerPosition = null;
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
       _learningShowAnswer = false;
       _learningDrawingEnabled = false;
     });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _setLearningShowAnswer(bool value) {
@@ -1846,7 +2365,10 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisArrowKey = null;
       _learningPendingAnalysisArrowFrom = null;
       _learningAnalysisPointerPosition = null;
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
     });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _clearPuzzleAnalysisElements() {
@@ -1855,6 +2377,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _hiddenPuzzleAnalysisKinds.clear();
       _teacherAnalysisSide = 'white';
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _showPuzzleAnswerArrows = false;
@@ -1866,6 +2389,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _finishPuzzleAnalysisTask() {
     setState(() {
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
     });
@@ -1876,23 +2400,32 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _showPuzzleAnswerArrows = value;
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
     });
     _refreshPuzzleSettingsOverlay();
   }
 
-  Offset _boardCenterForSquare(String square, double boardSize) {
+  Offset _boardCenterForSquare(
+    String square,
+    double boardSize, {
+    bool? flipped,
+  }) {
+    final boardFlipped = flipped ?? _isFlipped;
     final file = square.codeUnitAt(0) - 'a'.codeUnitAt(0);
     final rank = int.tryParse(square.substring(1)) ?? 1;
-    final col = _isFlipped ? 7 - file : file;
-    final row = _isFlipped ? rank - 1 : 8 - rank;
+    final col = boardFlipped ? 7 - file : file;
+    final row = boardFlipped ? rank - 1 : 8 - rank;
     final cell = boardSize / 8;
     return Offset((col + 0.5) * cell, (row + 0.5) * cell);
   }
 
   String? _boardSquareFromLocalPosition(
-      Offset localPosition, double boardSize) {
+    Offset localPosition,
+    double boardSize, {
+    bool? flipped,
+  }) {
     if (localPosition.dx < 0 ||
         localPosition.dy < 0 ||
         localPosition.dx > boardSize ||
@@ -1900,24 +2433,36 @@ class _MyHomePageState extends State<MyHomePage> {
       return null;
     }
 
+    final boardFlipped = flipped ?? _isFlipped;
     final cell = boardSize / 8;
     final col = (localPosition.dx / cell).floor().clamp(0, 7).toInt();
     final row = (localPosition.dy / cell).floor().clamp(0, 7).toInt();
 
-    final fileIndex = _isFlipped ? 7 - col : col;
-    final rank = _isFlipped ? row + 1 : 8 - row;
+    final fileIndex = boardFlipped ? 7 - col : col;
+    final rank = boardFlipped ? row + 1 : 8 - row;
     final file = String.fromCharCode('a'.codeUnitAt(0) + fileIndex);
     return '$file$rank';
   }
 
-  void _startPuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
+  void _startPuzzleAnalysisBoardDrag(
+    Offset localPosition,
+    double boardSize, {
+    bool? flipped,
+    String? learningBoardId,
+  }) {
     if (!_puzzleArrowDrawMode) return;
 
-    final square = _boardSquareFromLocalPosition(localPosition, boardSize);
+    final square = _boardSquareFromLocalPosition(
+      localPosition,
+      boardSize,
+      flipped: flipped,
+    );
     if (square == null) return;
 
-    final isSettings = _puzzleSettingsIsOpen;
+    final isSettings = _teacherPuzzleAuthoringMode;
     final isLearning = !isSettings && _showLearningPanel;
+    final effectiveLearningBoardId =
+        isLearning ? (learningBoardId ?? _activeLearningAnalysisBoardId) : null;
     final key = _effectivePuzzleArrowKey;
 
     setState(() {
@@ -1937,6 +2482,7 @@ class _MyHomePageState extends State<MyHomePage> {
           color: _analysisArrowColor(key),
           isCircle: true,
           side: side,
+          boardId: effectiveLearningBoardId,
         );
 
         if (isSettings) {
@@ -1973,7 +2519,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _updatePuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
     if (!_puzzleArrowDrawMode) return;
 
-    final isSettings = _puzzleSettingsIsOpen;
+    final isSettings = _teacherPuzzleAuthoringMode;
     final isLearning = !isSettings && _showLearningPanel;
     final pending = isSettings
         ? _pendingAnalysisArrowFrom
@@ -1998,13 +2544,20 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  void _finishPuzzleAnalysisBoardDrag(Offset localPosition, double boardSize) {
+  void _finishPuzzleAnalysisBoardDrag(
+    Offset localPosition,
+    double boardSize, {
+    bool? flipped,
+    String? learningBoardId,
+  }) {
     if (!_puzzleArrowDrawMode) return;
     final key = _effectivePuzzleArrowKey;
     if (_isCircleAnalysisKey(key)) return;
 
-    final isSettings = _puzzleSettingsIsOpen;
+    final isSettings = _teacherPuzzleAuthoringMode;
     final isLearning = !isSettings && _showLearningPanel;
+    final effectiveLearningBoardId =
+        isLearning ? (learningBoardId ?? _activeLearningAnalysisBoardId) : null;
     final from = isSettings
         ? _pendingAnalysisArrowFrom
         : (isLearning
@@ -2012,7 +2565,11 @@ class _MyHomePageState extends State<MyHomePage> {
             : _studentPendingAnalysisArrowFrom);
     if (from == null) return;
 
-    final to = _boardSquareFromLocalPosition(localPosition, boardSize);
+    final to = _boardSquareFromLocalPosition(
+      localPosition,
+      boardSize,
+      flipped: flipped,
+    );
     setState(() {
       if (to != null && to != from) {
         final side = isSettings
@@ -2024,6 +2581,7 @@ class _MyHomePageState extends State<MyHomePage> {
           kind: key,
           color: _analysisArrowColor(key),
           side: side,
+          boardId: effectiveLearningBoardId,
         );
 
         if (isSettings) {
@@ -2061,6 +2619,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _teacherAnalysisSide =
           _teacherAnalysisSide == 'white' ? 'black' : 'white';
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _showPuzzleAnswerArrows = false;
@@ -2073,6 +2632,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _studentAnalysisSide =
           _studentAnalysisSide == 'white' ? 'black' : 'white';
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -2127,12 +2687,17 @@ class _MyHomePageState extends State<MyHomePage> {
       'r4',
     ];
 
+    final activeBoardId = _activeLearningAnalysisBoardId;
+    final activeBoardArrows = _learningBoardArrows
+        .where((element) => element.boardId == activeBoardId)
+        .toList(growable: false);
+
     final result = <String, LearningAnalysisResult>{};
     for (final key in keys) {
-      final white = _learningBoardArrows
+      final white = activeBoardArrows
           .where((element) => element.kind == key && element.side == 'white')
           .length;
-      final black = _learningBoardArrows
+      final black = activeBoardArrows
           .where((element) => element.kind == key && element.side == 'black')
           .length;
 
@@ -2253,11 +2818,18 @@ class _MyHomePageState extends State<MyHomePage> {
       _showPuzzlePanel && _activePublishedPuzzleTask != null;
 
   Future<void> _openPuzzleSettings() async {
+    if (_selectedPuzzleType == PuzzleType.antiBlunderTrainer) {
+      _openAntiBlunderTrainerDialog();
+      _setAntiBlunderTrainerSettingsMode(true);
+      return;
+    }
+
     // Окно «Настройка» — отдельный режим тренера.
     // При входе в него выключаем активное рисование ученика, но ответ ученика
     // не удаляем: он просто не должен управлять эталоном.
     setState(() {
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -2299,6 +2871,16 @@ class _MyHomePageState extends State<MyHomePage> {
           _puzzleDraftTypeTitle = value;
           _puzzleDraftPublished = false;
         },
+        antiBlunderMode: _antiBlunderTrainer.authorMode,
+        antiBlunderDepth: _antiBlunderTrainer.authorDepth,
+        onAntiBlunderModeChanged: (value) {
+          _antiBlunderTrainer.setAuthorMode(value);
+          _puzzleDraftPublished = false;
+        },
+        onAntiBlunderDepthChanged: (value) {
+          _antiBlunderTrainer.setAuthorDepth(value);
+          _puzzleDraftPublished = false;
+        },
         onSetInitialPosition: () {
           _puzzleSetInitialPosition();
           _refreshPuzzleSettingsOverlay();
@@ -2324,6 +2906,8 @@ class _MyHomePageState extends State<MyHomePage> {
           _refreshPuzzleSettingsOverlay();
         },
         onAnalysisModeChanged: _setPuzzleAnalysisMode,
+        drawingEnabled: _teacherPuzzleDrawingEnabled,
+        onToggleDrawing: _toggleTeacherPuzzleDrawing,
         onFinishAnalysis: _finishPuzzleAnalysisTask,
         onShowAnswerChanged: _setShowPuzzleAnswer,
         onClearAnalysisElements: _clearPuzzleAnalysisElements,
@@ -2450,7 +3034,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (showError && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Не удалось загрузить список учеников: $error'),
+            content: MakeChessLocalizedText(
+                'Не удалось загрузить список учеников: $error'),
           ),
         );
       }
@@ -2508,8 +3093,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (alreadyAdded) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
-                Text('${selected.nickname} уже находится в списке учеников'),
+            content: MakeChessLocalizedText(
+                '${selected.nickname} уже находится в списке учеников'),
           ),
         );
         return;
@@ -2534,7 +3119,9 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось добавить ученика: $error')),
+        SnackBar(
+            content:
+                MakeChessLocalizedText('Не удалось добавить ученика: $error')),
       );
     }
   }
@@ -2569,7 +3156,7 @@ class _MyHomePageState extends State<MyHomePage> {
               );
 
             return AlertDialog(
-              title: const Text('Выбрать ученика'),
+              title: const MakeChessLocalizedText('Выбрать ученика'),
               content: SizedBox(
                 width: 520,
                 height: 520,
@@ -2582,8 +3169,9 @@ class _MyHomePageState extends State<MyHomePage> {
                           child: TextField(
                             controller: searchController,
                             autofocus: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Поиск по нику',
+                            decoration: InputDecoration(
+                              labelText:
+                                  MakeChessLocalization.phrase('Поиск по нику'),
                               prefixIcon: Icon(Icons.search),
                             ),
                             onChanged: (value) {
@@ -2593,8 +3181,9 @@ class _MyHomePageState extends State<MyHomePage> {
                         ),
                         const SizedBox(width: 8),
                         Tooltip(
-                          message:
-                              ascending ? 'Сортировка А–Я' : 'Сортировка Я–А',
+                          message: ascending
+                              ? MakeChessLocalization.phrase('Сортировка А–Я')
+                              : MakeChessLocalization.phrase('Сортировка Я–А'),
                           child: IconButton.filledTonal(
                             onPressed: () {
                               setDialogState(() => ascending = !ascending);
@@ -2609,7 +3198,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text(
+                    MakeChessLocalizedText(
                       'Зарегистрированные игроки: ${visiblePlayers.length}',
                       style: Theme.of(context).textTheme.labelLarge,
                     ),
@@ -2617,7 +3206,8 @@ class _MyHomePageState extends State<MyHomePage> {
                     Expanded(
                       child: visiblePlayers.isEmpty
                           ? const Center(
-                              child: Text('Игроки не найдены'),
+                              child:
+                                  MakeChessLocalizedText('Игроки не найдены'),
                             )
                           : ListView.separated(
                               itemCount: visiblePlayers.length,
@@ -2630,14 +3220,16 @@ class _MyHomePageState extends State<MyHomePage> {
                                 );
                                 return ListTile(
                                   leading: CircleAvatar(
-                                    child: Text(
+                                    child: MakeChessLocalizedText(
                                       player.nickname.characters.first
                                           .toUpperCase(),
                                     ),
                                   ),
-                                  title: Text(player.nickname),
+                                  title:
+                                      MakeChessLocalizedText(player.nickname),
                                   subtitle: alreadyAdded
-                                      ? const Text('Уже добавлен')
+                                      ? const MakeChessLocalizedText(
+                                          'Уже добавлен')
                                       : null,
                                   trailing: alreadyAdded
                                       ? const Icon(Icons.check)
@@ -2657,7 +3249,7 @@ class _MyHomePageState extends State<MyHomePage> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Закрыть'),
+                  child: const MakeChessLocalizedText('Закрыть'),
                 ),
               ],
             );
@@ -2679,6 +3271,57 @@ class _MyHomePageState extends State<MyHomePage> {
       _pendingLearningGameInvites.values
           .map((invite) => invite.student.id)
           .toSet();
+
+  String get _learningPresenceName {
+    final nickname = (_nickname ?? '').trim();
+    if (nickname.isNotEmpty) return nickname;
+
+    final user = Supabase.instance.client.auth.currentUser;
+    final metadata = user?.userMetadata ?? const <String, dynamic>{};
+    for (final key in const <String>['nickname', 'username', 'name']) {
+      final value = '${metadata[key] ?? ''}'.trim();
+      if (value.isNotEmpty) return value;
+    }
+
+    final email = (user?.email ?? '').trim();
+    if (email.contains('@')) {
+      final prefix = email.split('@').first.trim();
+      if (prefix.isNotEmpty) return prefix;
+    }
+    return 'Ученик';
+  }
+
+  void _updateLearningTopBarStatus(LearningPanelRole role) {
+    final name = _learningPresenceName;
+    final label = switch (role) {
+      LearningPanelRole.student => 'Ученик: $name',
+      LearningPanelRole.teacher => 'Учитель: $name',
+      LearningPanelRole.none => 'Учиться',
+    };
+    if (makechessLearningTopBarLabel.value != label) {
+      makechessLearningTopBarLabel.value = label;
+    }
+  }
+
+  void _finishLearningRoleTransition(
+    LearningPanelRole previous,
+    LearningPanelRole next,
+  ) {
+    _updateLearningTopBarStatus(next);
+
+    if (next == LearningPanelRole.teacher) {
+      _applyLearningVideoDockingForCurrentLayout();
+    } else {
+      _hideLearningCommonBoard(updateButtonState: true);
+      // Сначала удаляется прежняя встроенная сетка и только следующим кадром
+      // возвращаются плавающие окна. Это исключает двойной RTCVideoView.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ClassroomOverlay.instance.showAllRemotesFloating();
+      });
+    }
+
+    unawaited(_updateLearningPresenceForRole(previous, next));
+  }
 
   Map<String, dynamic> _unwrapLearningPresencePayload(dynamic raw) {
     if (raw is! Map) return <String, dynamic>{};
@@ -2704,7 +3347,6 @@ class _MyHomePageState extends State<MyHomePage> {
     );
 
     void acceptPresence(dynamic raw) {
-      if (_learningRole != LearningPanelRole.teacher) return;
       final payload = _unwrapLearningPresencePayload(raw);
       final id = '${payload['id'] ?? ''}'.trim();
       if (id.isEmpty || id == myId) return;
@@ -2723,7 +3365,6 @@ class _MyHomePageState extends State<MyHomePage> {
     channel.onBroadcast(
       event: 'student_offline',
       callback: (raw, [ref]) {
-        if (_learningRole != LearningPanelRole.teacher) return;
         final payload = _unwrapLearningPresencePayload(raw);
         final id = '${payload['id'] ?? ''}'.trim();
         if (id.isEmpty) return;
@@ -2767,8 +3408,8 @@ class _MyHomePageState extends State<MyHomePage> {
     await _ensureLearningPresenceChannel();
     final channel = _learningPresenceChannel;
     final user = Supabase.instance.client.auth.currentUser;
-    final name = (_nickname ?? '').trim();
-    if (channel == null || user == null || name.isEmpty) return;
+    final name = _learningPresenceName;
+    if (channel == null || user == null) return;
     await channel.sendBroadcastMessage(
       event: event,
       payload: <String, dynamic>{
@@ -2796,22 +3437,47 @@ class _MyHomePageState extends State<MyHomePage> {
     await _ensureLearningPresenceChannel();
 
     if (next == LearningPanelRole.student) {
-      await _publishLearningStudentPresence(event: 'student_online');
+      Future<void> announceStudent() async {
+        if (!mounted || _learningRole != LearningPanelRole.student) return;
+        await _publishLearningStudentPresence(event: 'student_online');
+      }
+
+      await announceStudent();
+      for (final delay in const <Duration>[
+        Duration(milliseconds: 450),
+        Duration(milliseconds: 1200),
+        Duration(milliseconds: 2600),
+      ]) {
+        Future<void>.delayed(delay, () => unawaited(announceStudent()));
+      }
       _learningPresenceHeartbeat =
-          Timer.periodic(const Duration(seconds: 8), (_) {
+          Timer.periodic(const Duration(seconds: 6), (_) {
         unawaited(_publishLearningStudentPresence());
       });
       return;
     }
 
     _learningStudentLastSeen.clear();
-    await _learningPresenceChannel?.sendBroadcastMessage(
-      event: 'who_is_student',
-      payload: <String, dynamic>{
-        'from': Supabase.instance.client.auth.currentUser?.id ?? '',
-        'ts': DateTime.now().toUtc().toIso8601String(),
-      },
-    );
+
+    Future<void> askStudents() async {
+      if (!mounted || _learningRole != LearningPanelRole.teacher) return;
+      await _learningPresenceChannel?.sendBroadcastMessage(
+        event: 'who_is_student',
+        payload: <String, dynamic>{
+          'from': Supabase.instance.client.auth.currentUser?.id ?? '',
+          'ts': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
+    }
+
+    await askStudents();
+    for (final delay in const <Duration>[
+      Duration(milliseconds: 500),
+      Duration(milliseconds: 1400),
+      Duration(milliseconds: 3000),
+    ]) {
+      Future<void>.delayed(delay, () => unawaited(askStudents()));
+    }
     if (mounted) setState(() {});
   }
 
@@ -2822,7 +3488,7 @@ class _MyHomePageState extends State<MyHomePage> {
     } else {
       _learningRole = role;
     }
-    unawaited(_updateLearningPresenceForRole(previous, role));
+    _finishLearningRoleTransition(previous, role);
   }
 
   Future<void> _disposeLearningPresence() async {
@@ -2837,8 +3503,8 @@ class _MyHomePageState extends State<MyHomePage> {
     // При закрытии не создаём канал заново только ради сообщения offline.
     if (_learningRole == LearningPanelRole.student && channel != null) {
       final user = Supabase.instance.client.auth.currentUser;
-      final name = (_nickname ?? '').trim();
-      if (user != null && name.isNotEmpty) {
+      final name = _learningPresenceName;
+      if (user != null) {
         try {
           await channel.sendBroadcastMessage(
             event: 'student_offline',
@@ -2884,11 +3550,181 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
+  bool _learningLayoutDocksAllRemotes(
+    LearningTeacherLayoutMode mode,
+  ) {
+    return mode == LearningTeacherLayoutMode.videoAboveBoards ||
+        mode == LearningTeacherLayoutMode.videosOnly;
+  }
+
+  bool _learningLayoutDocksSelectedRemote(
+    LearningTeacherLayoutMode mode,
+  ) {
+    return mode == LearningTeacherLayoutMode.videoLeft ||
+        mode == LearningTeacherLayoutMode.oneVideoOneBoard;
+  }
+
+  ClassroomVideoFeed? _learningRemoteFeedForStudent(
+    LearningStudent? student,
+  ) {
+    if (student == null) return null;
+    final overlay = ClassroomOverlay.instance;
+    final direct = overlay.remoteFeedFor(student.id);
+    if (direct != null) return direct;
+
+    final nickname = student.nickname.trim().toLowerCase();
+    if (nickname.isEmpty) return null;
+    for (final feed in overlay.remoteFeeds.values) {
+      if (feed.title.trim().toLowerCase() == nickname) return feed;
+    }
+    return null;
+  }
+
+  String? _learningRemotePeerIdForStudentId(String? studentId) {
+    if (studentId == null || studentId.isEmpty) return null;
+    final student = _learningStudentById(studentId);
+    final feed = _learningRemoteFeedForStudent(student);
+    return feed?.peerId ?? studentId;
+  }
+
+  ({bool dockAll, Set<String> peerIds, bool hideUndocked})
+      _learningVideoDockPolicy(
+    LearningTeacherLayoutMode mode,
+    String? focusedStudentId,
+  ) {
+    if (_learningRole != LearningPanelRole.teacher) {
+      return (
+        dockAll: false,
+        peerIds: <String>{},
+        hideUndocked: false,
+      );
+    }
+    if (_learningLayoutDocksAllRemotes(mode)) {
+      return (
+        dockAll: true,
+        peerIds: <String>{},
+        hideUndocked: true,
+      );
+    }
+    if (_learningLayoutDocksSelectedRemote(mode)) {
+      final peerId = _learningRemotePeerIdForStudentId(focusedStudentId);
+      return (
+        dockAll: false,
+        peerIds: peerId == null ? <String>{} : <String>{peerId},
+        // Видно только видео активного ученика. Все остальные потоки
+        // остаются подключёнными и возвращаются кликом по своей доске.
+        hideUndocked: true,
+      );
+    }
+    return (
+      dockAll: false,
+      peerIds: <String>{},
+      hideUndocked: false,
+    );
+  }
+
+  void _applyLearningVideoDockingForCurrentLayout() {
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final policy = _learningVideoDockPolicy(
+      _learningTeacherLayoutMode,
+      focusedId,
+    );
+    ClassroomOverlay.instance.setRemoteDocking(
+      dockAll: policy.dockAll,
+      peerIds: policy.peerIds,
+      hideUndocked: policy.hideUndocked,
+    );
+  }
+
+  void _scheduleExactLearningVideoDocking() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _applyLearningVideoDockingForCurrentLayout();
+    });
+  }
+
+  void _setLearningTeacherLayoutMode(
+    LearningTeacherLayoutMode mode,
+  ) {
+    if (!mounted) return;
+
+    final targetSingleBoard =
+        mode == LearningTeacherLayoutMode.oneVideoOneBoard ||
+            mode == LearningTeacherLayoutMode.singleBoardCentered;
+    final currentFocused =
+        _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final targetFocused = currentFocused ?? _firstLearningBoardStudentId;
+    final currentPolicy = _learningVideoDockPolicy(
+      _learningTeacherLayoutMode,
+      currentFocused,
+    );
+    final targetPolicy = _learningVideoDockPolicy(mode, targetFocused);
+
+    // На время одного кадра скрываем все потоки, которые могут находиться в
+    // старом или новом встроенном месте. Так один RTCVideoRenderer никогда не
+    // рисуется одновременно в плавающем и встроенном окне.
+    final safePeerIds = <String>{
+      ...currentPolicy.peerIds,
+      ...targetPolicy.peerIds,
+    };
+    ClassroomOverlay.instance.setRemoteDocking(
+      dockAll: currentPolicy.dockAll || targetPolicy.dockAll,
+      peerIds: safePeerIds,
+      hideUndocked: currentPolicy.hideUndocked || targetPolicy.hideUndocked,
+    );
+
+    setState(() {
+      _learningTeacherLayoutMode = mode;
+      _learningShowAllBoards = !targetSingleBoard;
+      _learningFocusedStudentId ??= _firstLearningBoardStudentId;
+    });
+
+    _scheduleExactLearningVideoDocking();
+  }
+
+  void _selectLearningBoardForVideo(String studentId) {
+    if (!_learningStudents.any((student) => student.id == studentId) &&
+        !_learningGameSessions.containsKey(studentId) &&
+        !_orderedLearningVideoSlots().any(
+          (slot) => slot.student?.id == studentId,
+        )) {
+      return;
+    }
+    if (!mounted) return;
+
+    final oldFocused =
+        _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final oldPolicy = _learningVideoDockPolicy(
+      _learningTeacherLayoutMode,
+      oldFocused,
+    );
+    final newPolicy = _learningVideoDockPolicy(
+      _learningTeacherLayoutMode,
+      studentId,
+    );
+    ClassroomOverlay.instance.setRemoteDocking(
+      dockAll: oldPolicy.dockAll || newPolicy.dockAll,
+      peerIds: <String>{
+        ...oldPolicy.peerIds,
+        ...newPolicy.peerIds,
+      },
+      hideUndocked: oldPolicy.hideUndocked || newPolicy.hideUndocked,
+    );
+
+    setState(() {
+      _selectedLearningStudentId = studentId;
+      _learningFocusedStudentId = studentId;
+      _learningCommonBoardSelected = false;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+    });
+
+    _scheduleExactLearningVideoDocking();
+  }
+
   String? get _firstLearningBoardStudentId {
-    // Первая доска — это всегда левый верхний слот.
-    if (_learningStudents.isNotEmpty) return _learningStudents.first.id;
-    if (_learningGameSessions.isNotEmpty) {
-      return _learningGameSessions.keys.first;
+    for (final student in _orderedLearningSlotStudents()) {
+      if (student != null) return student.id;
     }
     return null;
   }
@@ -2916,7 +3752,10 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _selectedLearningStudentId = studentId;
       _learningFocusedStudentId = studentId;
+      _learningCommonBoardSelected = false;
       _learningShowAllBoards = false;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
     });
   }
 
@@ -2932,7 +3771,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (_selectedVideoStudentIds.length >= 8) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Для одного видеозвонка можно выбрать до 8 учеников'),
+            content: MakeChessLocalizedText(
+                'Для одного видеозвонка можно выбрать до 8 учеников'),
           ),
         );
         return;
@@ -2966,7 +3806,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
               '${student.nickname} должен войти через «Войти как ученик»',
             ),
           ),
@@ -2977,7 +3817,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_learningPendingGameStudentIds.contains(student.id)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ждём ответ от ${student.nickname}')),
+          SnackBar(
+              content:
+                  MakeChessLocalizedText('Ждём ответ от ${student.nickname}')),
         );
       }
       return;
@@ -2989,7 +3831,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Партия с ${student.nickname} уже открыта'),
+            content: MakeChessLocalizedText(
+                'Партия с ${student.nickname} уже открыта'),
           ),
         );
       }
@@ -3000,7 +3843,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Одновременно можно открыть не более 8 партий'),
+            content: MakeChessLocalizedText(
+                'Одновременно можно открыть не более 8 партий'),
           ),
         );
       }
@@ -3015,20 +3859,20 @@ class _MyHomePageState extends State<MyHomePage> {
     final choice = await showDialog<String>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: Text('Партия с ${student.nickname}'),
-        content: const Text('Кем хотите играть?'),
+        title: MakeChessLocalizedText('Партия с ${student.nickname}'),
+        content: const MakeChessLocalizedText('Кем хотите играть?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop('random'),
-            child: const Text('Случайный'),
+            child: const MakeChessLocalizedText('Случайный'),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop('white'),
-            child: const Text('Белыми'),
+            child: const MakeChessLocalizedText('Белыми'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogCtx).pop('black'),
-            child: const Text('Чёрными'),
+            child: const MakeChessLocalizedText('Чёрными'),
           ),
         ],
       ),
@@ -3081,7 +3925,7 @@ class _MyHomePageState extends State<MyHomePage> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'Приглашение отправлено: ${student.nickname}, '
             '${pickedTc.minutes}+${pickedTc.increment}',
           ),
@@ -3107,7 +3951,9 @@ class _MyHomePageState extends State<MyHomePage> {
       _pendingLearningGameInvites.remove(roomId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось пригласить ученика: $error')),
+        SnackBar(
+            content: MakeChessLocalizedText(
+                'Не удалось пригласить ученика: $error')),
       );
     }
   }
@@ -3155,7 +4001,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (teacherId.isEmpty || teacherName.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сначала войдите в аккаунт учителя')),
+          const SnackBar(
+              content:
+                  MakeChessLocalizedText('Сначала войдите в аккаунт учителя')),
         );
       }
       return false;
@@ -3206,7 +4054,7 @@ class _MyHomePageState extends State<MyHomePage> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
               'В видеовызов добавлено ${newStudents.length} ученик(а/ов)',
             ),
           ),
@@ -3215,7 +4063,9 @@ class _MyHomePageState extends State<MyHomePage> {
       } catch (error) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Не удалось добавить ученика: $error')),
+            SnackBar(
+                content: MakeChessLocalizedText(
+                    'Не удалось добавить ученика: $error')),
           );
         }
         return true;
@@ -3268,7 +4118,7 @@ class _MyHomePageState extends State<MyHomePage> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'Видеовызов отправлен ${students.length} ученик(а/ов)',
           ),
         ),
@@ -3281,7 +4131,9 @@ class _MyHomePageState extends State<MyHomePage> {
       _classroomVideoClassroomId = null;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось начать видеоурок: $error')),
+          SnackBar(
+              content: MakeChessLocalizedText(
+                  'Не удалось начать видеоурок: $error')),
         );
       }
       return true;
@@ -3333,7 +4185,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Сначала войдите в зарегистрированный аккаунт'),
+            content: MakeChessLocalizedText(
+                'Сначала войдите в зарегистрированный аккаунт'),
           ),
         );
       }
@@ -3343,7 +4196,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (student == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сначала выберите ученика из списка')),
+          const SnackBar(
+              content:
+                  MakeChessLocalizedText('Сначала выберите ученика из списка')),
         );
       }
       return;
@@ -3386,7 +4241,7 @@ class _MyHomePageState extends State<MyHomePage> {
         _learningInvitationStatus = 'Не удалось отправить приглашение';
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка приглашения: $error')),
+        SnackBar(content: MakeChessLocalizedText('Ошибка приглашения: $error')),
       );
     }
   }
@@ -3395,9 +4250,11 @@ class _MyHomePageState extends State<MyHomePage> {
     required String lessonId,
     required LearningPanelRole role,
   }) async {
+    _dismissOpeningTrainerForNavigation();
     _leaveBoardChannel();
 
     if (!mounted) return;
+    final previous = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = true;
@@ -3412,6 +4269,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningAnalysisPointerPosition = null;
       _learningShowAnswer = false;
     });
+    _finishLearningRoleTransition(previous, role);
 
     _joinBoardChannel();
 
@@ -3447,6 +4305,8 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void openPuzzlesPanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     // Окно «Задачи» — отдельный режим ученика.
     // Если было открыто окно «Настройка», закрываем его, чтобы эталонные
     // стрелки/кружки тренера не оставались на доске и не управлялись
@@ -3461,6 +4321,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
       // Полностью гасим режим тренера на доске, но НЕ удаляем данные эталона.
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _showPuzzleAnswerArrows = false;
@@ -3468,6 +4329,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
       // Оставляем ученика в чистом режиме без активного рисования.
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -3478,9 +4340,15 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningShowAnswer = false;
       _learningDrawingEnabled = false;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   void openLearningPanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previous = _learningRole;
     _closePuzzleSettingsOverlay();
     unawaited(_loadLearningStudents(showError: true));
 
@@ -3491,11 +4359,13 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningRole = LearningPanelRole.none;
 
       _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
       _pendingAnalysisArrowFrom = null;
       _analysisPointerPosition = null;
       _showPuzzleAnswerArrows = false;
 
       _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
       _studentPendingAnalysisArrowFrom = null;
       _studentAnalysisPointerPosition = null;
       _studentShowPuzzleAnswer = false;
@@ -3506,6 +4376,62 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningShowAnswer = false;
       _learningDrawingEnabled = false;
     });
+    _finishLearningRoleTransition(previous, LearningPanelRole.none);
+  }
+
+  void _openLearningRoleFromTopMenu(LearningPanelRole role) {
+    _dismissOpeningTrainerForNavigation();
+    final previous = _learningRole;
+    _closePuzzleSettingsOverlay();
+    unawaited(_loadLearningStudents(showError: true));
+
+    void applyRole() {
+      _showPuzzlePanel = false;
+      _showLearningPanel = true;
+      _mobilePanel = 'learning';
+      _learningRole = role;
+
+      _activeAnalysisArrowKey = null;
+      _teacherPuzzleDrawingEnabled = false;
+      _pendingAnalysisArrowFrom = null;
+      _analysisPointerPosition = null;
+      _showPuzzleAnswerArrows = false;
+
+      _studentAnalysisArrowKey = null;
+      _studentPuzzleDrawingEnabled = false;
+      _studentPendingAnalysisArrowFrom = null;
+      _studentAnalysisPointerPosition = null;
+      _studentShowPuzzleAnswer = false;
+
+      _learningAnalysisArrowKey = null;
+      _learningPendingAnalysisArrowFrom = null;
+      _learningAnalysisPointerPosition = null;
+      _learningShowAnswer = false;
+      _learningDrawingEnabled = false;
+
+      if (role == LearningPanelRole.teacher) {
+        _learningShowAllBoards = true;
+        _learningFocusedStudentId = null;
+        _learningTeacherLayoutMode = LearningTeacherLayoutMode.videoAboveBoards;
+      }
+    }
+
+    if (mounted) {
+      setState(applyRole);
+    } else {
+      applyRole();
+    }
+    _finishLearningRoleTransition(previous, role);
+  }
+
+  /// Вызывается верхним меню «Учиться → Войти как учитель».
+  void openLearningAsTeacherFromMenu() {
+    _openLearningRoleFromTopMenu(LearningPanelRole.teacher);
+  }
+
+  /// Вызывается верхним меню «Учиться → Войти как ученик».
+  void openLearningAsStudentFromMenu() {
+    _openLearningRoleFromTopMenu(LearningPanelRole.student);
   }
 
   Future<void> _toggleLearningStudentEvaluation() async {
@@ -3516,7 +4442,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'Сначала ученик должен принять приглашение и подключиться к партии',
           ),
         ),
@@ -3555,7 +4481,9 @@ class _MyHomePageState extends State<MyHomePage> {
         _learningStudentEvaluationEnabled = !next;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось изменить оценку позиции: $error')),
+        SnackBar(
+            content: MakeChessLocalizedText(
+                'Не удалось изменить оценку позиции: $error')),
       );
       return;
     }
@@ -3563,7 +4491,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
+        content: MakeChessLocalizedText(
           next
               ? 'Оценка позиции для ${session.student.nickname} включена'
               : 'Оценка позиции для ${session.student.nickname} выключена',
@@ -3573,48 +4501,78 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void openLobbyPanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = false;
       _mobilePanel = 'lobby';
       _learningRole = LearningPanelRole.none;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   void openBoardOnly() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = false;
       _mobilePanel = 'none';
       _learningRole = LearningPanelRole.none;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   void openMobileGamePanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = false;
       _mobilePanel = 'game';
       _learningRole = LearningPanelRole.none;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   void openMobileRightPanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = false;
       _mobilePanel = 'moves';
       _learningRole = LearningPanelRole.none;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   void openMobileChatPanel() {
+    _dismissOpeningTrainerForNavigation();
+    final previousLearningRole = _learningRole;
     setState(() {
       _showPuzzlePanel = false;
       _showLearningPanel = false;
       _mobilePanel = 'chat';
       _learningRole = LearningPanelRole.none;
     });
+    _finishLearningRoleTransition(
+      previousLearningRole,
+      LearningPanelRole.none,
+    );
   }
 
   bool _loading = false;
@@ -3633,6 +4591,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
 // --- Board Editor state ---
   bool _editMode = false; // включён ли редактор
+  // Цель редактора: обычная доска, выбранная доска ученика или общая доска.
+  String _editorTargetKind = 'main';
+  String? _editorLearningStudentId;
   List<List<String>> _editBoard =
       List.generate(8, (_) => List.filled(8, '.')); // 8×8, '.' = пусто
   ch.Color _editTurn = ch.Color.WHITE; // чей ход в редакторе
@@ -3736,7 +4697,8 @@ class _MyHomePageState extends State<MyHomePage> {
     // Здесь подключи вашу логику принятия звонка, если она есть.
     // Временный stub — просто покажем подсказку, чтобы кнопка не была пустой.
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Принять звонок: действие')),
+      const SnackBar(
+          content: MakeChessLocalizedText('Принять звонок: действие')),
     );
   }
 
@@ -3755,6 +4717,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (!mounted) return;
     setState(() {
       _nickname = null;
+      _learningRole = LearningPanelRole.none;
       _learningStudents.clear();
       for (final session in _learningGameSessions.values) {
         session.dispose();
@@ -3767,9 +4730,10 @@ class _MyHomePageState extends State<MyHomePage> {
       _confirmedLearningStudentId = null;
       _learningInvitationStatus = null;
     });
+    _updateLearningTopBarStatus(LearningPanelRole.none);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Вы вышли из аккаунта')),
+        const SnackBar(content: MakeChessLocalizedText('Вы вышли из аккаунта')),
       );
     }
   }
@@ -3849,6 +4813,9 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _rematchOfferedToMe = false;
   bool _inviteDialogOpen = false;
   bool _gameTerminated = false;
+  String _lastLichessSignature = '';
+  String? _activeLichessGameId;
+  bool _lichessEndShown = false;
 
   // time control
   int _tcMinutes = 5;
@@ -3879,6 +4846,10 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
+    _openingTrainer = OpeningTrainerController();
+    _openingTrainer.addListener(_onOpeningTrainerChanged);
+    _antiBlunderTrainer = AntiBlunderTrainerController();
+    LichessSessionController.instance.addListener(_onLichessSessionChanged);
 
     // Flutter Web: отключаем стандартное меню браузера,
     // чтобы правая кнопка мыши удаляла стрелки/кружки на доске.
@@ -3915,6 +4886,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refreshEvalBar();
+      unawaited(LichessSessionController.instance.restoreActiveGame());
     });
 
 // Показ стартового окна один раз после первого кадра
@@ -3943,6 +4915,10 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    _openingTrainer.removeListener(_onOpeningTrainerChanged);
+    _openingTrainer.dispose();
+    _antiBlunderTrainer.dispose();
+    LichessSessionController.instance.removeListener(_onLichessSessionChanged);
     _player.dispose();
     _movesScroll.dispose();
     _chatCtl.dispose();
@@ -3956,6 +4932,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _pendingLearningGameInvites.clear();
     unawaited(_disposeLearningPresence());
     _closePuzzleSettingsOverlay();
+    _learningCommonBoardOverlay?.remove();
+    _learningCommonBoardOverlay = null;
     _duelDelayCtl.dispose();
     _lessonResponseSub?.cancel();
     _lessonResponseSub = null;
@@ -4234,7 +5212,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_inRoom || _isSpectator) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сначала выйдите из онлайна (комнаты)')),
+          const SnackBar(
+              content: MakeChessLocalizedText(
+                  'Сначала выйдите из онлайна (комнаты)')),
         );
       }
       return;
@@ -4244,7 +5224,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_vsEngine) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Режим против компьютера уже включён')),
+          const SnackBar(
+              content: MakeChessLocalizedText(
+                  'Режим против компьютера уже включён')),
         );
       }
       return;
@@ -4268,7 +5250,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Режим против компьютера включён')),
+        const SnackBar(
+            content: MakeChessLocalizedText('Режим против компьютера включён')),
       );
     }
   }
@@ -4310,7 +5293,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_inRoom || _isSpectator) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сначала выйдите из онлайна (комнаты)')),
+          const SnackBar(
+              content: MakeChessLocalizedText(
+                  'Сначала выйдите из онлайна (комнаты)')),
         );
       }
       return;
@@ -4320,7 +5305,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (!_vsEngine) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Режим против компьютера уже выключен')),
+          const SnackBar(
+              content: MakeChessLocalizedText(
+                  'Режим против компьютера уже выключен')),
         );
       }
       return;
@@ -4334,7 +5321,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Игра с человеком на одном устройстве')),
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Игра с человеком на одном устройстве')),
       );
     }
   }
@@ -4357,6 +5346,10 @@ class _MyHomePageState extends State<MyHomePage> {
         _myRating = (row?['rating'] as int?) ?? 1200;
         _myGames = (row?['games_played'] as int?) ?? 0;
       });
+      _updateLearningTopBarStatus(_learningRole);
+      if (_learningRole == LearningPanelRole.student) {
+        unawaited(_publishLearningStudentPresence(event: 'student_online'));
+      }
     } catch (_) {}
   }
 
@@ -4417,7 +5410,7 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() => _authError = msg);
       if (mounted)
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+            .showSnackBar(SnackBar(content: MakeChessLocalizedText(msg)));
       return;
     }
     if (pass.length < 6) {
@@ -4439,7 +5432,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text(
+              content: MakeChessLocalizedText(
                   _authIsLogin ? 'Вход выполнен' : 'Регистрация выполнена')),
         );
       }
@@ -4448,13 +5441,13 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() => _authError = msg);
       if (mounted)
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+            .showSnackBar(SnackBar(content: MakeChessLocalizedText(msg)));
     } catch (e) {
       final msg = _diagnoseError(e);
       setState(() => _authError = msg);
       if (mounted)
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+            .showSnackBar(SnackBar(content: MakeChessLocalizedText(msg)));
     }
   }
 
@@ -4475,7 +5468,7 @@ class _MyHomePageState extends State<MyHomePage> {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
               children: [
                 const ListTile(
-                  title: Text('Меню',
+                  title: MakeChessLocalizedText('Меню',
                       style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
                 const Divider(),
@@ -4483,7 +5476,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Навигация верхней шапки (перенесено сюда для мобилки)
                 ListTile(
                   leading: const Icon(Icons.sports_esports),
-                  title: const Text('Играть'),
+                  title: const MakeChessLocalizedText('Играть'),
                   onTap: () {
                     Navigator.pop(ctx);
                     // TODO: навигация в ваш раздел "Играть"
@@ -4491,7 +5484,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.school),
-                  title: const Text('Учиться'),
+                  title: const MakeChessLocalizedText('Учиться'),
                   onTap: () {
                     Navigator.pop(ctx);
                     openLearningPanel();
@@ -4500,7 +5493,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
                 ListTile(
                   leading: const Icon(Icons.extension),
-                  title: const Text('Задачи'),
+                  title: const MakeChessLocalizedText('Задачи'),
                   onTap: () {
                     Navigator.pop(ctx);
                     // TODO
@@ -4508,7 +5501,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.grid_view),
-                  title: const Text('2×2'),
+                  title: const MakeChessLocalizedText('2×2'),
                   onTap: () {
                     Navigator.pop(ctx);
                     // TODO
@@ -4516,7 +5509,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.emoji_events),
-                  title: const Text('Турниры'),
+                  title: const MakeChessLocalizedText('Турниры'),
                   onTap: () {
                     Navigator.pop(ctx);
                     // TODO
@@ -4525,7 +5518,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
                 ListTile(
                   leading: const Icon(Icons.settings),
-                  title: const Text('Настройки'),
+                  title: const MakeChessLocalizedText('Настройки'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _openSettingsSheet(); // ✅ открывает модалку с настройками
@@ -4537,7 +5530,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Игровые действия (то, что у тебя было в шапке)
                 ListTile(
                   leading: const Icon(Icons.smart_toy),
-                  title: const Text('Игра с ИИ'),
+                  title: const MakeChessLocalizedText('Игра с ИИ'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _startNewGameVsEngine();
@@ -4545,7 +5538,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.play_circle),
-                  title: const Text('Продолжить с компьютером'),
+                  title:
+                      const MakeChessLocalizedText('Продолжить с компьютером'),
                   onTap: () {
                     Navigator.pop(ctx);
                     if (!_inRoom && !_vsEngine) _continueVsEngine();
@@ -4553,7 +5547,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.group),
-                  title: const Text('Продолжить с человеком'),
+                  title: const MakeChessLocalizedText('Продолжить с человеком'),
                   onTap: () {
                     Navigator.pop(ctx);
                     if (_vsEngine && !_inRoom) _continueVsHuman();
@@ -4561,7 +5555,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.fiber_new),
-                  title: const Text('Новый игрок'),
+                  title: const MakeChessLocalizedText('Новый игрок'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _onNewGameUniversal();
@@ -4569,7 +5563,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.smart_toy_outlined),
-                  title: const Text('Компьютер vs Компьютер'),
+                  title: const MakeChessLocalizedText('Компьютер vs Компьютер'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _startEngineDuel();
@@ -4577,7 +5571,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.edit),
-                  title: Text(_editMode ? 'Выйти из редактора' : 'Редактор'),
+                  title: MakeChessLocalizedText(
+                      _editMode ? 'Выйти из редактора' : 'Редактор'),
                   onTap: () {
                     Navigator.pop(ctx);
                     if (_inRoom && !_sharedControl) return;
@@ -4586,7 +5581,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.flag),
-                  title: const Text('Сдаться'),
+                  title: const MakeChessLocalizedText('Сдаться'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _onResignPressed();
@@ -4598,7 +5593,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Масштаб — если нужно на мобилке
                 ListTile(
                   leading: const Icon(Icons.zoom_out_map),
-                  title: const Text('Масштаб: 100%'),
+                  title: const MakeChessLocalizedText('Масштаб: 100%'),
                   onTap:
                       () {}, // информативно; при желании свяжи с _boardPercent
                 ),
@@ -4608,7 +5603,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 // Аккаунт
                 ListTile(
                   leading: const Icon(Icons.logout),
-                  title: const Text('Выйти из аккаунта'),
+                  title: const MakeChessLocalizedText('Выйти из аккаунта'),
                   onTap: () {
                     Navigator.pop(ctx);
                     _logout();
@@ -4639,7 +5634,7 @@ class _MyHomePageState extends State<MyHomePage> {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
               children: [
                 const ListTile(
-                  title: Text('Учиться',
+                  title: MakeChessLocalizedText('Учиться',
                       style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
                 const Divider(height: 1),
@@ -4647,7 +5642,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 // 1) Реальный учитель — открывает диалог «Школы»
                 ListTile(
                   leading: const Icon(Icons.school),
-                  title: const Text('Школа с реальным учителем'),
+                  title:
+                      const MakeChessLocalizedText('Школа с реальным учителем'),
                   onTap: () async {
                     Navigator.pop(ctx); // закрываем лист
                     final sb = Supabase.instance.client;
@@ -4666,11 +5662,12 @@ class _MyHomePageState extends State<MyHomePage> {
                 // 2) Виртуальный учитель — заглушка
                 ListTile(
                   leading: const Icon(Icons.smart_toy),
-                  title: const Text('Школа с виртуальным учителем (аватар)'),
+                  title: const MakeChessLocalizedText(
+                      'Школа с виртуальным учителем (аватар)'),
                   onTap: () {
                     Navigator.pop(ctx2);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Скоро…')),
+                      const SnackBar(content: MakeChessLocalizedText('Скоро…')),
                     );
                   },
                 ),
@@ -4685,7 +5682,432 @@ class _MyHomePageState extends State<MyHomePage> {
   void _acceptIncomingCall() {
     // пока заглушка, сюда подключишь свой код принятия звонка
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Вызов принят")),
+      const SnackBar(content: MakeChessLocalizedText("Вызов принят")),
+    );
+  }
+
+  // ================== ДЕБЮТНЫЙ ТРЕНАЖЁР ==================
+  String? _openingTrainerSanForUci(String fen, String uci) {
+    if (uci.length < 4) return null;
+    final temp = ch.Chess();
+    final cleanFen = fen.trim();
+    if (cleanFen.isNotEmpty && cleanFen != 'startpos') {
+      try {
+        if (!temp.load(cleanFen)) return null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final from = uci.substring(0, 2);
+    final to = uci.substring(2, 4);
+    final promotion = uci.length > 4 ? uci.substring(4, 5) : null;
+    try {
+      final moves = List<Map<String, dynamic>>.from(
+        temp.moves(<String, dynamic>{'square': from, 'verbose': true}),
+      );
+      for (final move in moves) {
+        if ('${move['to']}' != to) continue;
+        final candidatePromotion = move['promotion']?.toString();
+        if (promotion != null && candidatePromotion != promotion) continue;
+        return move['san']?.toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<List<OpeningEngineLine>> _analyzeOpeningTrainerPosition(
+    String fen,
+    int multiPv,
+    List<String> searchMoves,
+  ) async {
+    if (LichessPlayGuard.instance.active) {
+      throw StateError('Во время партии Lichess подсказки отключены.');
+    }
+    final saneFen = sanitizeFenEp(fen);
+    final botSettings = _openingTrainer.settings;
+    final raw = await sf.getAnalysisRaw(
+      saneFen,
+      depth: botSettings.botEngineDepth,
+      multiPv: multiPv.clamp(1, 5).toInt(),
+      maxThinkingTime: botSettings.botThinkingTimeMs,
+      searchMoves: searchMoves,
+    );
+    return OpeningEnginePayloadParser.parse(
+      raw,
+      whiteToMove: fen.contains(' w '),
+      sanForUci: (uci) => _openingTrainerSanForUci(fen, uci),
+    );
+  }
+
+  Future<void> _startOpeningTrainerSession() async {
+    if (LichessPlayGuard.instance.active) {
+      _openingTrainer.stopSession(
+        reason: 'Сначала завершите рейтинговую партию Lichess.',
+      );
+      return;
+    }
+    if (_inRoom) {
+      _openingTrainer.stopSession(
+        reason: 'Сначала выйдите из сетевой комнаты.',
+      );
+      return;
+    }
+    if (!_openingTrainer.canStart) {
+      _openingTrainer.startSession();
+      return;
+    }
+
+    _stopEngineDuel();
+    _stopTick();
+    _resetClocks();
+
+    final startFen = _openingTrainer.startFen.trim();
+    bool loaded = true;
+    if (startFen.isEmpty || startFen == 'startpos') {
+      game.reset();
+    } else {
+      try {
+        loaded = game.load(startFen);
+      } catch (_) {
+        loaded = false;
+      }
+    }
+    if (!loaded) {
+      _openingTrainer.stopSession(
+        reason: 'Не удалось загрузить стартовую FEN-позицию дебюта.',
+      );
+      return;
+    }
+
+    setState(() {
+      _vsEngine = true;
+      _engineThinking = false;
+      _engineDuel = false;
+      _humanColor =
+          _openingTrainer.studentPlaysWhite ? ch.Color.WHITE : ch.Color.BLACK;
+      _gameTerminated = false;
+      _result = null;
+      _fenController.text = game.fen;
+      _sanMoves.clear();
+      _fens
+        ..clear()
+        ..add(game.fen);
+      _plyIndex = 0;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+    });
+
+    _openingTrainer.startSession();
+    unawaited(_refreshEvalBar());
+    await _syncOpeningTrainerPosition(force: true);
+  }
+
+  void _stopOpeningTrainerSession() {
+    _openingTrainer.stopSession();
+    if (!mounted) return;
+    setState(() {
+      _vsEngine = false;
+      _engineThinking = false;
+    });
+  }
+
+  Future<void> _onOpeningTrainerSettingsChanged() async {
+    if (_openingTrainer.sessionActive) {
+      await _syncOpeningTrainerPosition(force: true);
+    }
+  }
+
+  Future<void> _onOpeningTrainerTreeLoaded() async {
+    if (_openingTrainer.sessionActive) {
+      _stopOpeningTrainerSession();
+    }
+  }
+
+  Future<String> _askOpeningTrainerQuestion(String question) async {
+    if (LichessPlayGuard.instance.active) {
+      throw StateError('Во время партии Lichess вопросы тренажёру отключены.');
+    }
+
+    final possibleOpenings = _openingTrainer.matchingOpenings
+        .take(12)
+        .map((item) => item.name)
+        .join(', ');
+    final currentMode = _openingTrainer.mode.title;
+    final currentOpening = _openingTrainer.currentOpeningLabel;
+    final history = _openingTrainer.historyUci.join(' ');
+
+    final response = await GptExplainService.explainPosition(
+      fen: game.fen,
+      pv: _sanMoves.isEmpty ? null : List<String>.from(_sanMoves),
+      ask: 'Ты помощник дебютного тренажёра для ученика. '
+          'Отвечай по-русски, понятно и по существу. '
+          'Режим: $currentMode. Текущий дебют: $currentOpening. '
+          'Ходы UCI: ${history.isEmpty ? 'пока нет' : history}. '
+          'Возможные дебюты: '
+          '${possibleOpenings.isEmpty ? 'не определены' : possibleOpenings}. '
+          'Вопрос ученика: $question',
+    );
+
+    final answer = '${response['text'] ?? ''}'.trim();
+    if (answer.isEmpty) {
+      throw StateError('Система вернула пустой ответ.');
+    }
+    return answer;
+  }
+
+  Future<void> _playOpeningTrainerBotMove(String uci) async {
+    if (!_openingTrainer.sessionActive || game.game_over || _gameTerminated) {
+      return;
+    }
+    await _applyUciMove(uci);
+    _checkGameOver();
+    unawaited(_refreshEvalBar());
+
+    // Контроллер уже добавил ход бота в свою историю до callback.
+    // Следующий узел дерева анализируем после завершения текущего callback.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_openingTrainer.sessionActive) return;
+      unawaited(_syncOpeningTrainerPosition(force: true));
+    });
+  }
+
+  Future<void> _syncOpeningTrainerPosition({bool force = false}) async {
+    if (!_openingTrainer.sessionActive || game.game_over || _gameTerminated) {
+      return;
+    }
+    await _openingTrainer.analyzePosition(
+      fen: game.fen,
+      whiteToMove: game.turn == ch.Color.WHITE,
+      analyze: _analyzeOpeningTrainerPosition,
+      playBotMove: _playOpeningTrainerBotMove,
+      force: force,
+    );
+
+    // После заданной глубины продолжаем обычную партию против Stockfish,
+    // но уже без дебютных стрелок и без ограничения деревом.
+    if (_openingTrainer.phase == OpeningTrainerPhase.finished &&
+        _vsEngine &&
+        game.turn != _humanColor &&
+        !game.game_over) {
+      await _engineMove();
+    }
+  }
+
+  Widget _buildOpeningTrainerDialogOverlay({
+    required Size screenSize,
+    required double boardSize,
+    required bool isMobile,
+  }) {
+    final dialogWidth = isMobile
+        ? math.max(300.0, screenSize.width - 24.0)
+        : math.min(540.0, math.max(420.0, screenSize.width * 0.38));
+    final dialogHeight = isMobile ? 370.0 : 430.0;
+
+    final double defaultLeft = isMobile
+        ? 12.0
+        : (screenSize.width / 2 - dialogWidth / 2)
+            .clamp(
+              12.0,
+              math.max(12.0, screenSize.width - dialogWidth - 12.0),
+            )
+            .toDouble();
+    final defaultTop = math.min(
+      math.max(76.0, screenSize.height - dialogHeight - 18.0),
+      math.max(76.0, boardSize + (isMobile ? 142.0 : 96.0)),
+    );
+
+    final raw = _openingTrainerDialogOffset ?? Offset(defaultLeft, defaultTop);
+    final position = Offset(
+      raw.dx
+          .clamp(8.0, math.max(8.0, screenSize.width - dialogWidth - 8.0))
+          .toDouble(),
+      raw.dy.clamp(8.0, math.max(8.0, screenSize.height - 48.0)).toDouble(),
+    );
+
+    return Positioned(
+      left: position.dx,
+      top: position.dy,
+      child: OpeningTrainerDialog(
+        controller: _openingTrainer,
+        width: dialogWidth,
+        height: dialogHeight,
+        onDragDelta: (delta) {
+          final next = position + delta;
+          setState(() {
+            _openingTrainerDialogOffset = Offset(
+              next.dx
+                  .clamp(
+                    8.0,
+                    math.max(8.0, screenSize.width - dialogWidth - 8.0),
+                  )
+                  .toDouble(),
+              next.dy
+                  .clamp(8.0, math.max(8.0, screenSize.height - 48.0))
+                  .toDouble(),
+            );
+          });
+        },
+        onStart: _startOpeningTrainerSession,
+        onStop: _stopOpeningTrainerSession,
+        onClose: _closeOpeningTrainerDialog,
+        onSettingsChanged: _onOpeningTrainerSettingsChanged,
+        onTreeLoaded: _onOpeningTrainerTreeLoaded,
+        onStudentQuestion: _askOpeningTrainerQuestion,
+      ),
+    );
+  }
+
+  Widget _buildAntiBlunderTrainerDialogOverlay({
+    required Size screenSize,
+    required double boardSize,
+    required bool isMobile,
+  }) {
+    final defaultSize = Size(
+      isMobile
+          ? math.max(320.0, screenSize.width - 24.0)
+          : math.min(980.0, math.max(760.0, screenSize.width * 0.62)),
+      isMobile
+          ? math.max(520.0, screenSize.height - 100.0)
+          : math.min(760.0, math.max(620.0, screenSize.height * 0.78)),
+    );
+
+    final requestedSize = _antiBlunderTrainerDialogSize ?? defaultSize;
+    final minWidth = isMobile ? 300.0 : 680.0;
+    final minHeight = isMobile ? 420.0 : 540.0;
+    final maxWidth = math.max(minWidth, screenSize.width - 16.0);
+    final maxHeight = math.max(minHeight, screenSize.height - 16.0);
+    final dialogWidth =
+        requestedSize.width.clamp(minWidth, maxWidth).toDouble();
+    final dialogHeight =
+        requestedSize.height.clamp(minHeight, maxHeight).toDouble();
+
+    final defaultLeft = isMobile
+        ? 8.0
+        : (screenSize.width / 2 - dialogWidth / 2)
+            .clamp(8.0, math.max(8.0, screenSize.width - dialogWidth - 8.0))
+            .toDouble();
+    final defaultTop = isMobile ? 76.0 : 82.0;
+
+    final raw =
+        _antiBlunderTrainerDialogOffset ?? Offset(defaultLeft, defaultTop);
+    final position = Offset(
+      raw.dx
+          .clamp(8.0, math.max(8.0, screenSize.width - dialogWidth - 8.0))
+          .toDouble(),
+      raw.dy.clamp(8.0, math.max(8.0, screenSize.height - 48.0)).toDouble(),
+    );
+
+    final tasks = _visiblePublishedPuzzleTasks
+        .map(
+          (task) => AntiBlunderTaskListItem(
+            number: task.number,
+            title: task.title,
+            mode: task.antiBlunder?.mode ?? AntiBlunderMode.direct,
+            depth: task.antiBlunder?.depth ?? 1,
+          ),
+        )
+        .toList(growable: false);
+
+    return Positioned(
+      left: position.dx,
+      top: position.dy,
+      child: AntiBlunderTrainerDialog(
+        controller: _antiBlunderTrainer,
+        width: dialogWidth,
+        height: dialogHeight,
+        settingsMode: _antiBlunderTrainerSettingsMode,
+        onSettingsModeChanged: _setAntiBlunderTrainerSettingsMode,
+        publishedTasks: tasks,
+        activeTaskIndex: _activePublishedPuzzleIndex,
+        loadingTasks: _loadingPublishedPuzzleTasks,
+        onOpenTasks: _openPublishedPuzzlesFolder,
+        onTaskSelected: _activatePublishedPuzzle,
+        onPreviousTask: _activatePreviousPublishedPuzzle,
+        onNextTask: _activateNextPublishedPuzzle,
+        drawingCandidates: _antiBlunderCandidateDrawing,
+        studentCandidateCount: _antiBlunderCandidateCount,
+        onToggleCandidateDrawing: _toggleAntiBlunderCandidateDrawing,
+        onClearCandidates: _clearAntiBlunderCandidates,
+        onBeforeCheck: _syncAntiBlunderCandidatesFromBoard,
+        draftTitle: _puzzleDraftTitle,
+        draftNumber: _puzzleDraftNumber,
+        currentFen: game.fen,
+        startFen: _puzzleDraftStartFen,
+        savedLines: _puzzleDraftLines,
+        currentLine: _puzzleCurrentLine,
+        isRecordingLine: _puzzleRecordingLine,
+        isPublished: _puzzleDraftPublished,
+        activeAuthorAnalysisKey: _activeAnalysisArrowKey,
+        authorAnalysisCounts: _analysisElementCounts,
+        authorAnalysisSide: _teacherAnalysisSide,
+        authorDrawingEnabled: _teacherPuzzleDrawingEnabled,
+        authorShowAnswer: _showPuzzleAnswerArrows,
+        onDraftTitleChanged: (value) {
+          setState(() {
+            _puzzleDraftTitle = value;
+            _puzzleDraftTypeTitle = 'Антизевковый тренажёр';
+            _puzzleDraftPublished = false;
+          });
+        },
+        onDraftNumberChanged: (value) {
+          setState(() {
+            _puzzleDraftNumber = value < 1 ? 1 : value;
+            _puzzleDraftTypeTitle = 'Антизевковый тренажёр';
+            _puzzleDraftPublished = false;
+          });
+        },
+        onAuthorModeChanged: (value) {
+          _antiBlunderTrainer.setAuthorMode(value);
+          setState(() => _puzzleDraftPublished = false);
+        },
+        onAuthorDepthChanged: (value) {
+          _antiBlunderTrainer.setAuthorDepth(value);
+          setState(() => _puzzleDraftPublished = false);
+        },
+        onTogglePositionEditor: () {
+          _editMode ? _applyEditor() : _enterEditor();
+        },
+        onSetInitialPosition: _puzzleSetInitialPosition,
+        onStartRecordingLine: _puzzleStartRecordingLine,
+        onFinishRecordingLine: _puzzleFinishRecordingLine,
+        onClearDraft: _puzzleClearDraft,
+        onNewTask: _puzzleNewTask,
+        onPublish: _publishAntiBlunderDraft,
+        onDownload: _downloadAntiBlunderDraft,
+        onCopyJson: _copyAntiBlunderDraftJson,
+        onAuthorAnalysisModeChanged: _setPuzzleAnalysisMode,
+        onAuthorAnalysisSideToggle: _toggleTeacherAnalysisSide,
+        onToggleAuthorDrawing: _toggleTeacherPuzzleDrawing,
+        onFinishAuthorAnalysis: _finishPuzzleAnalysisTask,
+        onAuthorShowAnswerChanged: _setShowPuzzleAnswer,
+        onClearAuthorAnalysisElements: _clearPuzzleAnalysisElements,
+        onClose: _closeAntiBlunderTrainerDialog,
+        onDragDelta: (delta) {
+          final next = position + delta;
+          setState(() {
+            _antiBlunderTrainerDialogOffset = Offset(
+              next.dx
+                  .clamp(
+                    8.0,
+                    math.max(8.0, screenSize.width - dialogWidth - 8.0),
+                  )
+                  .toDouble(),
+              next.dy
+                  .clamp(8.0, math.max(8.0, screenSize.height - 48.0))
+                  .toDouble(),
+            );
+          });
+        },
+        onResize: (size) {
+          final newWidth = size.width.clamp(minWidth, maxWidth).toDouble();
+          final newHeight = size.height.clamp(minHeight, maxHeight).toDouble();
+          setState(() {
+            _antiBlunderTrainerDialogSize = Size(newWidth, newHeight);
+          });
+        },
+      ),
     );
   }
 
@@ -4747,7 +6169,7 @@ class _MyHomePageState extends State<MyHomePage> {
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Stockfish analysis'),
+          title: const MakeChessLocalizedText('Stockfish analysis'),
           content: SingleChildScrollView(
             child: SelectableText(
               text.isEmpty ? 'Пустой ответ от анализатора.' : text,
@@ -4757,7 +6179,7 @@ class _MyHomePageState extends State<MyHomePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Закрыть'),
+              child: const MakeChessLocalizedText('Закрыть'),
             ),
           ],
         ),
@@ -4765,20 +6187,52 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Stockfish: $e')),
+        SnackBar(content: MakeChessLocalizedText('Stockfish: $e')),
       );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+
+
+  Future<void> _toggleLocalStockfish() async {
+    if (LichessPlayGuard.instance.active) return;
+
+    try {
+      final enabled = await sf.toggleLocalStockfish();
+      if (!mounted) return;
+
+      setState(() {});
+      unawaited(_refreshEvalBar());
+
+      final message = MakeChessLocalization.phrase(
+        enabled
+            ? 'Локальный Stockfish включён. Весь анализ сайта выполняется локально.'
+            : 'Локальный Stockfish выключен. Сайт использует сетевой Stockfish.',
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final message = MakeChessLocalization.phrase(
+        'Не удалось переключить локальный Stockfish: {error}',
+        params: <String, Object?>{'error': e},
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
   Future<String?> _fetchUciBestMove(String fen) async {
+    if (LichessPlayGuard.instance.active) return null;
     final saneFen = sanitizeFenEp(fen);
-    final fenForApi = stripEpField(saneFen);
 
     try {
       final obj = await sf.getAnalysisRaw(
-        fenForApi,
+        saneFen,
         depth: 18,
         multiPv: 3,
         maxThinkingTime: 2000,
@@ -4810,13 +6264,14 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('GPT: $e')));
+          .showSnackBar(SnackBar(content: MakeChessLocalizedText('GPT: $e')));
     } finally {
       if (mounted) setState(() => _gptLoading = false);
     }
   }
 
   Future<void> _explainHere({String? extraPrompt}) async {
+    if (LichessPlayGuard.instance.active) return;
     // 1) собираем FEN и ходы
     final String fen = game.fen; // текущая позиция
     final List<String> pv = List<String>.from(_sanMoves); // список ходов SAN
@@ -4840,7 +6295,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
       if (answer == null || answer.trim().isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Пустой ответ от GPT.')),
+          const SnackBar(
+              content: MakeChessLocalizedText('Пустой ответ от GPT.')),
         );
         return;
       }
@@ -4848,7 +6304,7 @@ class _MyHomePageState extends State<MyHomePage> {
       // 4) показы2ваем ответ (можешь заменить на диалог/панель)
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             answer,
             maxLines: 8,
             overflow: TextOverflow.ellipsis,
@@ -4859,7 +6315,7 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка запроса к GPT: $e')),
+        SnackBar(content: MakeChessLocalizedText('Ошибка запроса к GPT: $e')),
       );
     }
   }
@@ -4869,33 +6325,34 @@ class _MyHomePageState extends State<MyHomePage> {
   // -------------------------------
 
   Future<void> _openGptPromptDialog() async {
+    if (LichessPlayGuard.instance.active) return;
     _gptPromptCtl.text = _lastGptPrompt ?? '';
 
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: const Text('Вопрос к GPT'),
+          title: const MakeChessLocalizedText('Вопрос к GPT'),
           content: TextField(
             controller: _gptPromptCtl,
             minLines: 3,
             maxLines: 6,
-            decoration: const InputDecoration(
-              hintText:
-                  'Напишите, что именно объяснить/на что обратить внимание…',
+            decoration: InputDecoration(
+              hintText: MakeChessLocalization.phrase(
+                  'Напишите, что именно объяснить/на что обратить внимание…'),
               border: OutlineInputBorder(),
             ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('Отмена'),
+              child: const MakeChessLocalizedText('Отмена'),
             ),
             FilledButton(
               onPressed: () {
                 Navigator.pop(ctx, _gptPromptCtl.text.trim());
               },
-              child: const Text('Отправить'),
+              child: const MakeChessLocalizedText('Отправить'),
             ),
           ],
         );
@@ -4956,7 +6413,7 @@ class _MyHomePageState extends State<MyHomePage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text(
+              content: MakeChessLocalizedText(
                 'Лимит движка (HIGH_USAGE). Дуэль остановлена. '
                 'Попробуйте позже или увеличьте задержку.',
               ),
@@ -5032,7 +6489,7 @@ class _MyHomePageState extends State<MyHomePage> {
       context: context,
       barrierDismissible: true, // можно закрыть кликом вне (по желанию)
       builder: (ctx) => AlertDialog(
-        title: const Text('Выберите фигуру для превращения'),
+        title: const MakeChessLocalizedText('Выберите фигуру для превращения'),
         content: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
@@ -5043,7 +6500,8 @@ class _MyHomePageState extends State<MyHomePage> {
               'n': color == ch.Color.WHITE ? '♘' : '♞',
             }.entries)
               IconButton(
-                icon: Text(entry.value, style: const TextStyle(fontSize: 32)),
+                icon: MakeChessLocalizedText(entry.value,
+                    style: const TextStyle(fontSize: 32)),
                 onPressed: () =>
                     Navigator.of(ctx).pop(entry.key), // ← ИСПОЛЬЗУЕМ ctx!
               ),
@@ -5087,8 +6545,125 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _myTurnNow() {
     if (_sharedControl) return true;
     if (_gameTerminated) return false;
+    final lichess = LichessSessionController.instance.snapshot;
+    if (lichess != null && !lichess.finished) {
+      final myColor = lichess.myColor;
+      if (myColor == null) return false;
+      return game.turn ==
+          (myColor == 'white' ? ch.Color.WHITE : ch.Color.BLACK);
+    }
     if (!_vsEngine && !_inRoom) return true;
     return game.turn == _humanColor;
+  }
+
+  void _onLichessSessionChanged() {
+    if (!mounted) return;
+    final controller = LichessSessionController.instance;
+    final snapshot = controller.snapshot;
+    if (snapshot == null) {
+      if (controller.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: MakeChessLocalizedText('Lichess: ${controller.error}')),
+        );
+      }
+      return;
+    }
+    if (_activeLichessGameId != snapshot.gameId) {
+      _activeLichessGameId = snapshot.gameId;
+      _lastLichessSignature = '';
+      _lichessEndShown = false;
+      _result = null;
+      _gameTerminated = false;
+    }
+    final signature = '${snapshot.gameId}|${snapshot.moves.join(' ')}|'
+        '${snapshot.whiteMs}|${snapshot.blackMs}|${snapshot.status}';
+    if (signature == _lastLichessSignature) return;
+    _lastLichessSignature = signature;
+
+    final rebuilt = ch.Chess();
+    final initialFen = snapshot.initialFen?.trim() ?? '';
+    if (initialFen.isNotEmpty && initialFen != 'startpos') {
+      try {
+        rebuilt.load(initialFen);
+      } catch (_) {
+        rebuilt.reset();
+      }
+    }
+    final sans = <String>[];
+    final positions = <String>[rebuilt.fen];
+    for (final uci in snapshot.moves) {
+      if (uci.length < 4) continue;
+      final from = uci.substring(0, 2);
+      final to = uci.substring(2, 4);
+      final promotion = uci.length > 4 ? uci.substring(4, 5) : null;
+      String san = uci;
+      try {
+        final verbose = List<Map<String, dynamic>>.from(
+          rebuilt.moves(<String, dynamic>{'square': from, 'verbose': true}),
+        );
+        final move = verbose.where((item) {
+          if ('${item['to']}' != to) return false;
+          final candidate = item['promotion']?.toString();
+          return promotion == null || candidate == promotion;
+        }).firstOrNull;
+        san = move?['san']?.toString() ?? uci;
+      } catch (_) {}
+      final ok = rebuilt.move(<String, dynamic>{
+        'from': from,
+        'to': to,
+        if (promotion != null) 'promotion': promotion,
+      });
+      if (!ok) break;
+      sans.add(san);
+      positions.add(rebuilt.fen);
+    }
+
+    setState(() {
+      game.load(rebuilt.fen);
+      _fenController.text = game.fen;
+      _sanMoves
+        ..clear()
+        ..addAll(sans);
+      _fens
+        ..clear()
+        ..addAll(positions);
+      _plyIndex = _sanMoves.length;
+      _whiteMs = snapshot.whiteMs;
+      _blackMs = snapshot.blackMs;
+      _clocksStarted = !snapshot.finished;
+      _humanColor =
+          snapshot.myColor == 'black' ? ch.Color.BLACK : ch.Color.WHITE;
+      _opponentName =
+          snapshot.myColor == 'white' ? snapshot.blackName : snapshot.whiteName;
+      _selectedSquare = null;
+      _legalTargets.clear();
+      _captureTargets.clear();
+      _showFenInput = false;
+      _editMode = false;
+      _gameTerminated = snapshot.finished;
+    });
+    _scrollMovesToEnd();
+    if (!snapshot.finished) {
+      _startTickForActiveSide();
+    } else {
+      _stopTick();
+    }
+
+    if (snapshot.finished && !_lichessEndShown) {
+      _lichessEndShown = true;
+      final result = snapshot.winner == 'white'
+          ? '1-0'
+          : snapshot.winner == 'black'
+              ? '0-1'
+              : '1/2-1/2';
+      _result = result;
+      unawaited(_showEndDialog(
+        title: 'Партия Lichess завершена',
+        message: MakeChessLocalization.phrase(
+            'Результат: $result. Причина: ${snapshot.status}'),
+      ));
+    }
   }
 
   Future<void> _applyUciMove(String uci) async {
@@ -5169,12 +6744,12 @@ class _MyHomePageState extends State<MyHomePage> {
     showDialog(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
+        title: MakeChessLocalizedText(title),
+        content: MakeChessLocalizedText(message),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text('OK'),
+            child: const MakeChessLocalizedText('OK'),
           ),
         ],
       ),
@@ -5218,7 +6793,7 @@ class _MyHomePageState extends State<MyHomePage> {
           : 'Контроль: $minutes+${increment}${rated ? " (рейтинговая)" : ""}';
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(text)),
+        SnackBar(content: MakeChessLocalizedText(text)),
       );
     }
   }
@@ -5243,7 +6818,8 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
 
-    if (!_inRoom) return;
+    final lichessActive = LichessSessionController.instance.snapshot != null;
+    if (!_inRoom && !lichessActive) return;
     if (_gameTerminated) return;
 
     _lastTickAt = DateTime.now();
@@ -5282,6 +6858,10 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _onFlagFall(ch.Color flagSide) {
+    if (LichessSessionController.instance.snapshot != null) {
+      _stopTick();
+      return;
+    }
     final result = (flagSide == ch.Color.WHITE) ? '0-1' : '1-0';
     final reason =
         (flagSide == ch.Color.WHITE) ? 'Победа черных' : 'Победа белых';
@@ -5336,7 +6916,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
               'Аккаунт открыт, но автоматическое подключение к контактам не удалось',
             ),
           ),
@@ -5352,7 +6932,8 @@ class _MyHomePageState extends State<MyHomePage> {
     final uid = supa.auth.currentUser?.id;
     if (uid == null || _nickname == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сначала войдите в аккаунт')),
+        const SnackBar(
+            content: MakeChessLocalizedText('Сначала войдите в аккаунт')),
       );
       return;
     }
@@ -5391,14 +6972,14 @@ class _MyHomePageState extends State<MyHomePage> {
             context: context,
             barrierDismissible: false,
             builder: (dialogCtx) => AlertDialog(
-              title: Text(
+              title: MakeChessLocalizedText(
                 isLearningInvite ? 'Приглашение от учителя' : 'Вызов на игру',
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  MakeChessLocalizedText(
                     '$fromName приглашает вас сыграть\n'
                     'Контроль: $m+${inc}${rated ? " (рейтинговая)" : ""}',
                   ),
@@ -5407,11 +6988,11 @@ class _MyHomePageState extends State<MyHomePage> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(dialogCtx).pop(false),
-                  child: const Text('Отклонить'),
+                  child: const MakeChessLocalizedText('Отклонить'),
                 ),
                 FilledButton(
                   onPressed: () => Navigator.of(dialogCtx).pop(true),
-                  child: const Text('Принять'),
+                  child: const MakeChessLocalizedText('Принять'),
                 ),
               ],
             ),
@@ -5518,8 +7099,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _syncLobbyStoreFromOnline(); // <<< добавили
 
     if (mounted && showMessage) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Вы в контактах')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: MakeChessLocalizedText('Вы в контактах')));
     }
   }
 
@@ -5547,20 +7128,20 @@ class _MyHomePageState extends State<MyHomePage> {
     final choice = await showDialog<String>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Text('Выбор цвета'),
-        content: const Text('Кем хотите играть?'),
+        title: const MakeChessLocalizedText('Выбор цвета'),
+        content: const MakeChessLocalizedText('Кем хотите играть?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop('random'),
-            child: const Text('Случайный'),
+            child: const MakeChessLocalizedText('Случайный'),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop('white'),
-            child: const Text('Белыми'),
+            child: const MakeChessLocalizedText('Белыми'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogCtx).pop('black'),
-            child: const Text('Чёрными'),
+            child: const MakeChessLocalizedText('Чёрными'),
           ),
         ],
       ),
@@ -5625,7 +7206,7 @@ class _MyHomePageState extends State<MyHomePage> {
       final colorLabel = (myColor == 'white') ? 'белые' : 'чёрные';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'Приглашение отправлено: $name ($colorLabel), '
             'контроль ${pickedTc.minutes}+${pickedTc.increment}'
             '${pickedTc.rated ? " рейтинговая" : ""}',
@@ -5636,7 +7217,9 @@ class _MyHomePageState extends State<MyHomePage> {
       debugPrint('[INVITE] sendInvite ERROR: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось отправить приглашение: $e')),
+          SnackBar(
+              content: MakeChessLocalizedText(
+                  'Не удалось отправить приглашение: $e')),
         );
       }
     }
@@ -5721,7 +7304,8 @@ class _MyHomePageState extends State<MyHomePage> {
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${session.student.nickname} отклонил ничью'),
+            content: MakeChessLocalizedText(
+                '${session.student.nickname} отклонил ничью'),
           ),
         );
       }
@@ -5753,6 +7337,17 @@ class _MyHomePageState extends State<MyHomePage> {
       _learningInvitationStatus = '$studentName принял приглашение';
     });
     unawaited(_refreshLearningSessionEval(session));
+    if (_learningCommonBoardEnabled) {
+      _applyLearningFenToSession(session, _learningCommonGame.fen);
+      unawaited(session.room.sendLearningControl(<String, dynamic>{
+        'type': 'learning_common_position',
+        'fen': _learningCommonGame.fen,
+        'teacherColor': session.myColor,
+        'clientId': _clientId,
+        'source': 'new_student',
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      }));
+    }
   }
 
   void _onLearningRemoteCtrl(
@@ -5765,7 +7360,10 @@ class _MyHomePageState extends State<MyHomePage> {
     final eventType = '${event['type'] ?? ''}';
     if (session.terminated &&
         eventType != 'result' &&
-        eventType != 'learning_reset') {
+        eventType != 'learning_reset' &&
+        eventType != 'learning_common_position' &&
+        eventType != 'learning_set_position' &&
+        eventType != 'learning_restore_common') {
       return;
     }
     switch (eventType) {
@@ -5797,6 +7395,16 @@ class _MyHomePageState extends State<MyHomePage> {
           'resetBy': 'sync',
           'ts': DateTime.now().millisecondsSinceEpoch,
         }));
+        if (_learningCommonBoardEnabled) {
+          unawaited(session.room.sendLearningControl(<String, dynamic>{
+            'type': 'learning_common_position',
+            'fen': _learningCommonGame.fen,
+            'teacherColor': session.myColor,
+            'clientId': _clientId,
+            'source': 'sync',
+            'ts': DateTime.now().millisecondsSinceEpoch,
+          }));
+        }
         break;
       case 'learning_student_eval':
         session.studentEvaluationEnabled = event['enabled'] == true;
@@ -5809,6 +7417,29 @@ class _MyHomePageState extends State<MyHomePage> {
         session.legalTargets.clear();
         session.captureTargets.clear();
         if (mounted) setState(() {});
+        break;
+      case 'learning_restore_common':
+        final requestedFen =
+            '${event['fen'] ?? _learningCommonGame.fen}'.trim();
+        _applyLearningFenToSession(
+          session,
+          requestedFen.isEmpty ? _learningCommonGame.fen : requestedFen,
+        );
+        if (mounted) setState(() {});
+        break;
+      case 'learning_common_position':
+        final incomingCommonFen = '${event['fen'] ?? ''}'.trim();
+        if (incomingCommonFen.isNotEmpty) {
+          _applyLearningFenToSession(session, incomingCommonFen);
+          if (mounted) setState(() {});
+        }
+        break;
+      case 'learning_set_position':
+        final incomingFen = '${event['fen'] ?? ''}'.trim();
+        if (incomingFen.isNotEmpty) {
+          _applyLearningFenToSession(session, incomingFen);
+          if (mounted) setState(() {});
+        }
         break;
       case 'learning_reset':
         final incomingTeacherColor =
@@ -5840,16 +7471,17 @@ class _MyHomePageState extends State<MyHomePage> {
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Предложение ничьей'),
-        content: Text('${session.student.nickname} предлагает ничью'),
+        title: const MakeChessLocalizedText('Предложение ничьей'),
+        content: MakeChessLocalizedText(
+            '${session.student.nickname} предлагает ничью'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отклонить'),
+            child: const MakeChessLocalizedText('Отклонить'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Принять'),
+            child: const MakeChessLocalizedText('Принять'),
           ),
         ],
       ),
@@ -5929,11 +7561,16 @@ class _MyHomePageState extends State<MyHomePage> {
     _LearningGameSession session,
     String square,
   ) {
-    if (_learningFocusedStudentId != session.student.id && mounted) {
-      setState(() => _learningFocusedStudentId = session.student.id);
+    if (mounted &&
+        (_learningFocusedStudentId != session.student.id ||
+            _learningCommonBoardSelected)) {
+      setState(() {
+        _learningFocusedStudentId = session.student.id;
+        _selectedLearningStudentId = session.student.id;
+        _learningCommonBoardSelected = false;
+      });
+      _refreshLearningCommonBoardOverlay();
     }
-    if (!_learningTeacherTurn(session)) return;
-
     final selected = session.selectedSquare;
     if (selected == null) {
       final piece = session.game.get(square);
@@ -5996,7 +7633,6 @@ class _MyHomePageState extends State<MyHomePage> {
     String from,
     String to,
   ) async {
-    if (!_learningTeacherTurn(session)) return;
     if (session.plyIndex != session.sanMoves.length) {
       session.plyIndex = session.sanMoves.length;
       session.game.load(session.fens.last);
@@ -6202,7 +7838,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'Предложение ничьей отправлено: ${session.student.nickname}',
           ),
         ),
@@ -6215,16 +7851,17 @@ class _MyHomePageState extends State<MyHomePage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Сдаться?'),
-        content: Text('Партия с ${session.student.nickname} будет завершена'),
+        title: const MakeChessLocalizedText('Сдаться?'),
+        content: MakeChessLocalizedText(
+            'Партия с ${session.student.nickname} будет завершена'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отмена'),
+            child: const MakeChessLocalizedText('Отмена'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Сдаться'),
+            child: const MakeChessLocalizedText('Сдаться'),
           ),
         ],
       ),
@@ -6287,18 +7924,18 @@ class _MyHomePageState extends State<MyHomePage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Расставить позицию заново?'),
-        content: Text(
+        title: const MakeChessLocalizedText('Расставить позицию заново?'),
+        content: MakeChessLocalizedText(
           'Партия с ${session.student.nickname} начнётся с начальной позиции.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отмена'),
+            child: const MakeChessLocalizedText('Отмена'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Начать заново'),
+            child: const MakeChessLocalizedText('Начать заново'),
           ),
         ],
       ),
@@ -6325,7 +7962,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Сначала подключитесь к учителю'),
+            content: MakeChessLocalizedText('Сначала подключитесь к учителю'),
           ),
         );
       }
@@ -6335,18 +7972,18 @@ class _MyHomePageState extends State<MyHomePage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Расставить позицию заново?'),
-        content: const Text(
+        title: const MakeChessLocalizedText('Расставить позицию заново?'),
+        content: const MakeChessLocalizedText(
           'Позиция вернётся к начальной и одновременно обновится у учителя.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отмена'),
+            child: const MakeChessLocalizedText('Отмена'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Начать заново'),
+            child: const MakeChessLocalizedText('Начать заново'),
           ),
         ],
       ),
@@ -6407,19 +8044,19 @@ class _MyHomePageState extends State<MyHomePage> {
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Закончить занятие?'),
-        content: Text(
+        title: const MakeChessLocalizedText('Закончить занятие?'),
+        content: MakeChessLocalizedText(
           'Закончить занятие с ${student.nickname}?\n\n'
           'Будут завершены партия и видеосвязь.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Отмена'),
+            child: const MakeChessLocalizedText('Отмена'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Закончить'),
+            child: const MakeChessLocalizedText('Закончить'),
           ),
         ],
       ),
@@ -6476,7 +8113,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
               pgn.isEmpty ? 'Список ходов пока пуст' : 'PGN скопирован',
             ),
           ),
@@ -6518,7 +8155,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PGN скопирован')),
+        const SnackBar(content: MakeChessLocalizedText('PGN скопирован')),
       );
     }
   }
@@ -6531,75 +8168,1661 @@ class _MyHomePageState extends State<MyHomePage> {
     return '$minutes:${rest.toString().padLeft(2, '0')}';
   }
 
-  List<_LearningGameSession?> _orderedLearningBoardSessions() {
-    final result = <_LearningGameSession?>[];
-    final used = <String>{};
-    for (final student in _learningStudents.take(8)) {
-      result.add(_learningGameSessions[student.id]);
-      used.add(student.id);
+  PuzzleTask _buildLearningCommonTaskDraft() {
+    final title = _learningCommonTaskTitle.trim().isEmpty
+        ? 'Новая задача'
+        : _learningCommonTaskTitle.trim();
+    final typeTitle = _learningCommonTaskTypeTitle.trim().isEmpty
+        ? 'Задачи на зевки'
+        : _learningCommonTaskTypeTitle.trim();
+
+    return PuzzleTask(
+      id: 'learning_common_${DateTime.now().millisecondsSinceEpoch}',
+      type: _puzzleTypeKeyFromTitle(typeTitle),
+      typeTitle: typeTitle,
+      title: title,
+      number: _learningCommonTaskNumber < 1 ? 1 : _learningCommonTaskNumber,
+      startFen: _learningCommonTaskStartFen ?? _learningCommonGame.fen,
+      solutionLines: _learningCommonTaskSavedLines
+          .map(
+            (line) => PuzzleLine(
+              id: DateTime.now().microsecondsSinceEpoch.toString(),
+              moves: List<String>.from(line),
+            ),
+          )
+          .toList(growable: false),
+      description: '',
+    );
+  }
+
+  String _learningCommonTaskFileName(PuzzleTask task) {
+    final safeTitle = '${task.number}_${task.title}'
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-zа-яё0-9]+', caseSensitive: false), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return '${safeTitle.isEmpty ? 'puzzle' : safeTitle}.json';
+  }
+
+  void _learningCommonTaskSetInitialPosition() {
+    setState(() {
+      _learningCommonTaskStartFen = _learningCommonGame.fen;
+      _learningCommonTaskCurrentLine.clear();
+      _learningCommonTaskRecording = false;
+      _learningCommonTaskPublished = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: MakeChessLocalizedText('Начальная позиция задачи записана')),
+    );
+  }
+
+  void _learningCommonTaskStartLine() {
+    _learningCommonTaskStartFen ??= _learningCommonGame.fen;
+    final startFen = _learningCommonTaskStartFen!;
+    final loaded = _learningCommonGame.load(startFen);
+    if (!loaded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: MakeChessLocalizedText(
+                'Не удалось загрузить начальную позицию')),
+      );
+      return;
     }
-    for (final entry in _learningGameSessions.entries) {
+
+    setState(() {
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+      _learningCommonTaskCurrentLine.clear();
+      _learningCommonTaskRecording = true;
+      _learningCommonTaskPublished = false;
+    });
+    _refreshLearningCommonBoardOverlay();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: MakeChessLocalizedText(
+            'Запись ветки началась. Делайте ходы на общей доске'),
+      ),
+    );
+  }
+
+  void _learningCommonTaskFinishLine() {
+    if (_learningCommonTaskCurrentLine.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Ветка пустая. Сначала сделайте ходы')),
+      );
+      return;
+    }
+
+    setState(() {
+      _learningCommonTaskSavedLines.add(
+        List<String>.from(_learningCommonTaskCurrentLine),
+      );
+      _learningCommonTaskCurrentLine.clear();
+      _learningCommonTaskRecording = false;
+      _learningCommonTaskPublished = false;
+    });
+
+    final startFen = _learningCommonTaskStartFen;
+    if (startFen != null && startFen.trim().isNotEmpty) {
+      _learningCommonGame.load(startFen);
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+      _refreshLearningCommonBoardOverlay();
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: MakeChessLocalizedText('Ветка решения записана')),
+    );
+  }
+
+  void _learningCommonTaskDeleteLine(int index) {
+    if (index < 0 || index >= _learningCommonTaskSavedLines.length) return;
+    setState(() {
+      _learningCommonTaskSavedLines.removeAt(index);
+      _learningCommonTaskPublished = false;
+    });
+  }
+
+  void _learningCommonTaskClear() {
+    setState(() {
+      _learningCommonTaskTitle = 'Новая задача';
+      _learningCommonTaskNumber = 1;
+      _learningCommonTaskTypeTitle = 'Задачи на зевки';
+      _learningCommonTaskStartFen = null;
+      _learningCommonTaskSavedLines.clear();
+      _learningCommonTaskCurrentLine.clear();
+      _learningCommonTaskRecording = false;
+      _learningCommonTaskPublished = false;
+    });
+  }
+
+  void _learningCommonTaskNew() {
+    setState(() {
+      _learningCommonTaskTitle = 'Новая задача';
+      _learningCommonTaskNumber += 1;
+      _learningCommonTaskStartFen = null;
+      _learningCommonTaskSavedLines.clear();
+      _learningCommonTaskCurrentLine.clear();
+      _learningCommonTaskRecording = false;
+      _learningCommonTaskPublished = false;
+    });
+  }
+
+  Future<void> _learningCommonTaskChooseFolder() async {
+    try {
+      final folderName = await choosePuzzleFolder();
+      if (!mounted) return;
+      setState(() => _learningCommonTaskFolderName = folderName);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: MakeChessLocalizedText(
+                'Папка выбрана: ${folderName ?? 'без названия'}')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: MakeChessLocalizedText('Папка не выбрана: $error')),
+      );
+    }
+  }
+
+  Future<void> _learningCommonTaskPublish() async {
+    final task = _buildLearningCommonTaskDraft();
+    if ((_learningCommonTaskStartFen ?? '').trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Сначала запишите начальную позицию')),
+      );
+      return;
+    }
+    if (_learningCommonTaskSavedLines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('Сначала запишите хотя бы одну ветку')),
+      );
+      return;
+    }
+
+    setState(() => _learningCommonTaskPublishing = true);
+    try {
+      await publishPuzzleTextFile(
+        fileName: _learningCommonTaskFileName(task),
+        content: task.toPrettyJson(),
+      );
+      final folderName = await getPuzzleFolderName();
+      if (!mounted) return;
+      setState(() {
+        _learningCommonTaskFolderName = folderName;
+        _learningCommonTaskPublished = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: MakeChessLocalizedText(
+                'Задача опубликована в выбранную папку')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: MakeChessLocalizedText('Не удалось опубликовать: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _learningCommonTaskPublishing = false);
+      }
+    }
+  }
+
+  Future<void> _learningCommonTaskDownload() async {
+    final task = _buildLearningCommonTaskDraft();
+    await savePuzzleTextFile(
+      fileName: _learningCommonTaskFileName(task),
+      content: task.toPrettyJson(),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: MakeChessLocalizedText('Файл задачи скачан на компьютер')),
+    );
+  }
+
+  void _learningCommonTaskNetwork() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: MakeChessLocalizedText(
+            'Сетевое сохранение задачи подключим следующим шагом'),
+      ),
+    );
+  }
+
+  Future<void> _learningCommonTaskCopyJson() async {
+    await Clipboard.setData(
+      ClipboardData(text: _buildLearningCommonTaskDraft().toPrettyJson()),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: MakeChessLocalizedText('JSON задачи скопирован')),
+    );
+  }
+
+  void _toggleLearningCommonBoard() {
+    if (_learningCommonBoardEnabled) {
+      _hideLearningCommonBoard(updateButtonState: true);
+    } else {
+      _showLearningCommonBoard();
+    }
+  }
+
+  void _showLearningCommonBoard() {
+    if (!mounted) return;
+
+    setState(() {
+      _learningCommonBoardEnabled = true;
+      _learningCommonBoardSelected = true;
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_learningCommonBoardEnabled) return;
+
+      _learningCommonBoardOverlay?.remove();
+      final entry = OverlayEntry(
+        builder: _buildLearningCommonBoardOverlay,
+      );
+      _learningCommonBoardOverlay = entry;
+      Overlay.of(context, rootOverlay: true).insert(entry);
+    });
+  }
+
+  void _hideLearningCommonBoard({required bool updateButtonState}) {
+    _learningCommonBoardOverlay?.remove();
+    _learningCommonBoardOverlay = null;
+
+    if (!updateButtonState || !mounted) return;
+    if (!_learningCommonBoardEnabled) return;
+
+    setState(() {
+      _learningCommonBoardEnabled = false;
+      _learningCommonBoardSelected = false;
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
+    });
+  }
+
+  void _refreshLearningCommonBoardOverlay() {
+    _learningCommonBoardOverlay?.markNeedsBuild();
+  }
+
+  List<_PuzzleBoardArrow> get _visibleLearningCommonBoardArrows =>
+      _visibleLearningBoardArrowsFor(_learningCommonAnalysisBoardId);
+
+  void _startLearningCommonAnalysisDrag(
+    Offset localPosition,
+    double boardSize,
+  ) {
+    if (!_learningCommonArrowDrawMode) return;
+
+    final square = _boardSquareFromLocalPosition(
+      localPosition,
+      boardSize,
+      flipped: false,
+    );
+    final key = _learningAnalysisArrowKey;
+    if (square == null ||
+        key == null ||
+        !_validAnalysisArrowKeys.contains(key)) {
+      return;
+    }
+
+    setState(() {
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+
+      if (_isCircleAnalysisKey(key)) {
+        _learningBoardArrows.add(
+          _PuzzleBoardArrow(
+            from: square,
+            to: square,
+            kind: key,
+            color: _analysisArrowColor(key),
+            isCircle: true,
+            side: _learningAnalysisSide,
+            boardId: _learningCommonAnalysisBoardId,
+          ),
+        );
+        _learningCommonPendingAnalysisArrowFrom = null;
+        _learningCommonAnalysisPointerPosition = null;
+        return;
+      }
+
+      _learningCommonPendingAnalysisArrowFrom = square;
+      _learningCommonAnalysisPointerPosition = localPosition;
+    });
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  void _updateLearningCommonAnalysisDrag(
+    Offset localPosition,
+    double boardSize,
+  ) {
+    if (!_learningCommonArrowDrawMode ||
+        _learningCommonPendingAnalysisArrowFrom == null) {
+      return;
+    }
+
+    final clamped = Offset(
+      localPosition.dx.clamp(0, boardSize).toDouble(),
+      localPosition.dy.clamp(0, boardSize).toDouble(),
+    );
+
+    setState(() {
+      _learningCommonAnalysisPointerPosition = clamped;
+    });
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  void _finishLearningCommonAnalysisDrag(
+    Offset localPosition,
+    double boardSize,
+  ) {
+    if (!_learningCommonArrowDrawMode) return;
+
+    final key = _learningAnalysisArrowKey;
+    final from = _learningCommonPendingAnalysisArrowFrom;
+    if (key == null || from == null || _isCircleAnalysisKey(key)) return;
+
+    final to = _boardSquareFromLocalPosition(
+      localPosition,
+      boardSize,
+      flipped: false,
+    );
+
+    setState(() {
+      if (to != null && to != from) {
+        _learningBoardArrows.add(
+          _PuzzleBoardArrow(
+            from: from,
+            to: to,
+            kind: key,
+            color: _analysisArrowColor(key),
+            side: _learningAnalysisSide,
+            boardId: _learningCommonAnalysisBoardId,
+          ),
+        );
+      }
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
+    });
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  void _cancelLearningCommonAnalysisDrag() {
+    setState(() {
+      _learningCommonPendingAnalysisArrowFrom = null;
+      _learningCommonAnalysisPointerPosition = null;
+    });
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  bool _removeLearningCommonAnalysisElementAt(
+    Offset localPosition,
+    double boardSize,
+  ) {
+    final cell = boardSize / 8;
+    final circleTolerance = cell * 0.42;
+    final arrowTolerance = cell * 0.22;
+    final visible = _visibleLearningCommonBoardArrows;
+
+    for (var index = visible.length - 1; index >= 0; index--) {
+      final element = visible[index];
+      final fromCenter = _boardCenterForSquare(
+        element.from,
+        boardSize,
+        flipped: false,
+      );
+
+      final hit = element.isCircle || element.from == element.to
+          ? (localPosition - fromCenter).distance <= circleTolerance
+          : _distanceToSegment(
+                localPosition,
+                fromCenter,
+                _boardCenterForSquare(
+                  element.to,
+                  boardSize,
+                  flipped: false,
+                ),
+              ) <=
+              arrowTolerance;
+
+      if (!hit) continue;
+
+      setState(() {
+        _learningBoardArrows.remove(element);
+        _learningCommonPendingAnalysisArrowFrom = null;
+        _learningCommonAnalysisPointerPosition = null;
+      });
+      _refreshLearningCommonBoardOverlay();
+      return true;
+    }
+
+    return false;
+  }
+
+  Widget _buildLearningCommonBoardOverlay(BuildContext overlayContext) {
+    final screenSize = MediaQuery.of(overlayContext).size;
+    final maxBoardSize = math
+        .max(
+          190.0,
+          math.min(
+            720.0,
+            math.min(screenSize.width - 84.0, screenSize.height - 154.0),
+          ),
+        )
+        .toDouble();
+    final minBoardSize = math.min(230.0, maxBoardSize).toDouble();
+    final boardSize =
+        _learningCommonBoardSize.clamp(minBoardSize, maxBoardSize).toDouble();
+    _learningCommonBoardSize = boardSize;
+
+    final windowWidth = boardSize + 62.0;
+    final commonEditorExtraHeight =
+        _editMode && _editorTargetKind == 'learningCommon'
+            ? math.max(76.0, boardSize / 4.0)
+            : 0.0;
+    final windowHeight = boardSize + 126.0 + commonEditorExtraHeight;
+    final maxLeft = math.max(0.0, screenSize.width - windowWidth).toDouble();
+    final maxTop = math.max(0.0, screenSize.height - windowHeight).toDouble();
+
+    final left = _learningCommonBoardOffset.dx.clamp(0.0, maxLeft).toDouble();
+    final top = _learningCommonBoardOffset.dy.clamp(0.0, maxTop).toDouble();
+    _learningCommonBoardOffset = Offset(left, top);
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Material(
+            color: Colors.transparent,
+            child: _buildLearningCommonBoardCard(
+              boardSize: boardSize,
+              compact: false,
+              onClose: () => _hideLearningCommonBoard(updateButtonState: true),
+              onDragUpdate: (details) {
+                final nextLeft =
+                    (_learningCommonBoardOffset.dx + details.delta.dx)
+                        .clamp(0.0, maxLeft)
+                        .toDouble();
+                final nextTop =
+                    (_learningCommonBoardOffset.dy + details.delta.dy)
+                        .clamp(0.0, maxTop)
+                        .toDouble();
+                _learningCommonBoardOffset = Offset(nextLeft, nextTop);
+                _refreshLearningCommonBoardOverlay();
+              },
+            ),
+          ),
+          Positioned(
+            right: 2,
+            bottom: 2,
+            child: Tooltip(
+              message:
+                  MakeChessLocalization.phrase('Изменить размер общей доски'),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (details) {
+                  final delta = (details.delta.dx + details.delta.dy) / 2.0;
+                  _learningCommonBoardSize = (_learningCommonBoardSize + delta)
+                      .clamp(minBoardSize, maxBoardSize)
+                      .toDouble();
+                  _refreshLearningCommonBoardOverlay();
+                },
+                child: const MouseRegion(
+                  cursor: SystemMouseCursors.resizeDownRight,
+                  child: SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: Align(
+                      alignment: Alignment.bottomRight,
+                      child: Icon(
+                        Icons.open_in_full,
+                        size: 18,
+                        color: AppColors.accent,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _selectLearningCommonBoardForEditor() {
+    if (!mounted || !_learningCommonBoardEnabled) return;
+    if (!_learningCommonBoardSelected) {
+      setState(() {
+        _learningCommonBoardSelected = true;
+      });
+    }
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  List<Map<String, dynamic>> _learningCommonVerboseMoves(String square) {
+    try {
+      return List<Map<String, dynamic>>.from(
+        _learningCommonGame.moves(<String, dynamic>{
+          'square': square,
+          'verbose': true,
+        }),
+      );
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  void _computeLearningCommonLegalTargets(String square) {
+    final moves = _learningCommonVerboseMoves(square);
+    _learningCommonLegalTargets
+      ..clear()
+      ..addAll(
+        moves
+            .map((move) => '${move['to'] ?? ''}')
+            .where((target) => target.isNotEmpty),
+      );
+    _learningCommonCaptureTargets
+      ..clear()
+      ..addAll(
+        moves.where((move) {
+          final flags = '${move['flags'] ?? ''}';
+          return flags.contains('c') ||
+              flags.contains('e') ||
+              move['captured'] != null;
+        }).map((move) => '${move['to'] ?? ''}'),
+      );
+  }
+
+  bool _learningCommonNeedsPromotion(String from, String to) {
+    final piece = _learningCommonGame.get(from);
+    if (piece == null || piece.type != ch.PieceType.PAWN) return false;
+    final rank = int.tryParse(to.substring(1)) ?? 0;
+    return (piece.color == ch.Color.WHITE && rank == 8) ||
+        (piece.color == ch.Color.BLACK && rank == 1);
+  }
+
+  String? _learningCommonSanFor(
+    String from,
+    String to, {
+    String? promotion,
+  }) {
+    for (final move in _learningCommonVerboseMoves(from)) {
+      if ('${move['to'] ?? ''}' != to) continue;
+      final movePromotion = move['promotion']?.toString();
+      if (promotion == null || promotion == movePromotion) {
+        return move['san']?.toString();
+      }
+    }
+    return null;
+  }
+
+  void _onLearningCommonSquareTap(String square) {
+    _selectLearningCommonBoardForEditor();
+    final selected = _learningCommonSelectedSquare;
+    if (selected == null) {
+      final piece = _learningCommonGame.get(square);
+      if (piece == null || piece.color != _learningCommonGame.turn) return;
+      setState(() {
+        _learningCommonSelectedSquare = square;
+        _computeLearningCommonLegalTargets(square);
+      });
+      _refreshLearningCommonBoardOverlay();
+      return;
+    }
+
+    if (_learningCommonLegalTargets.contains(square)) {
+      unawaited(_makeLearningCommonMove(selected, square));
+      return;
+    }
+
+    final piece = _learningCommonGame.get(square);
+    setState(() {
+      if (piece != null && piece.color == _learningCommonGame.turn) {
+        _learningCommonSelectedSquare = square;
+        _computeLearningCommonLegalTargets(square);
+      } else {
+        _learningCommonSelectedSquare = null;
+        _learningCommonLegalTargets.clear();
+        _learningCommonCaptureTargets.clear();
+      }
+    });
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  Future<void> _makeLearningCommonMove(String from, String to) async {
+    String? promotion;
+    if (_learningCommonNeedsPromotion(from, to)) {
+      final piece = _learningCommonGame.get(from);
+      if (piece == null) return;
+      promotion = await _askPromotionPiece(context, piece.color);
+      if (promotion == null) return;
+    }
+
+    final ok = _learningCommonGame.move(<String, dynamic>{
+      'from': from,
+      'to': to,
+      if (promotion != null) 'promotion': promotion,
+    });
+    if (!ok) return;
+
+    setState(() {
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+      if (_learningCommonTaskRecording) {
+        _learningCommonTaskCurrentLine.add(
+          '$from$to${promotion ?? ''}',
+        );
+        _learningCommonTaskPublished = false;
+      }
+    });
+    _refreshLearningCommonBoardOverlay();
+    await _broadcastLearningCommonPosition(source: 'common_move');
+  }
+
+  void _applyLearningFenToSession(
+    _LearningGameSession session,
+    String fen,
+  ) {
+    final clocksWereRunning = session.clocksStarted;
+    session.tick?.cancel();
+    session.tick = null;
+    try {
+      final loaded = session.game.load(fen);
+      if (!loaded) session.game.reset();
+    } catch (_) {
+      session.game.reset();
+    }
+    session.sanMoves.clear();
+    session.fens
+      ..clear()
+      ..add(session.game.fen);
+    session.plyIndex = 0;
+    session.selectedSquare = null;
+    session.legalTargets.clear();
+    session.captureTargets.clear();
+    session.result = null;
+    session.resultReason = null;
+    session.terminated = false;
+    session.clocksStarted = clocksWereRunning;
+    session.lastTickAt = null;
+    if (clocksWereRunning) {
+      _startLearningSessionClock(session);
+    }
+    unawaited(_refreshLearningSessionEval(session));
+  }
+
+  Future<void> _broadcastLearningCommonPosition({
+    required String source,
+  }) async {
+    final fen = _learningCommonGame.fen;
+    final sessions = _learningGameSessions.values.toList(growable: false);
+    for (final session in sessions) {
+      _applyLearningFenToSession(session, fen);
+      unawaited(
+        session.room.sendLearningControl(<String, dynamic>{
+          'type': 'learning_common_position',
+          'fen': fen,
+          'teacherColor': session.myColor,
+          'clientId': _clientId,
+          'source': source,
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }),
+      );
+    }
+    if (mounted) setState(() {});
+    _refreshLearningCommonBoardOverlay();
+  }
+
+  Future<void> _resetLearningCommonBoard() async {
+    _learningCommonGame.reset();
+    setState(() {
+      _learningCommonSelectedSquare = null;
+      _learningCommonLegalTargets.clear();
+      _learningCommonCaptureTargets.clear();
+    });
+    _refreshLearningCommonBoardOverlay();
+    await _broadcastLearningCommonPosition(source: 'common_reset');
+  }
+
+  Future<void> _restoreLearningSessionFromCommon(
+    _LearningGameSession session,
+  ) async {
+    final fen = _learningCommonGame.fen;
+    _applyLearningFenToSession(session, fen);
+    if (mounted) setState(() {});
+    await session.room.sendLearningControl(<String, dynamic>{
+      'type': 'learning_common_position',
+      'fen': fen,
+      'teacherColor': session.myColor,
+      'clientId': _clientId,
+      'source': 'teacher_restore_one',
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  void _applyStudentCommonFen(String fen) {
+    if (fen.trim().isEmpty) return;
+    final clocksWereRunning = _clocksStarted;
+    _stopTick();
+    try {
+      final loaded = game.load(fen);
+      if (!loaded) return;
+    } catch (_) {
+      return;
+    }
+    _fenController.text = game.fen;
+    _sanMoves.clear();
+    _fens
+      ..clear()
+      ..add(game.fen);
+    _plyIndex = 0;
+    _selectedSquare = null;
+    _legalTargets.clear();
+    _captureTargets.clear();
+    _gameTerminated = false;
+    _result = null;
+    _clocksStarted = clocksWereRunning;
+    _lastTickAt = null;
+    if (clocksWereRunning) {
+      _startTickForActiveSide();
+    }
+    if (_learningStudentEvaluationEnabled) {
+      unawaited(_refreshEvalBar());
+    }
+  }
+
+  Future<void> _restoreLearningStudentFromCommon() async {
+    final room = _room;
+    final fen = _studentLearningCommonFen;
+    if (!_studentLearningRoomActive || room == null || fen == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: MakeChessLocalizedText(
+                'Общая позиция ещё не получена от учителя'),
+          ),
+        );
+      }
+      return;
+    }
+    _applyStudentCommonFen(fen);
+    if (mounted) setState(() {});
+    await room.sendLearningControl(<String, dynamic>{
+      'type': 'learning_restore_common',
+      'fen': fen,
+      'clientId': _clientId,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  void _refreshLearningEditorTargetAfterVisualChange() {
+    if (_editorTargetKind == 'learningCommon') {
+      _refreshLearningCommonBoardOverlay();
+    }
+  }
+
+  Widget _buildLearningEditorPaletteRow({
+    required bool white,
+    required double width,
+    required double cellSize,
+    required bool compact,
+  }) {
+    final codes = white
+        ? const <String>['wK', 'wQ', 'wR', 'wB', 'wN', 'wP']
+        : const <String>['bK', 'bQ', 'bR', 'bB', 'bN', 'bP'];
+    final pieceSide = math
+        .min(
+          cellSize * 0.86,
+          compact ? 22.0 : 40.0,
+        )
+        .toDouble();
+    final rowHeight =
+        compact ? 24.0 : math.max(42.0, pieceSide + 10.0).toDouble();
+    final gap = compact ? 2.0 : 5.0;
+
+    Widget palettePiece(String code) {
+      return Draggable<String>(
+        data: code,
+        onDragStarted: () => _dragFromSquare = null,
+        feedback: Material(
+          color: Colors.transparent,
+          child: SvgPicture.asset(
+            _assetFor(code),
+            width: pieceSide,
+            height: pieceSide,
+          ),
+        ),
+        childWhenDragging: Opacity(
+          opacity: 0.22,
+          child: SvgPicture.asset(
+            _assetFor(code),
+            width: pieceSide,
+            height: pieceSide,
+          ),
+        ),
+        child: SvgPicture.asset(
+          _assetFor(code),
+          width: pieceSide,
+          height: pieceSide,
+        ),
+      );
+    }
+
+    final trash = DragTarget<String>(
+      onWillAccept: (_) => _dragFromSquare != null,
+      onAccept: (_) {
+        final from = _dragFromSquare;
+        if (from == null) return;
+        final ri = _rankIndex(from);
+        final fi = _fileIndex(from);
+        setState(() {
+          _editBoard[ri][fi] = '.';
+          _dragFromSquare = null;
+        });
+        _refreshLearningEditorTargetAfterVisualChange();
+      },
+      builder: (context, candidates, rejected) {
+        final highlighted = candidates.isNotEmpty;
+        return Container(
+          height: compact ? 22 : 32,
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 4 : 8,
+            vertical: compact ? 2 : 4,
+          ),
+          decoration: BoxDecoration(
+            color: highlighted
+                ? Colors.redAccent.withOpacity(0.24)
+                : AppColors.surfaceCard.withOpacity(0.72),
+            borderRadius: AppRadius.r8,
+            border: Border.all(
+              color: highlighted ? Colors.redAccent : AppColors.borderSoft,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.delete_outline,
+                size: compact ? 15 : 19,
+                color: highlighted ? Colors.redAccent : AppColors.textDim,
+              ),
+              if (!compact) ...[
+                const SizedBox(width: 4),
+                MakeChessLocalizedText(
+                  'Удалить',
+                  style: AppTextStyles.caption.copyWith(fontSize: 11),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+
+    return SizedBox(
+      width: width,
+      height: rowHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceCard.withOpacity(0.50),
+          borderRadius: AppRadius.r8,
+          border: Border.all(color: AppColors.borderSoft),
+        ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 3 : 6),
+          child: Row(
+            children: [
+              for (var i = 0; i < codes.length; i++) ...[
+                palettePiece(codes[i]),
+                if (i != codes.length - 1) SizedBox(width: gap),
+              ],
+              const Spacer(),
+              trash,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningInlineEditorBoard(
+    double boardSize, {
+    bool flipped = false,
+  }) {
+    final cell = boardSize / 8;
+    return AnimatedBuilder(
+      animation: widget.boardTheme,
+      builder: (context, _) => SizedBox(
+        width: boardSize,
+        height: boardSize,
+        child: GridView.builder(
+          padding: EdgeInsets.zero,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 8,
+          ),
+          itemCount: 64,
+          itemBuilder: (context, index) {
+            final row = index ~/ 8;
+            final column = index % 8;
+            final file = flipped
+                ? String.fromCharCode('h'.codeUnitAt(0) - column)
+                : String.fromCharCode('a'.codeUnitAt(0) + column);
+            final square = flipped ? '$file${row + 1}' : '$file${8 - row}';
+
+            return DragTarget<String>(
+              onWillAccept: (code) => code != null,
+              onAccept: (pieceCode) {
+                final from = _dragFromSquare;
+                final targetRow = _rankIndex(square);
+                final targetFile = _fileIndex(square);
+                setState(() {
+                  if (from != null && from != square) {
+                    _editBoard[_rankIndex(from)][_fileIndex(from)] = '.';
+                  }
+                  _editBoard[targetRow][targetFile] =
+                      _fenFromPieceCode(pieceCode);
+                  _dragFromSquare = null;
+                });
+                _refreshLearningEditorTargetAfterVisualChange();
+              },
+              builder: (context, candidates, rejected) {
+                final fenChar =
+                    _editBoard[_rankIndex(square)][_fileIndex(square)];
+                final pieceCode = _pieceCodeFromFen(fenChar);
+                final highlighted = candidates.isNotEmpty;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _onSquareEdit(square),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: highlighted
+                          ? AppColors.accentGlowSoft
+                          : (row + column).isEven
+                              ? widget.boardTheme.lightSquare
+                              : widget.boardTheme.darkSquare,
+                      border: Border.all(
+                        color: highlighted
+                            ? AppColors.accent
+                            : AppColors.accent.withOpacity(0.40),
+                        width: highlighted ? 1.8 : 0.7,
+                      ),
+                    ),
+                    child: pieceCode == null
+                        ? null
+                        : Center(
+                            child: Draggable<String>(
+                              data: pieceCode,
+                              onDragStarted: () => _dragFromSquare = square,
+                              onDragCompleted: () => _dragFromSquare = null,
+                              onDraggableCanceled: (_, __) {
+                                _dragFromSquare = null;
+                              },
+                              feedback: Material(
+                                color: Colors.transparent,
+                                child: SvgPicture.asset(
+                                  _assetFor(pieceCode),
+                                  width: cell * 0.84,
+                                  height: cell * 0.84,
+                                ),
+                              ),
+                              childWhenDragging: const SizedBox.shrink(),
+                              child: SvgPicture.asset(
+                                _assetFor(pieceCode),
+                                width: cell * 0.84,
+                                height: cell * 0.84,
+                              ),
+                            ),
+                          ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningCommonBoardCard({
+    required double boardSize,
+    required bool compact,
+    VoidCallback? onClose,
+    GestureDragUpdateCallback? onDragUpdate,
+  }) {
+    final cell = boardSize / 8;
+    final pieceSize = cell * 0.84;
+
+    Widget titleBar() {
+      final bar = Container(
+        height: compact ? 24 : 38,
+        padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8),
+        decoration: BoxDecoration(
+          color: AppColors.accentGlowSoft,
+          borderRadius: AppRadius.r8,
+          border: Border.all(color: AppColors.borderBright),
+        ),
+        child: Row(
+          children: [
+            if (!compact)
+              const Padding(
+                padding: EdgeInsets.only(right: 6),
+                child: Icon(Icons.drag_indicator, size: 18),
+              ),
+            Expanded(
+              child: MakeChessLocalizedText(
+                'Общая доска',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.caption.copyWith(
+                  fontWeight: FontWeight.w900,
+                  fontSize: compact ? 10 : 13,
+                ),
+              ),
+            ),
+            Tooltip(
+              message: MakeChessLocalization.phrase(
+                  'Вернуть общую доску в начальную позицию'),
+              child: IconButton(
+                onPressed: () => unawaited(_resetLearningCommonBoard()),
+                padding: EdgeInsets.zero,
+                constraints: BoxConstraints.tightFor(
+                  width: compact ? 22 : 30,
+                  height: compact ? 22 : 30,
+                ),
+                visualDensity: VisualDensity.compact,
+                iconSize: compact ? 14 : 18,
+                icon: const Icon(Icons.restart_alt),
+              ),
+            ),
+            if (onClose != null)
+              Tooltip(
+                message: MakeChessLocalization.phrase('Закрыть общую доску'),
+                child: IconButton(
+                  onPressed: onClose,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 30,
+                    height: 30,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  icon: const Icon(Icons.close),
+                ),
+              ),
+          ],
+        ),
+      );
+
+      if (onDragUpdate == null) return bar;
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _selectLearningCommonBoardForEditor,
+        onPanUpdate: onDragUpdate,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.move,
+          child: bar,
+        ),
+      );
+    }
+
+    final editingCommon = _editMode && _editorTargetKind == 'learningCommon';
+    final editorPaletteWidth =
+        boardSize + (compact ? 2.0 : 6.0) + (compact ? 14.0 : 28.0);
+    final board = editingCommon
+        ? _buildLearningInlineEditorBoard(boardSize)
+        : AnimatedBuilder(
+            animation: widget.boardTheme,
+            builder: (context, _) {
+              final visibleArrows = _visibleLearningCommonBoardArrows;
+              return SizedBox(
+                width: boardSize,
+                height: boardSize,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    GridView.builder(
+                      padding: EdgeInsets.zero,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 8,
+                      ),
+                      itemCount: 64,
+                      itemBuilder: (context, index) {
+                        final row = index ~/ 8;
+                        final column = index % 8;
+                        final file =
+                            String.fromCharCode('a'.codeUnitAt(0) + column);
+                        final square = '$file${8 - row}';
+                        final selected =
+                            _learningCommonSelectedSquare == square;
+                        final legal =
+                            _learningCommonLegalTargets.contains(square);
+                        final capture =
+                            _learningCommonCaptureTargets.contains(square);
+                        final piece = _learningCommonGame.get(square);
+                        return DragTarget<String>(
+                          onWillAccept: (from) {
+                            if (_learningCommonArrowDrawMode ||
+                                from == null ||
+                                from == square) {
+                              return false;
+                            }
+                            return _learningCommonVerboseMoves(from).any(
+                              (move) => '${move['to'] ?? ''}' == square,
+                            );
+                          },
+                          onAccept: (from) {
+                            unawaited(
+                              _makeLearningCommonMove(from, square),
+                            );
+                          },
+                          builder: (context, candidateData, rejectedData) {
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _onLearningCommonSquareTap(square),
+                              child: Container(
+                                color: selected
+                                    ? const Color(0xFF4FA3FF)
+                                    : (row + column).isEven
+                                        ? widget.boardTheme.lightSquare
+                                        : widget.boardTheme.darkSquare,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (legal && !capture)
+                                      Center(
+                                        child: Container(
+                                          width: cell * 0.28,
+                                          height: cell * 0.28,
+                                          decoration: const BoxDecoration(
+                                            color: Color(0x6600D67A),
+                                            shape: BoxShape.circle,
+                                          ),
+                                        ),
+                                      ),
+                                    if (capture)
+                                      Center(
+                                        child: Container(
+                                          width: cell * 0.74,
+                                          height: cell * 0.74,
+                                          decoration: BoxDecoration(
+                                            border: Border.all(
+                                              color: Colors.redAccent,
+                                              width: math
+                                                  .max(1.4, cell * 0.055)
+                                                  .toDouble(),
+                                            ),
+                                            shape: BoxShape.circle,
+                                          ),
+                                        ),
+                                      ),
+                                    if (piece != null)
+                                      Center(
+                                        child: Draggable<String>(
+                                          data: square,
+                                          maxSimultaneousDrags:
+                                              !_learningCommonArrowDrawMode &&
+                                                      piece.color ==
+                                                          _learningCommonGame
+                                                              .turn
+                                                  ? 1
+                                                  : 0,
+                                          onDragStarted: () {
+                                            _selectLearningCommonBoardForEditor();
+                                            setState(() {
+                                              _learningCommonSelectedSquare =
+                                                  square;
+                                              _computeLearningCommonLegalTargets(
+                                                square,
+                                              );
+                                            });
+                                            _refreshLearningCommonBoardOverlay();
+                                          },
+                                          onDragCompleted: () {
+                                            setState(() {
+                                              _learningCommonSelectedSquare =
+                                                  null;
+                                              _learningCommonLegalTargets
+                                                  .clear();
+                                              _learningCommonCaptureTargets
+                                                  .clear();
+                                            });
+                                            _refreshLearningCommonBoardOverlay();
+                                          },
+                                          onDraggableCanceled: (_, __) {
+                                            setState(() {
+                                              _learningCommonSelectedSquare =
+                                                  null;
+                                              _learningCommonLegalTargets
+                                                  .clear();
+                                              _learningCommonCaptureTargets
+                                                  .clear();
+                                            });
+                                            _refreshLearningCommonBoardOverlay();
+                                          },
+                                          feedback: Material(
+                                            color: Colors.transparent,
+                                            child: SvgPicture.asset(
+                                              _assetFor(_codeFor(piece)),
+                                              width: pieceSize,
+                                              height: pieceSize,
+                                            ),
+                                          ),
+                                          childWhenDragging:
+                                              const SizedBox.shrink(),
+                                          child: SvgPicture.asset(
+                                            _assetFor(_codeFor(piece)),
+                                            width: pieceSize,
+                                            height: pieceSize,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                    if (visibleArrows.isNotEmpty ||
+                        _learningCommonArrowDrawMode)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: CustomPaint(
+                            painter: _PuzzleAnalysisArrowPainter(
+                              arrows: visibleArrows,
+                              boardSize: boardSize,
+                              centerForSquare: (square) =>
+                                  _boardCenterForSquare(
+                                square,
+                                boardSize,
+                                flipped: false,
+                              ),
+                              previewFrom:
+                                  _learningCommonPendingAnalysisArrowFrom,
+                              previewTo: _learningCommonAnalysisPointerPosition,
+                              previewColor: _learningCommonArrowDrawMode
+                                  ? _analysisArrowColor(
+                                      _learningAnalysisArrowKey!,
+                                    )
+                                  : null,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_learningCommonArrowDrawMode)
+                      Positioned.fill(
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.precise,
+                          child: Listener(
+                            behavior: HitTestBehavior.opaque,
+                            onPointerDown: (event) {
+                              if (_isSecondaryMouseButton(event)) {
+                                _removeLearningCommonAnalysisElementAt(
+                                  event.localPosition,
+                                  boardSize,
+                                );
+                                return;
+                              }
+                              _startLearningCommonAnalysisDrag(
+                                event.localPosition,
+                                boardSize,
+                              );
+                            },
+                            onPointerMove: (event) {
+                              if (_isSecondaryMouseButton(event)) return;
+                              _updateLearningCommonAnalysisDrag(
+                                event.localPosition,
+                                boardSize,
+                              );
+                            },
+                            onPointerUp: (event) {
+                              if (_isSecondaryMouseButton(event)) return;
+                              _finishLearningCommonAnalysisDrag(
+                                event.localPosition,
+                                boardSize,
+                              );
+                            },
+                            onPointerCancel: (_) {
+                              _cancelLearningCommonAnalysisDrag();
+                            },
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+
+    return Container(
+      padding: EdgeInsets.all(compact ? 3 : 8),
+      decoration: AppDecorations.panel(),
+      foregroundDecoration: BoxDecoration(
+        border: Border.all(
+          color: _learningCommonBoardSelected
+              ? AppColors.accent
+              : AppColors.borderBright,
+          width: _learningCommonBoardSelected ? 2 : 1,
+        ),
+        borderRadius: BorderRadius.circular(compact ? 9 : 13),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          titleBar(),
+          SizedBox(height: compact ? 2 : 6),
+          if (editingCommon) ...[
+            _buildLearningEditorPaletteRow(
+              white: false,
+              width: editorPaletteWidth,
+              cellSize: cell,
+              compact: compact,
+            ),
+            SizedBox(height: compact ? 2 : 6),
+          ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              board,
+              SizedBox(width: compact ? 2 : 6),
+              SizedBox(
+                width: compact ? 14 : 28,
+                height: boardSize,
+                child: const DecoratedBox(
+                  decoration: BoxDecoration(color: Color(0xFF111820)),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: compact ? 2 : 6),
+          if (editingCommon) ...[
+            _buildLearningEditorPaletteRow(
+              white: true,
+              width: editorPaletteWidth,
+              cellSize: cell,
+              compact: compact,
+            ),
+            SizedBox(height: compact ? 2 : 6),
+          ],
+          Container(
+            height: compact ? 24 : 36,
+            padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 10),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceCard.withOpacity(0.82),
+              borderRadius: AppRadius.r8,
+              border: Border.all(color: AppColors.borderSoft),
+            ),
+            alignment: Alignment.centerLeft,
+            child: MakeChessLocalizedText(
+              (_nickname ?? 'Учитель').trim(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.caption.copyWith(
+                fontWeight: FontWeight.w800,
+                fontSize: compact ? 10 : 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<({LearningStudent? student, ClassroomVideoFeed? feed})>
+      _orderedLearningVideoSlots() {
+    final studentsById = <String, LearningStudent>{
+      for (final student in _learningStudents) student.id: student,
+      for (final entry in _learningGameSessions.entries)
+        entry.key: entry.value.student,
+    };
+    final allStudents = studentsById.values.toList(growable: false);
+    final result = <({LearningStudent? student, ClassroomVideoFeed? feed})>[];
+    final usedStudentIds = <String>{};
+
+    // Встроенные режимы строятся непосредственно из реально пришедших
+    // видеопотоков. Поэтому ни один подключённый поток не может остаться
+    // плавающим окном или потеряться из-за несовпадения списка учеников.
+    // Map сохраняет порядок подключения: слева направо, затем второй ряд.
+    for (final entry in ClassroomOverlay.instance.remoteFeeds.entries) {
       if (result.length >= 8) break;
-      if (used.add(entry.key)) result.add(entry.value);
+
+      final feed = entry.value;
+      var student = studentsById[entry.key];
+
+      // Защита для старых приглашений, где peerId мог отличаться от id строки
+      // профиля, но имя ученика оставалось тем же.
+      if (student == null) {
+        final feedTitle = feed.title.trim().toLowerCase();
+        for (final candidate in allStudents) {
+          if (usedStudentIds.contains(candidate.id)) continue;
+          if (candidate.nickname.trim().toLowerCase() == feedTitle) {
+            student = candidate;
+            break;
+          }
+        }
+      }
+
+      student ??= LearningStudent(
+        id: entry.key,
+        nickname: feed.title.trim().isEmpty ? 'Ученик' : feed.title.trim(),
+      );
+
+      usedStudentIds.add(student.id);
+      result.add((student: student, feed: feed));
     }
+
+    // После реально подключённых видео добавляем подготовленные места для
+    // учеников без видеопотока. Их доски остаются привязаны к тем же слотам.
+    for (final student in _learningStudents) {
+      if (result.length >= 8) break;
+      if (usedStudentIds.add(student.id)) {
+        result.add((student: student, feed: null));
+      }
+    }
+    for (final session in _learningGameSessions.values) {
+      if (result.length >= 8) break;
+      if (usedStudentIds.add(session.student.id)) {
+        result.add((student: session.student, feed: null));
+      }
+    }
+
     while (result.length < 8) {
-      result.add(null);
+      result.add((student: null, feed: null));
     }
     return result;
   }
 
+  List<LearningStudent?> _orderedLearningSlotStudents() {
+    return _orderedLearningVideoSlots()
+        .map((slot) => slot.student)
+        .toList(growable: false);
+  }
+
+  List<_LearningGameSession?> _orderedLearningBoardSessions() {
+    return _orderedLearningVideoSlots()
+        .map(
+          (slot) => slot.student == null
+              ? null
+              : _learningGameSessions[slot.student!.id],
+        )
+        .toList(growable: false);
+  }
+
   LearningStudent? _learningStudentForSlot(int index) {
-    if (index < _learningStudents.length && index < 8) {
-      return _learningStudents[index];
-    }
-    return null;
+    final students = _orderedLearningSlotStudents();
+    if (index < 0 || index >= students.length) return null;
+    return students[index];
   }
 
   Widget _buildLearningBoardsArea({
     required double width,
     required double height,
+    int crossAxisCount = 2,
+    bool forceAllBoards = false,
   }) {
-    if (_learningShowAllBoards) {
-      final sessions = _orderedLearningBoardSessions();
-      return SizedBox(
-        width: width,
-        height: height,
-        child: Scrollbar(
-          child: GridView.builder(
-            padding: const EdgeInsets.only(right: 8, bottom: 12),
-            physics: const ClampingScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 0.86,
-            ),
-            itemCount: 8,
-            itemBuilder: (context, index) {
-              final session = sessions[index];
-              final fallbackStudent = _learningStudentForSlot(index);
-              return LayoutBuilder(
-                builder: (context, constraints) {
-                  final double boardSize = math
-                      .max(
-                        120.0,
-                        math.min(
-                          constraints.maxWidth - 42,
-                          constraints.maxHeight - 98,
-                        ),
-                      )
-                      .toDouble();
-                  return _buildLearningBoardCard(
-                    session: session,
-                    fallbackStudent: fallbackStudent,
-                    boardSize: boardSize,
-                    compact: true,
-                  );
-                },
-              );
-            },
+    final zoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+
+    Widget scaledBoardCard({
+      required _LearningGameSession? session,
+      required LearningStudent? fallbackStudent,
+      required double boardSize,
+      required bool compact,
+      required double scale,
+    }) {
+      final baseCardWidth = boardSize + (compact ? 24.0 : 52.0);
+      final baseCardHeight = boardSize + (compact ? 68.0 : 112.0);
+      final baseCard = SizedBox(
+        width: baseCardWidth,
+        height: baseCardHeight,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: _buildLearningBoardCard(
+            session: session,
+            fallbackStudent: fallbackStudent,
+            boardSize: boardSize,
+            compact: compact,
           ),
         ),
+      );
+
+      if ((scale - 1.0).abs() < 0.001) return baseCard;
+      return SizedBox(
+        width: baseCardWidth * scale,
+        height: baseCardHeight * scale,
+        child: FittedBox(
+          fit: BoxFit.contain,
+          alignment: Alignment.topCenter,
+          child: baseCard,
+        ),
+      );
+    }
+
+    Widget scrollableBoardCanvas({
+      required double contentWidth,
+      required double contentHeight,
+      required Widget child,
+      Alignment alignment = Alignment.topCenter,
+    }) {
+      final canvasWidth = math.max(width, contentWidth).toDouble();
+      final canvasHeight = math.max(height, contentHeight).toDouble();
+      return ClipRect(
+        child: SingleChildScrollView(
+          physics: const ClampingScrollPhysics(),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            physics: const ClampingScrollPhysics(),
+            child: SizedBox(
+              width: canvasWidth,
+              height: canvasHeight,
+              child: Align(
+                alignment: alignment,
+                child: child,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_learningShowAllBoards || forceAllBoards) {
+      final sessions = _orderedLearningBoardSessions();
+      final columns = crossAxisCount.clamp(1, 4).toInt();
+      const itemCount = 8;
+      final rows = (itemCount / columns).ceil();
+      const baseGap = 8.0;
+      final baseCellWidth = math
+          .max(
+            80.0,
+            (width - baseGap * (columns - 1)) / columns,
+          )
+          .toDouble();
+      final baseCellHeight = math
+          .max(
+            70.0,
+            (height - baseGap * (rows - 1)) / rows,
+          )
+          .toDouble();
+      final baseBoardSize = math
+          .max(
+            32.0,
+            math.min(baseCellWidth - 24.0, baseCellHeight - 68.0),
+          )
+          .toDouble();
+
+      final gap = baseGap * zoom;
+      final cellWidth = baseCellWidth * zoom;
+      final cellHeight = baseCellHeight * zoom;
+      final contentWidth = cellWidth * columns + gap * (columns - 1);
+      final contentHeight = cellHeight * rows + gap * (rows - 1);
+
+      final grid = SizedBox(
+        width: contentWidth,
+        height: contentHeight,
+        child: GridView.builder(
+          padding: EdgeInsets.zero,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: gap,
+            mainAxisSpacing: gap,
+            mainAxisExtent: cellHeight,
+          ),
+          itemCount: itemCount,
+          itemBuilder: (context, index) {
+            final session = sessions[index];
+            final fallbackStudent = _learningStudentForSlot(index);
+            return Center(
+              child: scaledBoardCard(
+                session: session,
+                fallbackStudent: fallbackStudent,
+                boardSize: baseBoardSize,
+                compact: true,
+                scale: zoom,
+              ),
+            );
+          },
+        ),
+      );
+
+      return scrollableBoardCanvas(
+        contentWidth: contentWidth,
+        contentHeight: contentHeight,
+        child: grid,
       );
     }
 
@@ -6617,24 +9840,71 @@ class _MyHomePageState extends State<MyHomePage> {
     fallbackStudent ??=
         _learningStudents.isEmpty ? null : _learningStudents.first;
 
-    final double boardSize = math
-        .max(
-          220.0,
-          math.min(560.0, math.min(width - 52, height - 98)),
+    const baseGap = 12.0;
+    var videoWidth = (width * 0.34).clamp(220.0, 420.0).toDouble();
+    final maxBoardFromHeight = math.max(120.0, height - 112.0).toDouble();
+    var boardSize = math
+        .min(
+          620.0,
+          math.min(maxBoardFromHeight, width - videoWidth - baseGap - 52.0),
         )
         .toDouble();
-    return SizedBox(
-      width: width,
-      height: height,
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: _buildLearningBoardCard(
-          session: session,
-          fallbackStudent: fallbackStudent,
-          boardSize: boardSize,
-          compact: false,
-        ),
+
+    // На узком экране сначала немного уменьшаем резерв видеосвязи,
+    // но не убираем его: слева от крупной доски всегда остаётся место окну видео.
+    if (boardSize < 180.0) {
+      videoWidth = math.max(160.0, width * 0.26).toDouble();
+      boardSize = math
+          .max(
+            72.0,
+            math.min(
+              maxBoardFromHeight,
+              width - videoWidth - baseGap - 52.0,
+            ),
+          )
+          .toDouble();
+    }
+
+    final baseCardWidth = boardSize + 52.0;
+    final baseCardHeight = boardSize + 112.0;
+    final contentWidth = width * zoom;
+    final contentHeight =
+        math.max(height * zoom, baseCardHeight * zoom).toDouble();
+
+    final focusedCanvas = SizedBox(
+      width: contentWidth,
+      height: contentHeight,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Пустая зона специально оставлена под плавающее окно видеосвязи.
+          Positioned(
+            right: (baseCardWidth + baseGap) * zoom,
+            top: 0,
+            width: videoWidth * zoom,
+            height: math.min(height, baseCardHeight) * zoom,
+            child: const SizedBox.expand(),
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            child: scaledBoardCard(
+              session: session,
+              fallbackStudent: fallbackStudent,
+              boardSize: boardSize,
+              compact: false,
+              scale: zoom,
+            ),
+          ),
+        ],
       ),
+    );
+
+    return scrollableBoardCanvas(
+      contentWidth: contentWidth,
+      contentHeight: contentHeight,
+      child: focusedCanvas,
+      alignment: Alignment.topRight,
     );
   }
 
@@ -6676,8 +9946,8 @@ class _MyHomePageState extends State<MyHomePage> {
               ? () => _focusLearningStudentBoard(student.id)
               : null,
           child: Container(
-            height: compact ? 29 : 36,
-            padding: EdgeInsets.symmetric(horizontal: compact ? 7 : 10),
+            height: compact ? 24 : 36,
+            padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 10),
             decoration: BoxDecoration(
               color: activeTurn
                   ? AppColors.accentGlowSoft
@@ -6691,13 +9961,13 @@ class _MyHomePageState extends State<MyHomePage> {
             child: Row(
               children: [
                 Expanded(
-                  child: Text(
+                  child: MakeChessLocalizedText(
                     name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppTextStyles.caption.copyWith(
                       fontWeight: FontWeight.w800,
-                      fontSize: compact ? 11 : 13,
+                      fontSize: compact ? 10 : 13,
                     ),
                   ),
                 ),
@@ -6714,37 +9984,55 @@ class _MyHomePageState extends State<MyHomePage> {
                               ),
                       padding: EdgeInsets.zero,
                       constraints: BoxConstraints.tightFor(
-                        width: compact ? 25 : 29,
-                        height: compact ? 25 : 29,
+                        width: compact ? 21 : 29,
+                        height: compact ? 21 : 29,
                       ),
                       visualDensity: VisualDensity.compact,
-                      iconSize: compact ? 15 : 17,
+                      iconSize: compact ? 13 : 17,
                       icon: const Icon(Icons.contrast),
                     ),
                   ),
                   Tooltip(
-                    message: 'Начать позицию заново',
+                    message: MakeChessLocalization.phrase(
+                        'Вернуть позицию с общей доски'),
+                    child: IconButton(
+                      onPressed: () => unawaited(
+                        _restoreLearningSessionFromCommon(session),
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints.tightFor(
+                        width: compact ? 21 : 29,
+                        height: compact ? 21 : 29,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      iconSize: compact ? 13 : 17,
+                      icon: const Icon(Icons.keyboard_double_arrow_left),
+                    ),
+                  ),
+                  Tooltip(
+                    message:
+                        MakeChessLocalization.phrase('Начать позицию заново'),
                     child: IconButton(
                       onPressed: () => unawaited(
                         _confirmResetLearningSession(session),
                       ),
                       padding: EdgeInsets.zero,
                       constraints: BoxConstraints.tightFor(
-                        width: compact ? 25 : 29,
-                        height: compact ? 25 : 29,
+                        width: compact ? 21 : 29,
+                        height: compact ? 21 : 29,
                       ),
                       visualDensity: VisualDensity.compact,
-                      iconSize: compact ? 15 : 17,
+                      iconSize: compact ? 13 : 17,
                       icon: const Icon(Icons.restart_alt),
                     ),
                   ),
                   SizedBox(width: compact ? 2 : 4),
                 ],
-                Text(
+                MakeChessLocalizedText(
                   clock,
                   style: AppTextStyles.caption.copyWith(
                     fontWeight: FontWeight.w900,
-                    fontSize: compact ? 11 : 13,
+                    fontSize: compact ? 10 : 13,
                   ),
                 ),
               ],
@@ -6757,52 +10045,111 @@ class _MyHomePageState extends State<MyHomePage> {
     final studentColor = teacherIsWhite ? ch.Color.BLACK : ch.Color.WHITE;
     final teacherColor = teacherIsWhite ? ch.Color.WHITE : ch.Color.BLACK;
 
+    final activeBoard = student != null &&
+        student.id ==
+            (_learningFocusedStudentId ?? _firstLearningBoardStudentId);
+    final editingThisBoard = session != null &&
+        _editMode &&
+        _editorTargetKind == 'learningStudent' &&
+        _editorLearningStudentId == session.student.id;
+    final editorPaletteWidth =
+        boardSize + (compact ? 2.0 : 6.0) + (compact ? 14.0 : 28.0);
+    final editorCell = boardSize / 8;
+
     return Container(
-      padding: EdgeInsets.all(compact ? 5 : 8),
+      padding: EdgeInsets.all(compact ? 3 : 8),
       decoration: AppDecorations.panel(),
+      foregroundDecoration: BoxDecoration(
+        border: Border.all(
+          color: activeBoard ? AppColors.accent : Colors.transparent,
+          width: activeBoard ? 2.0 : 0.0,
+        ),
+        borderRadius: BorderRadius.circular(compact ? 9 : 13),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           // Ученик всегда сверху. Нажатие только на эту тёмную полосу
           // разворачивает его доску крупно.
-          playerBar(
-            name: studentName,
-            clock: studentClock,
-            color: studentColor,
-            isStudentBar: true,
-            isTeacherBar: false,
-          ),
-          SizedBox(height: compact ? 4 : 6),
+          if (editingThisBoard && compact)
+            _buildLearningEditorPaletteRow(
+              white: session?.isFlipped ?? false,
+              width: editorPaletteWidth,
+              cellSize: editorCell,
+              compact: true,
+            )
+          else ...[
+            playerBar(
+              name: studentName,
+              clock: studentClock,
+              color: studentColor,
+              isStudentBar: true,
+              isTeacherBar: false,
+            ),
+            if (editingThisBoard) ...[
+              SizedBox(height: compact ? 2 : 6),
+              _buildLearningEditorPaletteRow(
+                white: session?.isFlipped ?? false,
+                width: editorPaletteWidth,
+                cellSize: editorCell,
+                compact: compact,
+              ),
+            ],
+          ],
+          SizedBox(height: compact ? 2 : 6),
           Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               session == null
-                  ? _buildLearningBoardPlaceholder(boardSize)
+                  ? _buildLearningBoardPlaceholder(
+                      boardSize,
+                      studentId: student?.id,
+                    )
                   : _buildLearningGameBoard(session, boardSize),
-              SizedBox(width: compact ? 4 : 6),
-              SizedBox(
-                width: compact ? 18 : 28,
-                height: boardSize,
-                child: EvalBar(
-                  eval: session?.engineEval ?? 0.0,
-                  flipped: session?.isFlipped ?? false,
+              if (!LichessPlayGuard.instance.active) ...[
+                SizedBox(width: compact ? 2 : 6),
+                SizedBox(
+                  width: compact ? 14 : 28,
+                  height: boardSize,
+                  child: EvalBar(
+                    eval: session?.engineEval ?? 0.0,
+                    flipped: session?.isFlipped ?? false,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
-          SizedBox(height: compact ? 4 : 6),
-          // Учитель всегда снизу независимо от выбранного цвета фигур.
-          playerBar(
-            name: teacherName,
-            clock: teacherClock,
-            color: teacherColor,
-            isStudentBar: false,
-            isTeacherBar: true,
-          ),
+          SizedBox(height: compact ? 2 : 6),
+          if (editingThisBoard && compact)
+            _buildLearningEditorPaletteRow(
+              white: !(session?.isFlipped ?? false),
+              width: editorPaletteWidth,
+              cellSize: editorCell,
+              compact: true,
+            )
+          else ...[
+            if (editingThisBoard) ...[
+              _buildLearningEditorPaletteRow(
+                white: !(session?.isFlipped ?? false),
+                width: editorPaletteWidth,
+                cellSize: editorCell,
+                compact: compact,
+              ),
+              SizedBox(height: compact ? 2 : 6),
+            ],
+            // Учитель всегда снизу независимо от выбранного цвета фигур.
+            playerBar(
+              name: teacherName,
+              clock: teacherClock,
+              color: teacherColor,
+              isStudentBar: false,
+              isTeacherBar: true,
+            ),
+          ],
           if (session?.result != null) ...[
             SizedBox(height: compact ? 3 : 5),
-            Text(
+            MakeChessLocalizedText(
               '${session!.result} · ${session.resultReason ?? ''}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -6817,42 +10164,51 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget _buildLearningBoardPlaceholder(double boardSize) {
+  Widget _buildLearningBoardPlaceholder(
+    double boardSize, {
+    String? studentId,
+  }) {
     final initialGame = ch.Chess();
     return AnimatedBuilder(
       animation: widget.boardTheme,
-      builder: (context, _) => SizedBox(
-        width: boardSize,
-        height: boardSize,
-        child: GridView.builder(
-          physics: const NeverScrollableScrollPhysics(),
-          padding: EdgeInsets.zero,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 8,
-          ),
-          itemCount: 64,
-          itemBuilder: (context, index) {
-            final row = index ~/ 8;
-            final column = index % 8;
-            final file = String.fromCharCode('a'.codeUnitAt(0) + column);
-            final square = '$file${8 - row}';
-            final piece = initialGame.get(square);
-            final cell = boardSize / 8;
-            return Container(
-              color: (row + column).isEven
-                  ? widget.boardTheme.lightSquare
-                  : widget.boardTheme.darkSquare,
-              child: piece == null
-                  ? null
-                  : Center(
-                      child: SvgPicture.asset(
-                        _assetFor(_codeFor(piece)),
-                        width: cell * 0.84,
-                        height: cell * 0.84,
+      builder: (context, _) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: studentId == null
+            ? null
+            : () => _selectLearningBoardForVideo(studentId),
+        child: SizedBox(
+          width: boardSize,
+          height: boardSize,
+          child: GridView.builder(
+            physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 8,
+            ),
+            itemCount: 64,
+            itemBuilder: (context, index) {
+              final row = index ~/ 8;
+              final column = index % 8;
+              final file = String.fromCharCode('a'.codeUnitAt(0) + column);
+              final square = '$file${8 - row}';
+              final piece = initialGame.get(square);
+              final cell = boardSize / 8;
+              return Container(
+                color: (row + column).isEven
+                    ? widget.boardTheme.lightSquare
+                    : widget.boardTheme.darkSquare,
+                child: piece == null
+                    ? null
+                    : Center(
+                        child: SvgPicture.asset(
+                          _assetFor(_codeFor(piece)),
+                          width: cell * 0.84,
+                          height: cell * 0.84,
+                        ),
                       ),
-                    ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
@@ -6862,239 +10218,1074 @@ class _MyHomePageState extends State<MyHomePage> {
     _LearningGameSession session,
     double boardSize,
   ) {
+    final editingThisBoard = _editMode &&
+        _editorTargetKind == 'learningStudent' &&
+        _editorLearningStudentId == session.student.id;
+    if (editingThisBoard) {
+      return _buildLearningInlineEditorBoard(
+        boardSize,
+        flipped: session.isFlipped,
+      );
+    }
+
     return AnimatedBuilder(
       animation: widget.boardTheme,
       builder: (context, _) {
         final cell = boardSize / 8;
         final pieceSize = cell * 0.84;
+        final learningBoardId = session.student.id;
+        final isActiveAnalysisBoard =
+            learningBoardId == _activeLearningAnalysisBoardId;
+        final visibleArrows = _visibleLearningBoardArrowsFor(learningBoardId);
+
         return SizedBox(
           width: boardSize,
           height: boardSize,
-          child: GridView.builder(
-            padding: EdgeInsets.zero,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 8,
-            ),
-            itemCount: 64,
-            itemBuilder: (context, index) {
-              final square = _learningDisplayIndexToSquare(session, index);
-              final row = index ~/ 8;
-              final column = index % 8;
-              final light = (row + column).isEven;
-              final selected = session.selectedSquare == square;
-              final legal = session.legalTargets.contains(square);
-              final capture = session.captureTargets.contains(square);
-              final piece = session.game.get(square);
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              GridView.builder(
+                padding: EdgeInsets.zero,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 8,
+                ),
+                itemCount: 64,
+                itemBuilder: (context, index) {
+                  final square = _learningDisplayIndexToSquare(session, index);
+                  final row = index ~/ 8;
+                  final column = index % 8;
+                  final light = (row + column).isEven;
+                  final selected = session.selectedSquare == square;
+                  final legal = session.legalTargets.contains(square);
+                  final capture = session.captureTargets.contains(square);
+                  final piece = session.game.get(square);
 
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => _onLearningSquareTap(session, square),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: light
-                        ? widget.boardTheme.lightSquare
-                        : widget.boardTheme.darkSquare,
-                    border: Border.all(
-                      color: selected ? Colors.amber : Colors.black12,
-                      width: selected ? 2.4 : 0.7,
+                  return DragTarget<String>(
+                    onWillAccept: (from) {
+                      if (from == null || from == square) return false;
+                      return _learningVerboseMoves(session, from).any(
+                        (move) => '${move['to'] ?? ''}' == square,
+                      );
+                    },
+                    onAccept: (from) {
+                      unawaited(
+                        _makeLearningMove(session, from, square),
+                      );
+                    },
+                    builder: (context, candidateData, rejectedData) {
+                      return GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _onLearningSquareTap(session, square),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: light
+                                ? widget.boardTheme.lightSquare
+                                : widget.boardTheme.darkSquare,
+                            border: Border.all(
+                              color: selected ? Colors.amber : Colors.black12,
+                              width: selected ? 2.4 : 0.7,
+                            ),
+                          ),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (legal && !capture)
+                                Center(
+                                  child: Container(
+                                    width: cell * 0.28,
+                                    height: cell * 0.28,
+                                    decoration: const BoxDecoration(
+                                      color: Color(0x6600D67A),
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                              if (capture)
+                                Center(
+                                  child: Container(
+                                    width: cell * 0.74,
+                                    height: cell * 0.74,
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: Colors.redAccent,
+                                        width: math
+                                            .max(1.4, cell * 0.055)
+                                            .toDouble(),
+                                      ),
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                              if (piece != null)
+                                Center(
+                                  child: Draggable<String>(
+                                    data: square,
+                                    maxSimultaneousDrags:
+                                        piece.color == session.game.turn
+                                            ? 1
+                                            : 0,
+                                    onDragStarted: () {
+                                      if (_learningFocusedStudentId !=
+                                              session.student.id ||
+                                          _learningCommonBoardSelected) {
+                                        setState(() {
+                                          _learningFocusedStudentId =
+                                              session.student.id;
+                                          _selectedLearningStudentId =
+                                              session.student.id;
+                                          _learningCommonBoardSelected = false;
+                                        });
+                                        _refreshLearningCommonBoardOverlay();
+                                      }
+                                      setState(() {
+                                        session.selectedSquare = square;
+                                        _computeLearningLegalTargets(
+                                          session,
+                                          square,
+                                        );
+                                      });
+                                    },
+                                    onDragCompleted: () {
+                                      setState(() {
+                                        session.selectedSquare = null;
+                                        session.legalTargets.clear();
+                                        session.captureTargets.clear();
+                                      });
+                                    },
+                                    onDraggableCanceled: (_, __) {
+                                      setState(() {
+                                        session.selectedSquare = null;
+                                        session.legalTargets.clear();
+                                        session.captureTargets.clear();
+                                      });
+                                    },
+                                    feedback: Material(
+                                      color: Colors.transparent,
+                                      child: SvgPicture.asset(
+                                        _assetFor(_codeFor(piece)),
+                                        width: pieceSize,
+                                        height: pieceSize,
+                                      ),
+                                    ),
+                                    childWhenDragging: const SizedBox.shrink(),
+                                    child: SvgPicture.asset(
+                                      _assetFor(_codeFor(piece)),
+                                      width: pieceSize,
+                                      height: pieceSize,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+
+              // Разметка учителя хранится отдельно для каждой доски ученика.
+              if (visibleArrows.isNotEmpty ||
+                  (isActiveAnalysisBoard && _learningArrowDrawMode))
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: _PuzzleAnalysisArrowPainter(
+                        arrows: visibleArrows,
+                        boardSize: boardSize,
+                        centerForSquare: (square) => _boardCenterForSquare(
+                          square,
+                          boardSize,
+                          flipped: session.isFlipped,
+                        ),
+                        previewFrom: isActiveAnalysisBoard
+                            ? _learningPendingAnalysisArrowFrom
+                            : null,
+                        previewTo: isActiveAnalysisBoard
+                            ? _learningAnalysisPointerPosition
+                            : null,
+                        previewColor:
+                            isActiveAnalysisBoard && _learningArrowDrawMode
+                                ? _analysisArrowColor(
+                                    _effectivePuzzleArrowKey,
+                                  )
+                                : null,
+                      ),
                     ),
                   ),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (legal && !capture)
-                        Center(
-                          child: Container(
-                            width: cell * 0.28,
-                            height: cell * 0.28,
-                            decoration: const BoxDecoration(
-                              color: Color(0x6600D67A),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                      if (capture)
-                        Center(
-                          child: Container(
-                            width: cell * 0.74,
-                            height: cell * 0.74,
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: Colors.redAccent,
-                                width: math.max(1.4, cell * 0.055).toDouble(),
-                              ),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                      if (piece != null)
-                        Center(
-                          child: SvgPicture.asset(
-                            _assetFor(_codeFor(piece)),
-                            width: pieceSize,
-                            height: pieceSize,
-                          ),
-                        ),
-                    ],
+                ),
+
+              // В активном режиме анализа верхний слой принимает мышь
+              // вместо шахматных ходов и создаёт стрелки/кружки.
+              if (isActiveAnalysisBoard && _learningArrowDrawMode)
+                Positioned.fill(
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.precise,
+                    child: Listener(
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (event) {
+                        if (_isSecondaryMouseButton(event)) {
+                          _removePuzzleAnalysisElementAt(
+                            event.localPosition,
+                            boardSize,
+                            flipped: session.isFlipped,
+                            learningBoardId: learningBoardId,
+                          );
+                          return;
+                        }
+
+                        _startPuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                          flipped: session.isFlipped,
+                          learningBoardId: learningBoardId,
+                        );
+                      },
+                      onPointerMove: (event) {
+                        if (_isSecondaryMouseButton(event)) return;
+                        _updatePuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                        );
+                      },
+                      onPointerUp: (event) {
+                        if (_isSecondaryMouseButton(event)) return;
+                        _finishPuzzleAnalysisBoardDrag(
+                          event.localPosition,
+                          boardSize,
+                          flipped: session.isFlipped,
+                          learningBoardId: learningBoardId,
+                        );
+                      },
+                      onPointerCancel: (_) {
+                        setState(() {
+                          _learningPendingAnalysisArrowFrom = null;
+                          _learningAnalysisPointerPosition = null;
+                        });
+                      },
+                      child: const SizedBox.expand(),
+                    ),
                   ),
                 ),
-              );
-            },
+            ],
           ),
         );
       },
     );
   }
 
-  Widget _buildDesktopRightColumn(double width) {
+  LearningStudent? _learningStudentById(String? studentId) {
+    if (studentId == null || studentId.isEmpty) return null;
+    for (final student in _learningStudents) {
+      if (student.id == studentId) return student;
+    }
+    final sessionStudent = _learningGameSessions[studentId]?.student;
+    if (sessionStudent != null) return sessionStudent;
+
+    for (final feed in ClassroomOverlay.instance.remoteFeeds.values) {
+      if (feed.peerId == studentId) {
+        return LearningStudent(
+          id: feed.peerId,
+          nickname: feed.title.trim().isEmpty ? 'Ученик' : feed.title.trim(),
+        );
+      }
+    }
+    return null;
+  }
+
+  Widget _buildLearningStudentVideoFrame({
+    required LearningStudent? student,
+    ClassroomVideoFeed? feedOverride,
+    bool compact = false,
+  }) {
+    return AnimatedBuilder(
+      animation: ClassroomOverlay.instance,
+      builder: (context, _) {
+        final feed = feedOverride ?? _learningRemoteFeedForStudent(student);
+        final active = student != null &&
+            student.id ==
+                (_learningFocusedStudentId ?? _firstLearningBoardStudentId);
+        final layoutNeedsThisFeed = feed != null &&
+            _learningRole == LearningPanelRole.teacher &&
+            (_learningLayoutDocksAllRemotes(_learningTeacherLayoutMode) ||
+                (_learningLayoutDocksSelectedRemote(
+                      _learningTeacherLayoutMode,
+                    ) &&
+                    active));
+        final feedIsDocked = feed != null &&
+            ClassroomOverlay.instance.isRemoteDocked(feed.peerId);
+
+        // Если поток только что подключился в режиме одного встроенного видео,
+        // сначала убираем его из плавающего окна и только следующим кадром
+        // создаём RTCVideoView внутри подготовленной ячейки.
+        if (layoutNeedsThisFeed && feed != null && !feedIsDocked) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _applyLearningVideoDockingForCurrentLayout();
+          });
+        }
+
+        if (feed != null && layoutNeedsThisFeed && feedIsDocked) {
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(compact ? 9 : 13),
+              border: Border.all(
+                color: active ? AppColors.accent : Colors.transparent,
+                width: active ? 2 : 0,
+              ),
+            ),
+            child: ClassroomVideoTile(
+              key: ValueKey('docked_${feed.peerId}'),
+              feed: feed,
+              compact: compact,
+              onTap: student == null
+                  ? null
+                  : () => _selectLearningBoardForVideo(student.id),
+            ),
+          );
+        }
+
+        final title = student?.nickname ?? 'Свободное место';
+        final selectedForCall =
+            student != null && _selectedVideoStudentIds.contains(student.id);
+        final movingToPreparedPlace = feed != null && layoutNeedsThisFeed;
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: student == null
+                ? null
+                : () => _selectLearningBoardForVideo(student.id),
+            borderRadius: BorderRadius.circular(compact ? 9 : 13),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF111820),
+                borderRadius: BorderRadius.circular(compact ? 9 : 13),
+                border: Border.all(
+                  color: active ? AppColors.accent : AppColors.borderSoft,
+                  width: active ? 2 : 1,
+                ),
+              ),
+              padding: EdgeInsets.all(compact ? 6 : 10),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (movingToPreparedPlace)
+                      SizedBox(
+                        width: compact ? 22 : 34,
+                        height: compact ? 22 : 34,
+                        child: const CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: AppColors.accent,
+                        ),
+                      )
+                    else
+                      Icon(
+                        selectedForCall
+                            ? Icons.videocam_rounded
+                            : Icons.videocam_off_rounded,
+                        color: selectedForCall
+                            ? AppColors.accent
+                            : AppColors.textDim,
+                        size: compact ? 24 : 42,
+                      ),
+                    SizedBox(height: compact ? 4 : 8),
+                    MakeChessLocalizedText(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                        fontSize: compact ? 10 : 13,
+                      ),
+                    ),
+                    SizedBox(height: compact ? 2 : 5),
+                    MakeChessLocalizedText(
+                      movingToPreparedPlace
+                          ? 'Перемещаем видео'
+                          : selectedForCall
+                              ? 'Ожидание видео'
+                              : 'Видео не подключено',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textDim,
+                        fontSize: compact ? 9 : 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLearningVideoLeftArea({
+    required double width,
+    required double height,
+  }) {
+    final gap =
+        (8.0 * (_boardPercent / 100.0).clamp(0.75, 1.5).toDouble()).toDouble();
+
+    // Видео активного ученика всегда квадратное. Берём максимально возможный
+    // квадрат, но сохраняем справа место для четырёх досок в строке.
+    final maximumVideoByWidth = math.max(220.0, width * 0.31).toDouble();
+    final videoSide = math
+        .max(
+          180.0,
+          math.min(height, maximumVideoByWidth),
+        )
+        .toDouble();
+    final boardsWidth = math.max(260.0, width - videoSide - gap).toDouble();
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final student = _learningStudentById(focusedId);
+    final feed = _learningRemoteFeedForStudent(student);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: videoSide,
+          height: height,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox.square(
+              dimension: videoSide,
+              child: _buildLearningStudentVideoFrame(
+                student: student,
+                feedOverride: feed,
+                compact: false,
+              ),
+            ),
+          ),
+        ),
+        SizedBox(width: gap),
+        SizedBox(
+          width: boardsWidth,
+          height: height,
+          child: _buildLearningBoardsArea(
+            width: boardsWidth,
+            height: height,
+            crossAxisCount: 4,
+            forceAllBoards: true,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLearningVideoAboveBoardsArea({
+    required double width,
+    required double height,
+  }) {
+    final slots = _orderedLearningVideoSlots();
+    final sessions = slots
+        .map(
+          (slot) => slot.student == null
+              ? null
+              : _learningGameSessions[slot.student!.id],
+        )
+        .toList(growable: false);
+    final zoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+    const baseGap = 8.0;
+    final baseCellWidth = math
+        .max(
+          105.0,
+          (width - baseGap * 3) / 4,
+        )
+        .toDouble();
+
+    // Одна группа «4 видео + 4 доски» должна занимать всю высоту справа,
+    // но не выходить за неё. Доска получает максимально возможный размер
+    // одновременно по ширине и по высоте. Оставшаяся высота отдаётся видео.
+    const compactCardChrome = 68.0;
+    const videoBoardGap = 6.0;
+    const minVideoHeight = 72.0;
+    final maxBoardFromWidth = math.max(72.0, baseCellWidth - 24.0).toDouble();
+    final maxBoardFromHeight = math
+        .max(
+          72.0,
+          height - compactCardChrome - videoBoardGap - minVideoHeight,
+        )
+        .toDouble();
+    final baseBoardSize =
+        math.min(maxBoardFromWidth, maxBoardFromHeight).toDouble();
+    final baseCardHeight = baseBoardSize + compactCardChrome;
+    final baseVideoHeight = math
+        .max(
+          minVideoHeight,
+          height - baseCardHeight - videoBoardGap,
+        )
+        .toDouble();
+    final basePairHeight = baseVideoHeight + videoBoardGap + baseCardHeight;
+    final gap = baseGap * zoom;
+    final cellWidth = baseCellWidth * zoom;
+    final pairHeight = basePairHeight * zoom;
+    final contentWidth = cellWidth * 4 + gap * 3;
+    final contentHeight = pairHeight * 2 + gap;
+
+    Widget pairCell(int index) {
+      final slot = slots[index];
+      final session = sessions[index];
+      final student = session?.student ?? slot.student;
+      final base = SizedBox(
+        width: baseCellWidth,
+        height: basePairHeight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              height: baseVideoHeight,
+              child: _buildLearningStudentVideoFrame(
+                student: student,
+                feedOverride: slot.feed,
+                compact: true,
+              ),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: baseCardHeight,
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: _buildLearningBoardCard(
+                  session: session,
+                  fallbackStudent: student,
+                  boardSize: baseBoardSize,
+                  compact: true,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if ((zoom - 1.0).abs() < 0.001) return base;
+      return SizedBox(
+        width: cellWidth,
+        height: pairHeight,
+        child: FittedBox(
+          fit: BoxFit.contain,
+          alignment: Alignment.topCenter,
+          child: base,
+        ),
+      );
+    }
+
+    Widget rowFor(int start) {
+      return SizedBox(
+        width: contentWidth,
+        height: pairHeight,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var offset = 0; offset < 4; offset++) ...[
+              if (offset > 0) SizedBox(width: gap),
+              pairCell(start + offset),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return ClipRect(
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: SizedBox(
+            width: math.max(width, contentWidth).toDouble(),
+            height: math.max(height, contentHeight).toDouble(),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  rowFor(0),
+                  SizedBox(height: gap),
+                  rowFor(4),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningVideosOnlyArea({
+    required double width,
+    required double height,
+  }) {
+    final slots = _orderedLearningVideoSlots();
+    final zoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+    const baseGap = 8.0;
+    final baseCellWidth = math
+        .max(
+          110.0,
+          (width - baseGap * 3) / 4,
+        )
+        .toDouble();
+    final baseCellHeight = math
+        .max(
+          85.0,
+          (height - baseGap) / 2,
+        )
+        .toDouble();
+    final gap = baseGap * zoom;
+    final cellWidth = baseCellWidth * zoom;
+    final cellHeight = baseCellHeight * zoom;
+    final contentWidth = cellWidth * 4 + gap * 3;
+    final contentHeight = cellHeight * 2 + gap;
+
+    final grid = SizedBox(
+      width: contentWidth,
+      height: contentHeight,
+      child: GridView.builder(
+        padding: EdgeInsets.zero,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 4,
+          crossAxisSpacing: gap,
+          mainAxisSpacing: gap,
+          mainAxisExtent: cellHeight,
+        ),
+        itemCount: 8,
+        itemBuilder: (context, index) {
+          final slot = slots[index];
+          final base = SizedBox(
+            width: baseCellWidth,
+            height: baseCellHeight,
+            child: _buildLearningStudentVideoFrame(
+              student: slot.student,
+              feedOverride: slot.feed,
+              compact: false,
+            ),
+          );
+          if ((zoom - 1.0).abs() < 0.001) return base;
+          return FittedBox(
+            fit: BoxFit.contain,
+            child: base,
+          );
+        },
+      ),
+    );
+
+    return ClipRect(
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: SizedBox(
+            width: math.max(width, contentWidth).toDouble(),
+            height: math.max(height, contentHeight).toDouble(),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: grid,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningOneVideoOneBoardArea({
+    required double width,
+    required double height,
+  }) {
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final session = focusedId == null ? null : _learningGameSessions[focusedId];
+    final student = session?.student ?? _learningStudentById(focusedId);
+    final feed = _learningRemoteFeedForStudent(student);
+    final zoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+    const gap = 12.0;
+    final maximumVideoByWidth = math.max(220.0, width * 0.42).toDouble();
+    final videoSide = math
+        .max(
+          180.0,
+          math.min(height, maximumVideoByWidth),
+        )
+        .toDouble();
+    final boardAreaWidth = math.max(180.0, width - videoSide - gap).toDouble();
+    final boardSize = math
+        .max(
+          72.0,
+          math.min(boardAreaWidth - 52.0, height - 112.0),
+        )
+        .toDouble();
+    final cardWidth = boardSize + 52.0;
+    final cardHeight = boardSize + 112.0;
+
+    final baseWidth = videoSide + gap + cardWidth;
+    final baseHeight =
+        math.max(height, math.max(videoSide, cardHeight)).toDouble();
+    final base = SizedBox(
+      width: baseWidth,
+      height: baseHeight,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox.square(
+            dimension: videoSide,
+            child: _buildLearningStudentVideoFrame(
+              student: student,
+              feedOverride: feed,
+              compact: false,
+            ),
+          ),
+          const SizedBox(width: gap),
+          SizedBox(
+            width: cardWidth,
+            height: cardHeight,
+            child: _buildLearningBoardCard(
+              session: session,
+              fallbackStudent: student,
+              boardSize: boardSize,
+              compact: false,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final scaledWidth = baseWidth * zoom;
+    final scaledHeight = baseHeight * zoom;
+    return ClipRect(
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: SizedBox(
+            width: math.max(width, scaledWidth).toDouble(),
+            height: math.max(height, scaledHeight).toDouble(),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: (zoom - 1.0).abs() < 0.001
+                  ? base
+                  : SizedBox(
+                      width: scaledWidth,
+                      height: scaledHeight,
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        alignment: Alignment.topCenter,
+                        child: base,
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningCenteredSingleBoardArea({
+    required double width,
+    required double height,
+  }) {
+    final focusedId = _learningFocusedStudentId ?? _firstLearningBoardStudentId;
+    final session = focusedId == null ? null : _learningGameSessions[focusedId];
+    final student = _learningStudentById(focusedId);
+    final zoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+    final boardSize = math
+        .max(
+          72.0,
+          math.min(width - 70.0, height - 112.0),
+        )
+        .toDouble();
+    final cardWidth = boardSize + 52.0;
+    final cardHeight = boardSize + 112.0;
+    final scaledWidth = cardWidth * zoom;
+    final scaledHeight = cardHeight * zoom;
+
+    final card = SizedBox(
+      width: cardWidth,
+      height: cardHeight,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: _buildLearningBoardCard(
+          session: session,
+          fallbackStudent: student,
+          boardSize: boardSize,
+          compact: false,
+        ),
+      ),
+    );
+
+    return ClipRect(
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          child: SizedBox(
+            width: math.max(width, scaledWidth).toDouble(),
+            height: math.max(height, scaledHeight).toDouble(),
+            child: Center(
+              child: (zoom - 1.0).abs() < 0.001
+                  ? card
+                  : SizedBox(
+                      width: scaledWidth,
+                      height: scaledHeight,
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: card,
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningTeacherContentArea({
+    required double width,
+    required double height,
+  }) {
+    // Перестраиваем всю сетку при подключении нового видео. Благодаря этому
+    // новый ученик сразу занимает следующий свободный слот, а его доска
+    // перемещается вместе с его видеопотоком.
+    return AnimatedBuilder(
+      animation: ClassroomOverlay.instance,
+      builder: (context, _) {
+        switch (_learningTeacherLayoutMode) {
+          case LearningTeacherLayoutMode.videoLeft:
+            return _buildLearningVideoLeftArea(
+              width: width,
+              height: height,
+            );
+          case LearningTeacherLayoutMode.videoAboveBoards:
+            return _buildLearningVideoAboveBoardsArea(
+              width: width,
+              height: height,
+            );
+          case LearningTeacherLayoutMode.boardsOnly:
+            return _buildLearningBoardsArea(
+              width: width,
+              height: height,
+              crossAxisCount: 4,
+              forceAllBoards: true,
+            );
+          case LearningTeacherLayoutMode.oneVideoOneBoard:
+            return _buildLearningOneVideoOneBoardArea(
+              width: width,
+              height: height,
+            );
+          case LearningTeacherLayoutMode.videosOnly:
+            return _buildLearningVideosOnlyArea(
+              width: width,
+              height: height,
+            );
+          case LearningTeacherLayoutMode.singleBoardCentered:
+            return _buildLearningCenteredSingleBoardArea(
+              width: width,
+              height: height,
+            );
+        }
+      },
+    );
+  }
+
+  Widget _buildDesktopRightColumn(
+    double width, {
+    double? height,
+    bool compact = false,
+  }) {
     final session =
         _showLearningPanel && _learningRole == LearningPanelRole.teacher
             ? _activeLearningGameSession
             : null;
+    final gap = compact ? 8.0 : 12.0;
+    final controlsHeight = height == null
+        ? null
+        : math
+            .max(
+              230.0,
+              math.min(330.0, height * 0.46),
+            )
+            .toDouble();
+    final moveHeight = height == null
+        ? 420.0
+        : math.max(150.0, height - controlsHeight! - gap).toDouble();
 
-    if (session != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          MoveListPanel(
-            san: session.sanMoves,
-            currentPly: session.plyIndex,
-            controller: session.movesScroll,
-            onCopyPGN: () => unawaited(_copyLearningSessionPgn(session)),
-            onClear: () {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'Ходы активной онлайн-партии удалять нельзя',
-                    ),
-                  ),
-                );
-              }
-            },
-            width: width,
-            height: 420,
-          ),
-          const SizedBox(height: 12),
-          RightSidebarPanel(
-            plyIndex: session.plyIndex,
-            sanMoves: session.sanMoves,
-            onGoStart: () => _setLearningSessionPly(session, 0),
-            onGoPrev: () =>
-                _setLearningSessionPly(session, session.plyIndex - 1),
-            onGoNext: () =>
-                _setLearningSessionPly(session, session.plyIndex + 1),
-            onGoEnd: () =>
-                _setLearningSessionPly(session, session.sanMoves.length),
-            onResignPressed: () => unawaited(_resignLearningSession(session)),
-            offerDrawUniversal: () => unawaited(_offerLearningDraw(session)),
-            loading: false,
-            onBestMove: () async {
-              final move = await _fetchUciBestMove(session.game.fen);
-              if (mounted && move != null) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Лучший ход: $move')),
-                );
-              }
-            },
-            gptLoading: false,
-            explainHere: () {
+    Widget buildMoveList() {
+      if (session != null) {
+        return MoveListPanel(
+          san: session.sanMoves,
+          currentPly: session.plyIndex,
+          controller: session.movesScroll,
+          onCopyPGN: () => unawaited(_copyLearningSessionPgn(session)),
+          onClear: () {
+            if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('Выбрана активная ученическая доска'),
+                  content: MakeChessLocalizedText(
+                    'Ходы активной онлайн-партии удалять нельзя',
+                  ),
                 ),
               );
-            },
-            showFenInput: false,
-            toggleFenInput: () {
-              Clipboard.setData(ClipboardData(text: session.game.fen));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('FEN скопирован')),
-              );
-            },
-            loadingBest: false,
-            onTakeBestMove: () {},
-            loadingAnalysis: false,
-            onOpenAnalysis: () {},
-            openGptPromptDialog: () {},
-            inRoom: true,
-            sharedControl: false,
-            editMode: false,
-            applyEditor: () {},
-            enterEditor: () {},
-          ),
-        ],
+            }
+          },
+          width: width,
+          height: moveHeight,
+          compact: compact,
+        );
+      }
+
+      return MoveListPanel(
+        san: _sanMoves,
+        currentPly: _plyIndex,
+        controller: _movesScroll,
+        onCopyPGN: () => unawaited(_copyPgnAndSaveToCabinet()),
+        onClear: () {
+          setState(() {
+            _sanMoves.clear();
+            _fens
+              ..clear()
+              ..add(game.fen);
+            _plyIndex = 0;
+            if (_showPuzzleMoveResultPanel) {
+              _resetStudentPuzzleMoveCheck();
+              _studentShowPuzzleAnswer = false;
+            }
+          });
+        },
+        puzzleMoveChecked:
+            _showPuzzleMoveResultPanel ? _puzzleMoveChecked : false,
+        puzzleMoveCorrect:
+            _showPuzzleMoveResultPanel ? _puzzleMoveCorrect : null,
+        showPuzzleCorrectAnswer:
+            _showPuzzleMoveResultPanel && _studentShowPuzzleAnswer,
+        correctPuzzleLines: _activePuzzleSolutionMoveLines,
+        selectedCorrectLineIndex: _shownSolutionLineIndex,
+        onPreviousCorrectLine: _openPreviousSolutionLine,
+        onNextCorrectLine: _openNextSolutionLine,
+        width: width,
+        height: moveHeight,
+        compact: compact,
       );
     }
 
-    return Column(
+    Widget buildControls() {
+      if (session != null) {
+        return RightSidebarPanel(
+          plyIndex: session.plyIndex,
+          sanMoves: session.sanMoves,
+          onGoStart: () => _setLearningSessionPly(session, 0),
+          onGoPrev: () => _setLearningSessionPly(session, session.plyIndex - 1),
+          onGoNext: () => _setLearningSessionPly(session, session.plyIndex + 1),
+          onGoEnd: () =>
+              _setLearningSessionPly(session, session.sanMoves.length),
+          onResignPressed: () => unawaited(_resignLearningSession(session)),
+          offerDrawUniversal: () => unawaited(_offerLearningDraw(session)),
+          loading: false,
+          onBestMove: () async {
+            await _toggleLocalStockfish();
+          },
+          gptLoading: false,
+          explainHere: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: MakeChessLocalizedText(
+                    'Выбрана активная ученическая доска'),
+              ),
+            );
+          },
+          showFenInput: false,
+          toggleFenInput: () {
+            Clipboard.setData(ClipboardData(text: session.game.fen));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: MakeChessLocalizedText('FEN скопирован')),
+            );
+          },
+          loadingBest: false,
+          onTakeBestMove: () {},
+          loadingAnalysis: false,
+          onOpenAnalysis: () {},
+          openGptPromptDialog: () {},
+          // Учебная партия остаётся онлайн, но редактор учителя должен
+          // работать с текущей выделенной учебной доской.
+          inRoom: true,
+          sharedControl: true,
+          editMode: _isSelectedLearningBoardBeingEdited,
+          applyEditor: _toggleSelectedLearningBoardEditor,
+          enterEditor: _toggleSelectedLearningBoardEditor,
+          compact: compact,
+        );
+      }
+
+      return RightSidebarPanel(
+        plyIndex: _plyIndex,
+        sanMoves: _sanMoves,
+        onGoStart: _goStart,
+        onGoPrev: _goPrev,
+        onGoNext: _goNext,
+        onGoEnd: _goEnd,
+        onResignPressed: _onResignPressed,
+        offerDrawUniversal: _offerDrawUniversal,
+        loading: _loading,
+        onBestMove: () async {
+          final fen = _fenController.text.trim().isEmpty
+              ? game.fen
+              : _fenController.text.trim();
+          await _toggleLocalStockfish();
+        },
+        gptLoading: _gptLoading,
+        explainHere: _explainHere,
+        showFenInput: _showFenInput,
+        toggleFenInput: () => setState(() => _showFenInput = !_showFenInput),
+        loadingBest: _loadingBest,
+        onTakeBestMove: _onTakeBestMove,
+        loadingAnalysis: _loadingAnalysis,
+        onOpenAnalysis: _onOpenAnalysis,
+        openGptPromptDialog: _openGptPromptDialog,
+        inRoom: _inRoom,
+        sharedControl: _sharedControl,
+        editMode: _editMode,
+        applyEditor: _applyEditor,
+        enterEditor: _enterEditor,
+        compact: compact,
+      );
+    }
+
+    Widget controls = buildControls();
+    if (controlsHeight != null) {
+      controls = SizedBox(
+        width: width,
+        height: controlsHeight,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.topCenter,
+          child: SizedBox(
+            width: width,
+            child: controls,
+          ),
+        ),
+      );
+    }
+
+    final column = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        MoveListPanel(
-          san: _sanMoves,
-          currentPly: _plyIndex,
-          controller: _movesScroll,
-          onCopyPGN: () => unawaited(_copyPgnAndSaveToCabinet()),
-          onClear: () {
-            setState(() {
-              _sanMoves.clear();
-              _fens
-                ..clear()
-                ..add(game.fen);
-              _plyIndex = 0;
-              if (_showPuzzleMoveResultPanel) {
-                _resetStudentPuzzleMoveCheck();
-                _studentShowPuzzleAnswer = false;
-              }
-            });
-          },
-          puzzleMoveChecked:
-              _showPuzzleMoveResultPanel ? _puzzleMoveChecked : false,
-          puzzleMoveCorrect:
-              _showPuzzleMoveResultPanel ? _puzzleMoveCorrect : null,
-          showPuzzleCorrectAnswer:
-              _showPuzzleMoveResultPanel && _studentShowPuzzleAnswer,
-          correctPuzzleLines: _activePuzzleSolutionMoveLines,
-          selectedCorrectLineIndex: _shownSolutionLineIndex,
-          onPreviousCorrectLine: _openPreviousSolutionLine,
-          onNextCorrectLine: _openNextSolutionLine,
-          width: width,
-          height: 420,
-        ),
-        const SizedBox(height: 12),
-        RightSidebarPanel(
-          plyIndex: _plyIndex,
-          sanMoves: _sanMoves,
-          onGoStart: _goStart,
-          onGoPrev: _goPrev,
-          onGoNext: _goNext,
-          onGoEnd: _goEnd,
-          onResignPressed: _onResignPressed,
-          offerDrawUniversal: _offerDrawUniversal,
-          loading: _loading,
-          onBestMove: () async {
-            final fen = _fenController.text.trim().isEmpty
-                ? game.fen
-                : _fenController.text.trim();
-            await _fetchUciBestMove(fen);
-          },
-          gptLoading: _gptLoading,
-          explainHere: _explainHere,
-          showFenInput: _showFenInput,
-          toggleFenInput: () => setState(() => _showFenInput = !_showFenInput),
-          loadingBest: _loadingBest,
-          onTakeBestMove: _onTakeBestMove,
-          loadingAnalysis: _loadingAnalysis,
-          onOpenAnalysis: _onOpenAnalysis,
-          openGptPromptDialog: _openGptPromptDialog,
-          inRoom: _inRoom,
-          sharedControl: _sharedControl,
-          editMode: _editMode,
-          applyEditor: _applyEditor,
-          enterEditor: _enterEditor,
-        ),
+        buildMoveList(),
+        SizedBox(height: gap),
+        controls,
       ],
+    );
+
+    if (height == null) return column;
+    return SizedBox(
+      width: width,
+      height: height,
+      child: column,
     );
   }
 
@@ -7203,7 +11394,8 @@ class _MyHomePageState extends State<MyHomePage> {
           _drawOfferedToMe = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Соперник отклонил ничью')),
+          const SnackBar(
+              content: MakeChessLocalizedText('Соперник отклонил ничью')),
         );
       }
     };
@@ -7300,7 +11492,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
                 'Игра против $_opponentName (${myColor == 'white' ? 'белыми' : 'чёрными'})')),
       );
     }
@@ -7317,6 +11509,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _opponentName = null;
       _isSpectator = false;
       _activeRoomIsLearning = false;
+      _studentLearningCommonFen = null;
     });
 
     _matchRated = _rated;
@@ -7388,7 +11581,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             'PGN скопирован. Для сохранения в личном кабинете войдите в аккаунт',
           ),
         ),
@@ -7399,7 +11592,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (pgn.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PGN скопирован, но список ходов пуст')),
+        const SnackBar(
+            content:
+                MakeChessLocalizedText('PGN скопирован, но список ходов пуст')),
       );
       return;
     }
@@ -7447,7 +11642,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: MakeChessLocalizedText(
             added
                 ? 'PGN скопирован и сохранён: ${type.title}'
                 : 'PGN скопирован. Эта партия уже есть в личном кабинете',
@@ -7458,8 +11653,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text('PGN скопирован, но сохранить партию не удалось: $error'),
+          content: MakeChessLocalizedText(
+              'PGN скопирован, но сохранить партию не удалось: $error'),
         ),
       );
     }
@@ -7514,7 +11709,9 @@ class _MyHomePageState extends State<MyHomePage> {
       debugPrint('games.insert failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось сохранить партию: $e')),
+          SnackBar(
+              content:
+                  MakeChessLocalizedText('Не удалось сохранить партию: $e')),
         );
       }
     }
@@ -7523,7 +11720,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Нерейтинговая партия — рейтинг не изменён')),
+              content: MakeChessLocalizedText(
+                  'Нерейтинговая партия — рейтинг не изменён')),
         );
       }
       // не выходим, но рейтинг не трогаем
@@ -7580,14 +11778,18 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted) {
         final sign = (dMy >= 0) ? '+$dMy' : '$dMy';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Рейтинг обновлён: $myOld → $myNew ($sign)')),
+          SnackBar(
+              content: MakeChessLocalizedText(
+                  'Рейтинг обновлён: $myOld → $myNew ($sign)')),
         );
       }
     } catch (e) {
       debugPrint('profiles.update failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось обновить рейтинг: $e')),
+          SnackBar(
+              content:
+                  MakeChessLocalizedText('Не удалось обновить рейтинг: $e')),
         );
       }
     }
@@ -7724,6 +11926,23 @@ class _MyHomePageState extends State<MyHomePage> {
         }
         break;
 
+      case 'learning_set_position':
+        final editedFen = '${evt['fen'] ?? ''}'.trim();
+        if (editedFen.isEmpty) break;
+        _activeRoomIsLearning = true;
+        _applyStudentCommonFen(editedFen);
+        if (mounted) setState(() {});
+        break;
+
+      case 'learning_common_position':
+        final commonFen = '${evt['fen'] ?? ''}'.trim();
+        if (commonFen.isEmpty) break;
+        _activeRoomIsLearning = true;
+        _studentLearningCommonFen = commonFen;
+        _applyStudentCommonFen(commonFen);
+        if (mounted) setState(() {});
+        break;
+
       case 'learning_session_end':
         unawaited(_leaveLearningRoomAfterTeacherEnd());
         break;
@@ -7740,8 +11959,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
       case 'rematch_decline':
         setState(() => _rematchOfferedToMe = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Реванш отклонён')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: MakeChessLocalizedText('Реванш отклонён')));
         break;
     }
   }
@@ -7767,7 +11986,8 @@ class _MyHomePageState extends State<MyHomePage> {
         _learningInvitationStatus = 'Учитель завершил занятие';
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Учитель завершил занятие')),
+        const SnackBar(
+            content: MakeChessLocalizedText('Учитель завершил занятие')),
       );
     }
   }
@@ -7814,11 +12034,23 @@ class _MyHomePageState extends State<MyHomePage> {
       promo = choice;
     }
 
+    final openingTrainerUci = '$from$to${promo ?? ''}';
+    final openingTrainerStudentMove = _openingTrainer.sessionActive;
+    if (openingTrainerStudentMove &&
+        !_openingTrainer.canStudentPlay(openingTrainerUci)) {
+      _openingTrainer.rejectStudentMove(openingTrainerUci);
+      return;
+    }
+
     final bool isCapture = _willBeCapture(from, to);
     final String san = _sanFor(from, to, promotion: promo) ?? '$from-$to';
 
     final bool ok = game.move(params);
     if (!ok) return;
+
+    if (openingTrainerStudentMove) {
+      _openingTrainer.recordStudentMove(openingTrainerUci);
+    }
 
     if (_puzzleRecordingLine) {
       _puzzleCurrentLine.add('$from$to${promo ?? ''}');
@@ -7826,7 +12058,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _refreshPuzzleSettingsOverlay();
     } else if (_showPuzzlePanel &&
         _activePublishedPuzzleTask != null &&
-        !_puzzleSettingsIsOpen) {
+        !_teacherPuzzleAuthoringMode) {
       _studentPuzzleMoveLine.add('$from$to${promo ?? ''}');
       _puzzleMoveChecked = false;
       _puzzleMoveCorrect = null;
@@ -7837,8 +12069,29 @@ class _MyHomePageState extends State<MyHomePage> {
     _afterHumanMoveCommon(san, isCapture);
     _checkGameOver();
     unawaited(_refreshEvalBar());
+    final lichessSnapshot = LichessSessionController.instance.snapshot;
+    if (lichessSnapshot != null && !lichessSnapshot.finished) {
+      final uci = '$from$to${promo ?? ''}';
+      try {
+        await LichessSessionController.instance.sendMove(uci);
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content:
+                    MakeChessLocalizedText('Lichess отклонил ход: $error')),
+          );
+        }
+      }
+      return;
+    }
     if (_room != null) {
       await _room!.sendMove(from: from, to: to, promotion: promo);
+    }
+
+    if (_openingTrainer.sessionActive) {
+      await _syncOpeningTrainerPosition(force: true);
+      return;
     }
 
     if (_vsEngine && game.turn != _humanColor && !game.game_over) {
@@ -7886,17 +12139,31 @@ class _MyHomePageState extends State<MyHomePage> {
     );
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Предложение ничьей отправлено')),
+      const SnackBar(
+          content: MakeChessLocalizedText('Предложение ничьей отправлено')),
     );
   }
 
   // Универсальная кнопка "Предложить ничью"
   Future<void> _offerDrawUniversal() async {
+    final lichess = LichessSessionController.instance.snapshot;
+    if (lichess != null && !lichess.finished) {
+      await LichessSessionController.instance.offerDraw();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: MakeChessLocalizedText(
+                  'Предложение ничьей отправлено в Lichess')),
+        );
+      }
+      return;
+    }
     if (!_inRoom || _isSpectator) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Предложение ничьей доступно только в онлайне')),
+              content: MakeChessLocalizedText(
+                  'Предложение ничьей доступно только в онлайне')),
         );
       }
       return;
@@ -7955,22 +12222,23 @@ class _MyHomePageState extends State<MyHomePage> {
       barrierDismissible: false, // чтобы не закрывали тапом по фону
       builder: (ctx) => AlertDialog(
         // <- используем локальный ctx
-        title: const Text('Ничья?'),
-        content: const Text('Соперник предлагает ничью. Принять?'),
+        title: const MakeChessLocalizedText('Ничья?'),
+        content:
+            const MakeChessLocalizedText('Соперник предлагает ничью. Принять?'),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop(); // <- закрываем ЭТОТ диалог
               _declineDrawOnline();
             },
-            child: const Text('Отклонить'),
+            child: const MakeChessLocalizedText('Отклонить'),
           ),
           FilledButton(
             onPressed: () {
               Navigator.of(ctx).pop(); // <- закрываем ЭТОТ диалог
               _acceptDrawOnline();
             },
-            child: const Text('Принять'),
+            child: const MakeChessLocalizedText('Принять'),
           ),
         ],
       ),
@@ -7982,18 +12250,18 @@ class _MyHomePageState extends State<MyHomePage> {
     final mode = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Реванш'),
-        content: const Text('Как сыграть реванш?'),
+        title: const MakeChessLocalizedText('Реванш'),
+        content: const MakeChessLocalizedText('Как сыграть реванш?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, 'same'),
-              child: const Text('Те же цвета')),
+              child: const MakeChessLocalizedText('Те же цвета')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'flip'),
-              child: const Text('Поменять цвета')),
+              child: const MakeChessLocalizedText('Поменять цвета')),
           FilledButton(
               onPressed: () => Navigator.pop(context, 'random'),
-              child: const Text('Случайно')),
+              child: const MakeChessLocalizedText('Случайно')),
         ],
       ),
     );
@@ -8038,21 +12306,22 @@ class _MyHomePageState extends State<MyHomePage> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Реванш?'),
-        content: const Text('Соперник предлагает реванш. Принять?'),
+        title: const MakeChessLocalizedText('Реванш?'),
+        content: const MakeChessLocalizedText(
+            'Соперник предлагает реванш. Принять?'),
         actions: [
           TextButton(
               onPressed: () {
                 Navigator.pop(context);
                 _declineRematch();
               },
-              child: const Text('Отклонить')),
+              child: const MakeChessLocalizedText('Отклонить')),
           FilledButton(
               onPressed: () {
                 Navigator.pop(context);
                 _acceptRematch();
               },
-              child: const Text('Принять')),
+              child: const MakeChessLocalizedText('Принять')),
         ],
       ),
     );
@@ -8149,7 +12418,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 final fen = _fenController.text.trim().isEmpty
                     ? game.fen
                     : _fenController.text.trim();
-                await _fetchUciBestMove(fen);
+                await _toggleLocalStockfish();
               },
               gptLoading: _gptLoading,
               explainHere: _explainHere,
@@ -8255,12 +12524,12 @@ class _MyHomePageState extends State<MyHomePage> {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           action(
-            tooltip: 'Играть с человеком',
+            tooltip: MakeChessLocalization.phrase('Играть с человеком'),
             icon: const Icon(Icons.people),
             onPressed: _vsEngine && !_inRoom ? _continueVsHuman : null,
           ),
           action(
-            tooltip: 'Играть с компьютером',
+            tooltip: MakeChessLocalization.phrase('Играть с компьютером'),
             icon: const Stack(
               clipBehavior: Clip.none,
               children: [
@@ -8275,17 +12544,18 @@ class _MyHomePageState extends State<MyHomePage> {
             onPressed: !_inRoom && !_vsEngine ? _continueVsEngine : null,
           ),
           action(
-            tooltip: 'Компьютер против компьютера',
+            tooltip:
+                MakeChessLocalization.phrase('Компьютер против компьютера'),
             icon: const Icon(Icons.view_stream_outlined),
             onPressed: !_inRoom ? _startEngineDuel : null,
           ),
           action(
-            tooltip: 'Совместный режим',
+            tooltip: MakeChessLocalization.phrase('Совместный режим'),
             icon: const Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(Icons.person, size: 14),
-                Text('&',
+                MakeChessLocalizedText('&',
                     style:
                         TextStyle(fontSize: 11, fontWeight: FontWeight.w900)),
                 Icon(Icons.person, size: 14),
@@ -8308,9 +12578,234 @@ class _MyHomePageState extends State<MyHomePage> {
                 : null,
           ),
           action(
-            tooltip: 'Новый игрок',
+            tooltip: MakeChessLocalization.phrase('Новый игрок'),
             icon: const Icon(Icons.fiber_new),
             onPressed: _onNewGameUniversal,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTeacherLearningDesktop({
+    required double desktopScale,
+    required double logicalPanelHeight,
+  }) {
+    assert(desktopScale > 0);
+    assert(logicalPanelHeight > 0);
+
+    final media = MediaQuery.of(context);
+    final actualWidth = math.max(720.0, media.size.width - 16.0).toDouble();
+    // AppShell рисует body за верхней панелью высотой 62 px, а этот
+    // экран имеет ещё по 12 px внешнего отступа сверху и снизу. Раньше здесь
+    // вычиталось 150 px, поэтому внизу оставалась большая неиспользованная
+    // полоса. Теперь учительский интерфейс занимает всю доступную высоту.
+    const topBarHeight = 62.0;
+    const outerVerticalPadding = 24.0;
+    const safetyGap = 8.0;
+    final availableHeight = math
+        .max(
+          420.0,
+          media.size.height - topBarHeight - outerVerticalPadding - safetyGap,
+        )
+        .toDouble();
+    final userZoom = (_boardPercent / 100.0).clamp(0.55, 2.0).toDouble();
+
+    // Каноническая высота верхнего ряда равна четырём компактным рядам
+    // кнопок. На низком экране весь ряд уменьшается равномерно через FittedBox.
+    const baseTopLogicalHeight = 200.0;
+    final topLogicalHeight =
+        baseTopLogicalHeight + (_learningTeacherPanelsExpanded ? 520.0 : 0.0);
+    // Масштаб рассчитываем по обычной высоте. Расширенная часть выбранной
+    // панели рисуется поверх рабочей области, поэтому остальные четыре панели
+    // и вся сетка досок не сдвигаются вниз вместе с ней.
+    final topFitScale = math
+        .min(
+          1.0,
+          math.max(0.68, (availableHeight * 0.23) / baseTopLogicalHeight),
+        )
+        .toDouble();
+    final topScale = (topFitScale * userZoom).clamp(0.55, 1.50).toDouble();
+    final baseTopHeight = baseTopLogicalHeight * topScale;
+    final overlayTopHeight = topLogicalHeight * topScale;
+
+    const rightLogicalWidth = 330.0;
+    final rightFitScale =
+        ((actualWidth * 0.19) / rightLogicalWidth).clamp(0.72, 1.0).toDouble();
+    final maxRightScale = math
+        .max(
+          0.72,
+          (actualWidth * 0.34) / rightLogicalWidth,
+        )
+        .toDouble();
+    final rightScale =
+        (rightFitScale * userZoom).clamp(0.62, maxRightScale).toDouble();
+    final rightWidth = rightLogicalWidth * rightScale;
+
+    final gap = 8.0 * userZoom.clamp(0.75, 1.5).toDouble();
+    final contentHeight =
+        math.max(230.0, availableHeight - baseTopHeight - gap).toDouble();
+    final boardsWidth =
+        math.max(280.0, actualWidth - rightWidth - gap).toDouble();
+
+    final topLogicalWidth = actualWidth / topScale;
+    final topPanel = SizedBox(
+      width: actualWidth,
+      height: overlayTopHeight,
+      child: FittedBox(
+        fit: BoxFit.fill,
+        alignment: Alignment.topLeft,
+        child: LearningPanel(
+          activeAnalysisKey: _learningAnalysisArrowKey,
+          showAnswer: _learningShowAnswer,
+          activeAnalysisSide: _learningAnalysisSide,
+          analysisResults: _learningAnalysisResults,
+          onAnalysisSideToggle: _toggleLearningAnalysisSide,
+          onAnalysisModeChanged: _setLearningAnalysisMode,
+          drawingEnabled: _learningDrawingEnabled,
+          onToggleDrawing: _toggleLearningDrawing,
+          onFinishAnalysis: _finishLearningAnalysisTask,
+          onShowAnswerChanged: _setLearningShowAnswer,
+          onRoleChanged: _handleLearningRoleChanged,
+          onLoadPosition: () {
+            _editMode ? _applyEditor() : _enterEditor();
+          },
+          onToggleSharedMode: _toggleSyncBoard,
+          sharedModeEnabled: _syncBoard,
+          onToggleStudentEvaluation: () =>
+              unawaited(_toggleLearningStudentEvaluation()),
+          studentEvaluationEnabled: _selectedLearningStudentEvaluationEnabled,
+          onToggleCommonBoard: _toggleLearningCommonBoard,
+          commonBoardEnabled: _learningCommonBoardEnabled,
+          commonTaskCurrentFen: _learningCommonGame.fen,
+          commonTaskTitle: _learningCommonTaskTitle,
+          commonTaskNumber: _learningCommonTaskNumber,
+          commonTaskTypeTitle: _learningCommonTaskTypeTitle,
+          commonTaskStartFen: _learningCommonTaskStartFen,
+          commonTaskSavedLines: _learningCommonTaskSavedLines,
+          commonTaskCurrentLine: _learningCommonTaskCurrentLine,
+          commonTaskRecording: _learningCommonTaskRecording,
+          commonTaskPublished: _learningCommonTaskPublished,
+          commonTaskPublishing: _learningCommonTaskPublishing,
+          commonTaskFolderName: _learningCommonTaskFolderName,
+          onCommonTaskTitleChanged: (value) {
+            setState(() {
+              _learningCommonTaskTitle = value;
+              _learningCommonTaskPublished = false;
+            });
+          },
+          onCommonTaskNumberChanged: (value) {
+            setState(() {
+              _learningCommonTaskNumber = value < 1 ? 1 : value;
+              _learningCommonTaskPublished = false;
+            });
+          },
+          onCommonTaskTypeChanged: (value) {
+            setState(() {
+              _learningCommonTaskTypeTitle = value;
+              _learningCommonTaskPublished = false;
+            });
+          },
+          onCommonTaskSetInitialPosition: _learningCommonTaskSetInitialPosition,
+          onCommonTaskStartLine: _learningCommonTaskStartLine,
+          onCommonTaskFinishLine: _learningCommonTaskFinishLine,
+          onCommonTaskDeleteLine: _learningCommonTaskDeleteLine,
+          onCommonTaskNew: _learningCommonTaskNew,
+          onCommonTaskClear: _learningCommonTaskClear,
+          onCommonTaskChooseFolder: () =>
+              unawaited(_learningCommonTaskChooseFolder()),
+          onCommonTaskPublish: () => unawaited(_learningCommonTaskPublish()),
+          onCommonTaskDownload: () => unawaited(_learningCommonTaskDownload()),
+          onCommonTaskNetwork: _learningCommonTaskNetwork,
+          onCommonTaskCopyJson: () => unawaited(_learningCommonTaskCopyJson()),
+          onTeacherPanelsExpandedChanged: (expanded) {
+            if (_learningTeacherPanelsExpanded == expanded) return;
+            setState(() => _learningTeacherPanelsExpanded = expanded);
+          },
+          role: _learningRole,
+          students: _learningStudents,
+          selectedStudentId: _selectedLearningStudentId,
+          selectedVideoStudentIds: _selectedVideoStudentIds,
+          confirmedStudentId: _confirmedLearningStudentId,
+          invitationStatus: _learningInvitationStatus,
+          onAddStudent: _addLearningStudent,
+          onStudentSelected: _selectLearningStudent,
+          onVideoStudentToggled: _toggleVideoLearningStudent,
+          onInviteStudentToGame: _inviteLearningStudentToGame,
+          onInviteSelectedStudent: _inviteSelectedLearningStudent,
+          showAllBoards: _learningShowAllBoards,
+          onToggleBoardsView: _toggleLearningBoardsView,
+          onStudentDoubleTap: _focusLearningStudentBoard,
+          activeBoardStudentId: _learningFocusedStudentId,
+          onlineStudentIds: _learningOnlineStudentIds,
+          connectedGameStudentIds: _learningConnectedGameStudentIds,
+          pendingGameStudentIds: _learningPendingGameStudentIds,
+          onEndStudentGame: _endLearningStudentGame,
+          showRoleButtons: false,
+          teacherHorizontal: true,
+          teacherLayoutMode: _learningTeacherLayoutMode,
+          onTeacherLayoutModeChanged: _setLearningTeacherLayoutMode,
+          width: topLogicalWidth,
+          height: topLogicalHeight,
+        ),
+      ),
+    );
+
+    final rightLogicalHeight = contentHeight / rightScale;
+    final rightPanel = SizedBox(
+      width: rightWidth,
+      height: contentHeight,
+      child: FittedBox(
+        fit: BoxFit.fill,
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: rightLogicalWidth,
+          height: rightLogicalHeight,
+          child: _buildDesktopRightColumn(
+            rightLogicalWidth,
+            height: rightLogicalHeight,
+            compact: true,
+          ),
+        ),
+      ),
+    );
+
+    return SizedBox(
+      width: actualWidth,
+      height: availableHeight,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            left: 0,
+            right: 0,
+            top: baseTopHeight + gap,
+            height: contentHeight,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  width: boardsWidth,
+                  height: contentHeight,
+                  child: _buildLearningTeacherContentArea(
+                    width: boardsWidth,
+                    height: contentHeight,
+                  ),
+                ),
+                SizedBox(width: gap),
+                rightPanel,
+              ],
+            ),
+          ),
+          // Верхний ряд расположен поверх досок. За пределы базовой высоты
+          // выходит только дополнительная область той панели, чья стрелка
+          // была нажата. Остальные панели сохраняют исходную высоту.
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            height: overlayTopHeight,
+            child: topPanel,
           ),
         ],
       ),
@@ -8425,6 +12920,10 @@ class _MyHomePageState extends State<MyHomePage> {
                       unawaited(_toggleLearningStudentEvaluation()),
                   studentEvaluationEnabled:
                       _selectedLearningStudentEvaluationEnabled,
+                  studentSelectedPuzzleType: _selectedPuzzleType,
+                  onStudentPuzzleTypeSelected: _selectStudentTrainingPuzzleType,
+                  onStudentOpeningTrainerTap: _openOpeningTrainerDialog,
+                  studentOpeningTrainerActive: _showOpeningTrainerDialog,
                   role: _learningRole,
                   students: _learningStudents,
                   selectedStudentId: _selectedLearningStudentId,
@@ -8444,6 +12943,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   connectedGameStudentIds: _learningConnectedGameStudentIds,
                   pendingGameStudentIds: _learningPendingGameStudentIds,
                   onEndStudentGame: _endLearningStudentGame,
+                  showRoleButtons: false,
                   width: boardSize,
                   height: math.max(
                     640.0,
@@ -8455,11 +12955,24 @@ class _MyHomePageState extends State<MyHomePage> {
                 PuzzleTypesPanel(
                   selectedType: _selectedPuzzleType,
                   onTypeSelected: (type) {
+                    if (_openingTrainer.sessionActive) {
+                      _openingTrainer.stopSession();
+                    }
                     setState(() {
+                      _showOpeningTrainerDialog = false;
+                      _showAntiBlunderTrainerDialog = false;
                       _selectedPuzzleType = type;
                       _activePublishedPuzzleIndex = -1;
+                      _studentAnalysisArrowKey = null;
+                      _studentPuzzleDrawingEnabled = false;
+                      _studentPendingAnalysisArrowFrom = null;
+                      _studentAnalysisPointerPosition = null;
                     });
                   },
+                  onAntiBlunderTrainerTap: _openAntiBlunderTrainerDialog,
+                  antiBlunderTrainerActive: _showAntiBlunderTrainerDialog,
+                  onOpeningTrainerTap: _openOpeningTrainerDialog,
+                  openingTrainerActive: _showOpeningTrainerDialog,
                   onOpenTasksTap: _openPublishedPuzzlesFolder,
                   onSettingsTap: _openPuzzleSettings,
                   publishedTasks: _visiblePublishedPuzzleTasks,
@@ -8474,6 +12987,8 @@ class _MyHomePageState extends State<MyHomePage> {
                   analysisResults: _studentAnalysisResults,
                   onAnalysisSideToggle: _toggleStudentAnalysisSide,
                   onAnalysisModeChanged: _setStudentPuzzleAnalysisMode,
+                  drawingEnabled: _studentPuzzleDrawingEnabled,
+                  onToggleDrawing: _toggleStudentPuzzleDrawing,
                   onFinishAnalysis: _finishStudentPuzzleAnalysisTask,
                   onShowAnswerChanged: _setStudentShowPuzzleAnswer,
                   width: boardSize,
@@ -8488,122 +13003,157 @@ class _MyHomePageState extends State<MyHomePage> {
           ] else ...[
             // ===== Десктоп: три колонки =====
             // ===== Десктоп: три колонки =====
-            scaledDesktop(
-              PlayLayout(
-                leftWidth: logicalSidePanelWidth,
-                centerWidth: logicalCenterWidth,
-                rightWidth: logicalSidePanelWidth,
-                gap: logicalDesktopGap,
-                padding: EdgeInsets.zero,
-                left: _showLearningPanel
-                    ? LearningPanel(
-                        activeAnalysisKey: _learningAnalysisArrowKey,
-                        showAnswer: _learningShowAnswer,
-                        activeAnalysisSide: _learningAnalysisSide,
-                        analysisResults: _learningAnalysisResults,
-                        onAnalysisSideToggle: _toggleLearningAnalysisSide,
-                        onAnalysisModeChanged: _setLearningAnalysisMode,
-                        drawingEnabled: _learningDrawingEnabled,
-                        onToggleDrawing: _toggleLearningDrawing,
-                        onFinishAnalysis: _finishLearningAnalysisTask,
-                        onShowAnswerChanged: _setLearningShowAnswer,
-                        onRoleChanged: _handleLearningRoleChanged,
-                        onLoadPosition: () {
-                          _editMode ? _applyEditor() : _enterEditor();
-                        },
-                        onToggleSharedMode: _toggleSyncBoard,
-                        sharedModeEnabled: _syncBoard,
-                        onToggleStudentEvaluation: () =>
-                            unawaited(_toggleLearningStudentEvaluation()),
-                        studentEvaluationEnabled:
-                            _selectedLearningStudentEvaluationEnabled,
-                        role: _learningRole,
-                        students: _learningStudents,
-                        selectedStudentId: _selectedLearningStudentId,
-                        selectedVideoStudentIds: _selectedVideoStudentIds,
-                        confirmedStudentId: _confirmedLearningStudentId,
-                        invitationStatus: _learningInvitationStatus,
-                        onAddStudent: _addLearningStudent,
-                        onStudentSelected: _selectLearningStudent,
-                        onVideoStudentToggled: _toggleVideoLearningStudent,
-                        onInviteStudentToGame: _inviteLearningStudentToGame,
-                        onInviteSelectedStudent: _inviteSelectedLearningStudent,
-                        showAllBoards: _learningShowAllBoards,
-                        onToggleBoardsView: _toggleLearningBoardsView,
-                        onStudentDoubleTap: _focusLearningStudentBoard,
-                        activeBoardStudentId: _learningFocusedStudentId,
-                        onlineStudentIds: _learningOnlineStudentIds,
-                        connectedGameStudentIds:
-                            _learningConnectedGameStudentIds,
-                        pendingGameStudentIds: _learningPendingGameStudentIds,
-                        onEndStudentGame: _endLearningStudentGame,
-                        width: logicalSidePanelWidth,
-                        height: logicalPanelHeight,
-                      )
-                    : _showPuzzlePanel
-                        ? PuzzleTypesPanel(
-                            selectedType: _selectedPuzzleType,
-                            onTypeSelected: (type) {
-                              setState(() {
-                                _selectedPuzzleType = type;
-                                _activePublishedPuzzleIndex = -1;
-                              });
-                            },
-                            onOpenTasksTap: _openPublishedPuzzlesFolder,
-                            onSettingsTap: _openPuzzleSettings,
-                            publishedTasks: _visiblePublishedPuzzleTasks,
-                            activeTaskIndex: _activePublishedPuzzleIndex,
-                            loadingTasks: _loadingPublishedPuzzleTasks,
-                            onTaskSelected: _activatePublishedPuzzle,
-                            onPreviousTask: _activatePreviousPublishedPuzzle,
-                            onNextTask: _activateNextPublishedPuzzle,
-                            activeAnalysisKey: _studentAnalysisArrowKey,
-                            showAnswer: _studentShowPuzzleAnswer,
-                            activeAnalysisSide: _studentAnalysisSide,
-                            analysisResults: _studentAnalysisResults,
-                            onAnalysisSideToggle: _toggleStudentAnalysisSide,
-                            onAnalysisModeChanged:
-                                _setStudentPuzzleAnalysisMode,
-                            onFinishAnalysis: _finishStudentPuzzleAnalysisTask,
-                            onShowAnswerChanged: _setStudentShowPuzzleAnswer,
-                            width: logicalSidePanelWidth,
-                            height: logicalPanelHeight,
-                          )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              _LeftUtilityButtons(),
-                              const SizedBox(height: 12),
-                              LobbyPanel(
-                                isLoggedIn: isLogged,
-                                inLobby: _lobby != null,
-                                online: _lobby?.online ?? const [],
-                                myId: Supabase
-                                    .instance.client.auth.currentUser?.id,
-                                myRating: _myRating,
-                                onEnterLobby: _enterLobby,
-                                onLeaveLobby: _leaveLobby,
-                                onInvite: (id, name) => _invitePlayer(id, name),
-                              ),
-                              const SizedBox(height: 12),
-                              _buildChat(
-                                  maxWidth: logicalSidePanelWidth, height: 220),
-                            ],
-                          ),
-                center: _showLearningPanel &&
-                        _learningRole == LearningPanelRole.teacher
-                    ? _buildLearningBoardsArea(
-                        width: logicalCenterWidth,
-                        height: logicalPanelHeight,
-                      )
-                    : _buildLeftColumn(
-                        logicalBoardSize,
-                        showChat: false,
-                        showBottomTools: false,
-                      ),
-                right: _buildDesktopRightColumn(logicalSidePanelWidth),
+            if (_showLearningPanel &&
+                _learningRole == LearningPanelRole.teacher)
+              _buildTeacherLearningDesktop(
+                desktopScale: desktopScale,
+                logicalPanelHeight: logicalPanelHeight,
+              )
+            else
+              scaledDesktop(
+                PlayLayout(
+                  leftWidth: logicalSidePanelWidth,
+                  centerWidth: logicalCenterWidth,
+                  rightWidth: logicalSidePanelWidth,
+                  gap: logicalDesktopGap,
+                  padding: EdgeInsets.zero,
+                  left: _showLearningPanel
+                      ? LearningPanel(
+                          activeAnalysisKey: _learningAnalysisArrowKey,
+                          showAnswer: _learningShowAnswer,
+                          activeAnalysisSide: _learningAnalysisSide,
+                          analysisResults: _learningAnalysisResults,
+                          onAnalysisSideToggle: _toggleLearningAnalysisSide,
+                          onAnalysisModeChanged: _setLearningAnalysisMode,
+                          drawingEnabled: _learningDrawingEnabled,
+                          onToggleDrawing: _toggleLearningDrawing,
+                          onFinishAnalysis: _finishLearningAnalysisTask,
+                          onShowAnswerChanged: _setLearningShowAnswer,
+                          onRoleChanged: _handleLearningRoleChanged,
+                          onLoadPosition: () {
+                            _editMode ? _applyEditor() : _enterEditor();
+                          },
+                          onToggleSharedMode: _toggleSyncBoard,
+                          sharedModeEnabled: _syncBoard,
+                          onToggleStudentEvaluation: () =>
+                              unawaited(_toggleLearningStudentEvaluation()),
+                          studentEvaluationEnabled:
+                              _selectedLearningStudentEvaluationEnabled,
+                          studentSelectedPuzzleType: _selectedPuzzleType,
+                          onStudentPuzzleTypeSelected:
+                              _selectStudentTrainingPuzzleType,
+                          onStudentOpeningTrainerTap: _openOpeningTrainerDialog,
+                          studentOpeningTrainerActive:
+                              _showOpeningTrainerDialog,
+                          role: _learningRole,
+                          students: _learningStudents,
+                          selectedStudentId: _selectedLearningStudentId,
+                          selectedVideoStudentIds: _selectedVideoStudentIds,
+                          confirmedStudentId: _confirmedLearningStudentId,
+                          invitationStatus: _learningInvitationStatus,
+                          onAddStudent: _addLearningStudent,
+                          onStudentSelected: _selectLearningStudent,
+                          onVideoStudentToggled: _toggleVideoLearningStudent,
+                          onInviteStudentToGame: _inviteLearningStudentToGame,
+                          onInviteSelectedStudent:
+                              _inviteSelectedLearningStudent,
+                          showAllBoards: _learningShowAllBoards,
+                          onToggleBoardsView: _toggleLearningBoardsView,
+                          onStudentDoubleTap: _focusLearningStudentBoard,
+                          activeBoardStudentId: _learningFocusedStudentId,
+                          onlineStudentIds: _learningOnlineStudentIds,
+                          connectedGameStudentIds:
+                              _learningConnectedGameStudentIds,
+                          pendingGameStudentIds: _learningPendingGameStudentIds,
+                          onEndStudentGame: _endLearningStudentGame,
+                          showRoleButtons: false,
+                          width: logicalSidePanelWidth,
+                          height: logicalPanelHeight,
+                        )
+                      : _showPuzzlePanel
+                          ? PuzzleTypesPanel(
+                              selectedType: _selectedPuzzleType,
+                              onTypeSelected: (type) {
+                                if (_openingTrainer.sessionActive) {
+                                  _openingTrainer.stopSession();
+                                }
+                                setState(() {
+                                  _showOpeningTrainerDialog = false;
+                                  _showAntiBlunderTrainerDialog = false;
+                                  _selectedPuzzleType = type;
+                                  _activePublishedPuzzleIndex = -1;
+                                  _studentAnalysisArrowKey = null;
+                                  _studentPuzzleDrawingEnabled = false;
+                                  _studentPendingAnalysisArrowFrom = null;
+                                  _studentAnalysisPointerPosition = null;
+                                });
+                              },
+                              onAntiBlunderTrainerTap:
+                                  _openAntiBlunderTrainerDialog,
+                              antiBlunderTrainerActive:
+                                  _showAntiBlunderTrainerDialog,
+                              onOpeningTrainerTap: _openOpeningTrainerDialog,
+                              openingTrainerActive: _showOpeningTrainerDialog,
+                              onOpenTasksTap: _openPublishedPuzzlesFolder,
+                              onSettingsTap: _openPuzzleSettings,
+                              publishedTasks: _visiblePublishedPuzzleTasks,
+                              activeTaskIndex: _activePublishedPuzzleIndex,
+                              loadingTasks: _loadingPublishedPuzzleTasks,
+                              onTaskSelected: _activatePublishedPuzzle,
+                              onPreviousTask: _activatePreviousPublishedPuzzle,
+                              onNextTask: _activateNextPublishedPuzzle,
+                              activeAnalysisKey: _studentAnalysisArrowKey,
+                              showAnswer: _studentShowPuzzleAnswer,
+                              activeAnalysisSide: _studentAnalysisSide,
+                              analysisResults: _studentAnalysisResults,
+                              onAnalysisSideToggle: _toggleStudentAnalysisSide,
+                              onAnalysisModeChanged:
+                                  _setStudentPuzzleAnalysisMode,
+                              drawingEnabled: _studentPuzzleDrawingEnabled,
+                              onToggleDrawing: _toggleStudentPuzzleDrawing,
+                              onFinishAnalysis:
+                                  _finishStudentPuzzleAnalysisTask,
+                              onShowAnswerChanged: _setStudentShowPuzzleAnswer,
+                              width: logicalSidePanelWidth,
+                              height: logicalPanelHeight,
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _LeftUtilityButtons(),
+                                const SizedBox(height: 12),
+                                LobbyPanel(
+                                  isLoggedIn: isLogged,
+                                  inLobby: _lobby != null,
+                                  online: _lobby?.online ?? const [],
+                                  myId: Supabase
+                                      .instance.client.auth.currentUser?.id,
+                                  myRating: _myRating,
+                                  onEnterLobby: _enterLobby,
+                                  onLeaveLobby: _leaveLobby,
+                                  onInvite: (id, name) =>
+                                      _invitePlayer(id, name),
+                                ),
+                                const SizedBox(height: 12),
+                                _buildChat(
+                                    maxWidth: logicalSidePanelWidth,
+                                    height: 220),
+                              ],
+                            ),
+                  center: _showLearningPanel &&
+                          _learningRole == LearningPanelRole.teacher
+                      ? _buildLearningBoardsArea(
+                          width: logicalCenterWidth,
+                          height: logicalPanelHeight,
+                        )
+                      : _buildLeftColumn(
+                          logicalBoardSize,
+                          showChat: false,
+                          showBottomTools: false,
+                        ),
+                  right: _buildDesktopRightColumn(logicalSidePanelWidth),
+                ),
               ),
-            ),
             // ⚠️ На десктопе нижние инструменты НЕ выводим, чтобы не было дубля
           ],
         ],
@@ -8616,14 +13166,16 @@ class _MyHomePageState extends State<MyHomePage> {
   void openBoardTheme() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Тема доски: в разработке')),
+      const SnackBar(
+          content: MakeChessLocalizedText('Тема доски: в разработке')),
     );
   }
 
   void openGptSettings() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('GPT: настройки в разработке')),
+      const SnackBar(
+          content: MakeChessLocalizedText('GPT: настройки в разработке')),
     );
   }
 
@@ -8638,7 +13190,8 @@ class _MyHomePageState extends State<MyHomePage> {
     if (bytes == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось прочитать файл')),
+          const SnackBar(
+              content: MakeChessLocalizedText('Не удалось прочитать файл')),
         );
       }
       return;
@@ -8649,7 +13202,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Фон обновлён')),
+        const SnackBar(content: MakeChessLocalizedText('Фон обновлён')),
       );
     }
   }
@@ -8661,7 +13214,7 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _loadingAnalysis = false;
 
   Future<void> _onTakeBestMove() async {
-    if (_loadingBest) return;
+    if (_loadingBest || LichessPlayGuard.instance.active) return;
     setState(() => _loadingBest = true);
 
     try {
@@ -8680,13 +13233,14 @@ class _MyHomePageState extends State<MyHomePage> {
 
       final txt = (rich['text'] as String?) ?? (rich['uci'] as String?) ?? 'OK';
 
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(txt)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: MakeChessLocalizedText(txt)));
 
       // Если хочешь — можешь взять rich['uci'] и сразу применить ход к доске.
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Stockfish: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: MakeChessLocalizedText('Stockfish: $e')));
       }
     } finally {
       if (mounted) setState(() => _loadingBest = false);
@@ -8827,6 +13381,7 @@ $prettyJson
   Future<void> _refreshLearningSessionEval(
     _LearningGameSession session,
   ) async {
+    if (LichessPlayGuard.instance.active) return;
     final fen = session.game.fen;
     final requestEpoch = ++session.evalRequestEpoch;
     session.loadingEval = true;
@@ -8860,6 +13415,7 @@ $prettyJson
   }
 
   Future<void> _refreshEvalBar() async {
+    if (LichessPlayGuard.instance.active) return;
     final requestEpoch = ++_evalRequestEpoch;
     _loadingEval = true;
 
@@ -8892,7 +13448,7 @@ $prettyJson
   }
 
   Future<void> _onOpenAnalysis() async {
-    if (_loadingAnalysis) return;
+    if (_loadingAnalysis || LichessPlayGuard.instance.active) return;
     setState(() => _loadingAnalysis = true);
 
     try {
@@ -8927,7 +13483,7 @@ $prettyJson
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Stockfish analysis'),
+          title: const MakeChessLocalizedText('Stockfish analysis'),
           content: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -8951,7 +13507,7 @@ $prettyJson
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Закрыть'),
+              child: const MakeChessLocalizedText('Закрыть'),
             ),
           ],
         ),
@@ -8959,7 +13515,7 @@ $prettyJson
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Stockfish: $e')),
+          SnackBar(content: MakeChessLocalizedText('Stockfish: $e')),
         );
       }
     } finally {
@@ -9069,6 +13625,22 @@ $prettyJson
 
             // сам контент
             core,
+
+            // Единое окно дебютного тренажёра открывается из обоих мест:
+            // «Задачи → Дебютный» и «Учиться → Ученик → Дебютный».
+            if (_showOpeningTrainerDialog)
+              _buildOpeningTrainerDialogOverlay(
+                screenSize: media.size,
+                boardSize: boardSize,
+                isMobile: isMobile,
+              ),
+
+            if (_showAntiBlunderTrainerDialog)
+              _buildAntiBlunderTrainerDialogOverlay(
+                screenSize: media.size,
+                boardSize: boardSize,
+                isMobile: isMobile,
+              ),
           ],
         );
       },
@@ -9159,7 +13731,8 @@ $prettyJson
                 children: [
                   Icon(Icons.delete_forever, size: 22),
                   SizedBox(width: 6),
-                  Text('Удалить', style: TextStyle(fontSize: 13)),
+                  MakeChessLocalizedText('Удалить',
+                      style: TextStyle(fontSize: 13)),
                 ],
               ),
             ),
@@ -9220,7 +13793,7 @@ $prettyJson
                   final fen = _fenController.text.trim().isEmpty
                       ? game.fen
                       : _fenController.text.trim();
-                  await _fetchUciBestMove(fen);
+                  await _toggleLocalStockfish();
                 },
                 gptLoading: _gptLoading,
                 editMode: _editMode,
@@ -9274,13 +13847,13 @@ $prettyJson
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
-            tooltip: label,
+            tooltip: MakeChessLocalization.phrase(label),
             onPressed: onTap,
             icon: Icon(icon, color: color),
             constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
             splashRadius: 22,
           ),
-          Text(label, style: const TextStyle(fontSize: 11)),
+          MakeChessLocalizedText(label, style: const TextStyle(fontSize: 11)),
         ],
       );
     }
@@ -9356,7 +13929,8 @@ $prettyJson
                   if (!isLoggedIn) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                          content: Text('Сначала войдите в аккаунт')),
+                          content: MakeChessLocalizedText(
+                              'Сначала войдите в аккаунт')),
                     );
                     return;
                   }
@@ -9367,7 +13941,7 @@ $prettyJson
                   }
                   setState(() {});
                 },
-                child: Text(
+                child: MakeChessLocalizedText(
                     (_lobby == null) ? 'В контакты' : 'Выйти из контактов'),
               ),
             ),
@@ -9474,13 +14048,13 @@ $prettyJson
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
             children: [
               const ListTile(
-                title: Text('Настройки',
+                title: MakeChessLocalizedText('Настройки',
                     style: TextStyle(fontWeight: FontWeight.w600)),
               ),
               const Divider(),
               ListTile(
                 leading: const Icon(Icons.image), // было Icons.chess — заменили
-                title: const Text('Тема фона'),
+                title: const MakeChessLocalizedText('Тема фона'),
                 onTap: () async {
                   Navigator.pop(ctx);
                   await _pickBackgroundImage();
@@ -9489,8 +14063,9 @@ $prettyJson
               ListTile(
                 leading:
                     const Icon(Icons.grid_on), // было Icons.chess — заменили
-                title: const Text('Тема доски'),
-                subtitle: const Text('Цвета клеток и координат'),
+                title: const MakeChessLocalizedText('Тема доски'),
+                subtitle:
+                    const MakeChessLocalizedText('Цвета клеток и координат'),
                 onTap: () {
                   Navigator.pop(ctx);
                   _showBoardThemeDialog(); // ваша существующая/заглушка
@@ -9498,8 +14073,9 @@ $prettyJson
               ),
               ListTile(
                 leading: const Icon(Icons.psychology),
-                title: const Text('Настройка GPT'),
-                subtitle: const Text('Шаблон запроса и поведение'),
+                title: const MakeChessLocalizedText('Настройка GPT'),
+                subtitle:
+                    const MakeChessLocalizedText('Шаблон запроса и поведение'),
                 onTap: () {
                   Navigator.pop(ctx);
                   _showGptSettingsDialog(); // ваша существующая/заглушка
@@ -9516,12 +14092,14 @@ $prettyJson
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Тема доски'),
-        content: const Text('Здесь будет настройка цветов доски/координат.\n'
+        title: const MakeChessLocalizedText('Тема доски'),
+        content: const MakeChessLocalizedText(
+            'Здесь будет настройка цветов доски/координат.\n'
             'Пока заглушка, чтобы ничего не сломать.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('OK')),
+              onPressed: () => Navigator.pop(context),
+              child: const MakeChessLocalizedText('OK')),
         ],
       ),
     );
@@ -9531,13 +14109,14 @@ $prettyJson
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Настройка GPT'),
-        content: const Text(
+        title: const MakeChessLocalizedText('Настройка GPT'),
+        content: const MakeChessLocalizedText(
             'Здесь будет настройка шаблона запроса и дополнительных опций.\n'
             'Пока заглушка, чтобы ничего не сломать.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('OK')),
+              onPressed: () => Navigator.pop(context),
+              child: const MakeChessLocalizedText('OK')),
         ],
       ),
     );
@@ -9558,7 +14137,7 @@ $prettyJson
             Widget item(IconData icon, String title, VoidCallback onTap) {
               return ListTile(
                 leading: Icon(icon),
-                title: Text(title),
+                title: MakeChessLocalizedText(title),
                 onTap: () {
                   Navigator.pop(ctx);
                   onTap();
@@ -9568,7 +14147,8 @@ $prettyJson
 
             void notImpl(String what) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('$what (в разработке)')),
+                SnackBar(
+                    content: MakeChessLocalizedText('$what (в разработке)')),
               );
             }
 
@@ -9577,7 +14157,7 @@ $prettyJson
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
               children: [
                 const ListTile(
-                  title: Text('Меню',
+                  title: MakeChessLocalizedText('Меню',
                       style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
                 const Divider(),
@@ -9595,7 +14175,7 @@ $prettyJson
                 // Аккаунт (по желанию)
                 ListTile(
                   leading: const Icon(Icons.logout),
-                  title: const Text('Выйти из аккаунта'),
+                  title: const MakeChessLocalizedText('Выйти из аккаунта'),
                   onTap: () async {
                     Navigator.pop(ctx);
                     await _logout();
@@ -9647,8 +14227,8 @@ $prettyJson
           controller: _duelDelayCtl,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(
-            labelText: 'Задержка, мс',
+          decoration: InputDecoration(
+            labelText: MakeChessLocalization.phrase('Задержка, мс'),
             isDense: true,
             border: OutlineInputBorder(),
             contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
@@ -9684,8 +14264,9 @@ $prettyJson
           ConstrainedBox(
             // палетка не шире totalSize
             constraints: BoxConstraints(maxWidth: totalSize),
-            child:
-                _editorPalette(white: false, cellSize: cell), // ЧЁРНЫЕ СВЕРХУ
+            child: _editorPalette(
+                white: _isFlipped,
+                cellSize: cell), // верхняя палитра следует развороту
           ),
 
         // Доску тоже жёстко ограничим одной шириной, внутри — она уже центрирована
@@ -9709,8 +14290,9 @@ $prettyJson
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildBoardWithCoords(boardSize),
-                    if (!_studentLearningRoomActive ||
-                        _learningStudentEvaluationEnabled) ...[
+                    if (!LichessPlayGuard.instance.active &&
+                        (!_studentLearningRoomActive ||
+                            _learningStudentEvaluationEnabled)) ...[
                       const SizedBox(width: 10),
                       Padding(
                         padding: const EdgeInsets.only(top: 18),
@@ -9752,7 +14334,10 @@ $prettyJson
                       children: [
                         FilledButton.icon(
                           key: const Key('btnBestMove_bottom'),
-                          onPressed: _loadingBest ? null : _onTakeBestMove,
+                          onPressed:
+                              LichessPlayGuard.instance.active || _loadingBest
+                                  ? null
+                                  : _onTakeBestMove,
                           icon: _loadingBest
                               ? const SizedBox(
                                   width: 16,
@@ -9760,11 +14345,15 @@ $prettyJson
                                   child:
                                       CircularProgressIndicator(strokeWidth: 2))
                               : const Icon(Icons.flash_on),
-                          label: const Text('Взять лучший ход'),
+                          label:
+                              const MakeChessLocalizedText('Взять лучший ход'),
                         ),
                         OutlinedButton.icon(
                           key: const Key('btnAnalysis'),
-                          onPressed: _loadingAnalysis ? null : _onOpenAnalysis,
+                          onPressed: LichessPlayGuard.instance.active ||
+                                  _loadingAnalysis
+                              ? null
+                              : _onOpenAnalysis,
                           icon: _loadingAnalysis
                               ? const SizedBox(
                                   width: 16,
@@ -9772,29 +14361,33 @@ $prettyJson
                                   child:
                                       CircularProgressIndicator(strokeWidth: 2))
                               : const Icon(Icons.analytics),
-                          label: const Text('Stockfish Analysis'),
+                          label: const MakeChessLocalizedText(
+                              'Stockfish Analysis'),
                         ),
                       ],
                     ),
 
                     FilledButton.icon(
-                      onPressed:
-                          _gptLoading ? null : _explainHere, // без доп. текста
+                      onPressed: LichessPlayGuard.instance.active || _gptLoading
+                          ? null
+                          : _explainHere,
                       icon: _gptLoading
                           ? const SizedBox(
                               width: 18,
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.psychology),
-                      label: Text(_gptLoading
+                      label: MakeChessLocalizedText(_gptLoading
                           ? 'Запрос к GPT...'
                           : 'Объяснить позицию'),
                     ),
                     // >>> НОВАЯ КНОПКА С ДИАЛОГОМ ВОПРОСА
                     FilledButton.icon(
-                      onPressed: _gptLoading ? null : _openGptPromptDialog,
+                      onPressed: LichessPlayGuard.instance.active || _gptLoading
+                          ? null
+                          : _openGptPromptDialog,
                       icon: const Icon(Icons.question_answer),
-                      label: const Text('С вопросом…'),
+                      label: const MakeChessLocalizedText('С вопросом…'),
                     ),
                   ],
                 ),
@@ -9810,7 +14403,7 @@ $prettyJson
                     // 👇 мы просто делаем поле невидимым, без рамки и надписей
                     child: TextField(
                       controller: _fenController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         border: InputBorder.none, // убрали рамку
                         labelText: '', // убрали надпись
                         hintText: '', // убрали placeholder
@@ -9837,7 +14430,8 @@ $prettyJson
                         } else {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                                content: Text('Некорректный FEN: ${v.trim()}')),
+                                content: MakeChessLocalizedText(
+                                    'Некорректный FEN: ${v.trim()}')),
                           );
                         }
                       },
@@ -9853,7 +14447,9 @@ $prettyJson
         if (_editMode)
           ConstrainedBox(
             constraints: BoxConstraints(maxWidth: totalSize),
-            child: _editorPalette(white: true, cellSize: cell), // БЕЛЫЕ СНИЗУ
+            child: _editorPalette(
+                white: !_isFlipped,
+                cellSize: cell), // нижняя палитра следует развороту
           ),
 
         const SizedBox(height: 20),
@@ -9936,7 +14532,7 @@ $prettyJson
           children: [
             Icon(Icons.delete_outline),
             SizedBox(width: 8),
-            Text('Корзина (перетащите сюда с доски)'),
+            MakeChessLocalizedText('Корзина (перетащите сюда с доски)'),
           ],
         ),
       ),
@@ -9958,7 +14554,7 @@ $prettyJson
                   });
                 },
                 icon: const Icon(Icons.delete_outline),
-                label: const Text('Очистить доску'),
+                label: const MakeChessLocalizedText('Очистить доску'),
               ),
             ),
             const SizedBox(width: 8),
@@ -9974,7 +14570,7 @@ $prettyJson
                   });
                 },
                 icon: const Icon(Icons.refresh),
-                label: const Text('Стартовая'),
+                label: const MakeChessLocalizedText('Стартовая'),
               ),
             ),
           ],
@@ -9984,37 +14580,37 @@ $prettyJson
         // Ход / рокировки
         Row(
           children: [
-            const Text('Ход:'),
+            const MakeChessLocalizedText('Ход:'),
             const SizedBox(width: 8),
             ChoiceChip(
-              label: const Text('Белые'),
+              label: const MakeChessLocalizedText('Белые'),
               selected: _editTurn == ch.Color.WHITE,
               onSelected: (_) => setState(() => _editTurn = ch.Color.WHITE),
             ),
             const SizedBox(width: 8),
             ChoiceChip(
-              label: const Text('Чёрные'),
+              label: const MakeChessLocalizedText('Чёрные'),
               selected: _editTurn == ch.Color.BLACK,
               onSelected: (_) => setState(() => _editTurn = ch.Color.BLACK),
             ),
             const Spacer(),
             FilterChip(
-                label: const Text('K'),
+                label: const MakeChessLocalizedText('K'),
                 selected: _castleK,
                 onSelected: (v) => setState(() => _castleK = v)),
             const SizedBox(width: 6),
             FilterChip(
-                label: const Text('Q'),
+                label: const MakeChessLocalizedText('Q'),
                 selected: _castleQ,
                 onSelected: (v) => setState(() => _castleQ = v)),
             const SizedBox(width: 6),
             FilterChip(
-                label: const Text('k'),
+                label: const MakeChessLocalizedText('k'),
                 selected: _castlek,
                 onSelected: (v) => setState(() => _castlek = v)),
             const SizedBox(width: 6),
             FilterChip(
-                label: const Text('q'),
+                label: const MakeChessLocalizedText('q'),
                 selected: _castleq,
                 onSelected: (v) => setState(() => _castleq = v)),
           ],
@@ -10022,11 +14618,13 @@ $prettyJson
         const SizedBox(height: 10),
 
         // ПАЛЕТКИ
-        const Text('Белые', style: TextStyle(fontWeight: FontWeight.w600)),
+        const MakeChessLocalizedText('Белые',
+            style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         row(const ['wK', 'wQ', 'wR', 'wB', 'wN', 'wP']),
         const SizedBox(height: 10),
-        const Text('Чёрные', style: TextStyle(fontWeight: FontWeight.w600)),
+        const MakeChessLocalizedText('Чёрные',
+            style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         row(const ['bK', 'bQ', 'bR', 'bB', 'bN', 'bP']),
         const SizedBox(height: 12),
@@ -10038,7 +14636,7 @@ $prettyJson
               child: FilledButton.icon(
                 onPressed: _applyEditor,
                 icon: const Icon(Icons.check),
-                label: const Text('Применить'),
+                label: const MakeChessLocalizedText('Применить'),
               ),
             ),
             const SizedBox(width: 8),
@@ -10046,7 +14644,7 @@ $prettyJson
               child: OutlinedButton.icon(
                 onPressed: !_gameTerminated ? _onResignPressed : null,
                 icon: const Icon(Icons.flag),
-                label: const Text('Сдаться'),
+                label: const MakeChessLocalizedText('Сдаться'),
               ),
             ),
             const SizedBox(width: 12),
@@ -10114,7 +14712,7 @@ $prettyJson
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       '$name  ($rating)',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -10126,7 +14724,28 @@ $prettyJson
                   ),
                   if (showLearningStudentReset) ...[
                     Tooltip(
-                      message: 'Расставить позицию заново',
+                      message: MakeChessLocalization.phrase(
+                          'Вернуться к текущей позиции общей доски'),
+                      child: IconButton(
+                        onPressed: _studentLearningCommonFen == null
+                            ? null
+                            : () => unawaited(
+                                  _restoreLearningStudentFromCommon(),
+                                ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 30,
+                          height: 30,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        icon: const Icon(Icons.keyboard_double_arrow_left),
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    Tooltip(
+                      message: MakeChessLocalization.phrase(
+                          'Расставить позицию заново'),
                       child: IconButton(
                         onPressed: () => unawaited(
                           _confirmResetLearningStudentPosition(),
@@ -10144,7 +14763,7 @@ $prettyJson
                     const SizedBox(width: 4),
                   ] else
                     const SizedBox(width: 12),
-                  Text(
+                  MakeChessLocalizedText(
                     _fmtMs(ms),
                     style: AppTextStyles.body.copyWith(
                       color: timeColor,
@@ -10190,7 +14809,8 @@ $prettyJson
         final me = supa.auth.currentUser;
         if (me == null) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Сначала войдите в аккаунт')),
+            const SnackBar(
+                content: MakeChessLocalizedText('Сначала войдите в аккаунт')),
           );
           return;
         }
@@ -10231,7 +14851,8 @@ $prettyJson
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Новая партия: можно выбрать соперника или ИИ')),
+            content: MakeChessLocalizedText(
+                'Новая партия: можно выбрать соперника или ИИ')),
       );
     }
   }
@@ -10324,6 +14945,24 @@ $prettyJson
               ),
             ),
 
+            // Автоматические стрелки дебютного тренажёра.
+            Positioned(
+              left: m,
+              top: m,
+              width: boardSize,
+              height: boardSize,
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: OpeningTrainerArrowPainter(
+                    arrows: _openingTrainer.boardArrows,
+                    boardSize: boardSize,
+                    flipped: _isFlipped,
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+
             // В режиме анализа этот слой превращает доску в рисовалку.
             // Он стоит самым верхним слоем над клетками и фигурами, поэтому ходы блокируются.
             if (_puzzleArrowDrawMode)
@@ -10368,7 +15007,7 @@ $prettyJson
                     },
                     onPointerCancel: (_) {
                       setState(() {
-                        if (_puzzleSettingsIsOpen) {
+                        if (_teacherPuzzleAuthoringMode) {
                           _pendingAnalysisArrowFrom = null;
                           _analysisPointerPosition = null;
                         } else if (_showLearningPanel) {
@@ -10414,7 +15053,8 @@ $prettyJson
                             height: boardSize / 8,
                             child: Align(
                               alignment: Alignment.center,
-                              child: Text(ranks[i], style: labelStyle),
+                              child: MakeChessLocalizedText(ranks[i],
+                                  style: labelStyle),
                             ),
                           ),
                         ),
@@ -10427,7 +15067,8 @@ $prettyJson
                           height: boardSize / 8,
                           child: Align(
                             alignment: Alignment.center,
-                            child: Text(ranks[i], style: labelStyle),
+                            child: MakeChessLocalizedText(ranks[i],
+                                style: labelStyle),
                           ),
                         ),
                       ),
@@ -10446,7 +15087,8 @@ $prettyJson
                           (i) => SizedBox(
                             width: boardSize / 8,
                             child: Center(
-                              child: Text(files[i], style: labelStyle),
+                              child: MakeChessLocalizedText(files[i],
+                                  style: labelStyle),
                             ),
                           ),
                         ),
@@ -10458,7 +15100,8 @@ $prettyJson
                         (i) => SizedBox(
                           width: boardSize / 8,
                           child: Center(
-                            child: Text(files[i], style: labelStyle),
+                            child: MakeChessLocalizedText(files[i],
+                                style: labelStyle),
                           ),
                         ),
                       ),
@@ -10666,7 +15309,7 @@ $prettyJson
                       onSecondaryTap: () {
                         if (_puzzleArrowDrawMode) {
                           setState(() {
-                            if (_puzzleSettingsIsOpen) {
+                            if (_teacherPuzzleAuthoringMode) {
                               _pendingAnalysisArrowFrom = null;
                               _analysisPointerPosition = null;
                             } else if (_showLearningPanel) {
@@ -10813,7 +15456,7 @@ $prettyJson
                       },
                       onPointerCancel: (_) {
                         setState(() {
-                          if (_puzzleSettingsIsOpen) {
+                          if (_teacherPuzzleAuthoringMode) {
                             _pendingAnalysisArrowFrom = null;
                             _analysisPointerPosition = null;
                           } else if (_showLearningPanel) {
@@ -10841,7 +15484,7 @@ $prettyJson
               border: Border.all(color: const Color(0xFFD32F2F), width: 2),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Text(
+            child: MakeChessLocalizedText(
               'Ошибка рендера доски: $e',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Color(0xFFD32F2F)),
@@ -10880,6 +15523,10 @@ $prettyJson
   }
 
   Future<void> _onNewGameUniversal() async {
+    if (_openingTrainer.sessionActive) {
+      _stopOpeningTrainerSession();
+    }
+
     // ← деактивируем Совместный режим и общий редактор
     final wasSync = _syncBoard;
     setState(() {
@@ -10913,17 +15560,17 @@ $prettyJson
     return await showDialog<bool>(
           context: context,
           builder: (dialogCtx) => AlertDialog(
-            title: const Text('Сдаться?'),
-            content: const Text(
+            title: const MakeChessLocalizedText('Сдаться?'),
+            content: const MakeChessLocalizedText(
                 'Подтвердите, что вы хотите завершить партию сдачей.'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dialogCtx).pop(false),
-                child: const Text('Отмена'),
+                child: const MakeChessLocalizedText('Отмена'),
               ),
               FilledButton(
                 onPressed: () => Navigator.of(dialogCtx).pop(true),
-                child: const Text('Сдаться'),
+                child: const MakeChessLocalizedText('Сдаться'),
               ),
             ],
           ),
@@ -10939,12 +15586,12 @@ $prettyJson
     await showDialog<void>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
+        title: MakeChessLocalizedText(title),
+        content: MakeChessLocalizedText(message),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text('OK'),
+            child: const MakeChessLocalizedText('OK'),
           ),
         ],
       ),
@@ -10957,11 +15604,18 @@ $prettyJson
     final ok = await _confirmResign();
     if (!ok) return;
 
-    if (_inRoom) {
+    final lichess = LichessSessionController.instance.snapshot;
+    if (lichess != null && !lichess.finished) {
+      await LichessSessionController.instance.resign();
+      await _showEndDialog(
+        title: 'Партия завершена',
+        message: MakeChessLocalization.phrase('Вы сдались в партии Lichess.'),
+      );
+    } else if (_inRoom) {
       await _resignOnline(); // твой онлайн-метод
       await _showEndDialog(
         title: 'Партия завершена',
-        message: 'Вы сдались в онлайне.',
+        message: MakeChessLocalization.phrase('Вы сдались в онлайне.'),
       );
     } else if (_vsEngine) {
       // против ИИ
@@ -10974,7 +15628,7 @@ $prettyJson
       });
       await _showEndDialog(
         title: 'Партия завершена',
-        message: 'Вы сдались. Победил ИИ.',
+        message: MakeChessLocalization.phrase('Вы сдались. Победил ИИ.'),
       );
     } else {
       // локальная игра человек-человек
@@ -11029,7 +15683,7 @@ $prettyJson
 
     await _showEndDialog(
       title: 'Партия завершена',
-      message: 'Вы сдались. Результат: $result',
+      message: MakeChessLocalization.phrase('Вы сдались. Результат: $result'),
     );
   }
 
@@ -11061,7 +15715,7 @@ $prettyJson
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text(
+            content: MakeChessLocalizedText(
                 'Новый игрок: выберите соперника в контактах или начните с ИИ')),
       );
     }
@@ -11153,12 +15807,85 @@ $prettyJson
     }
   }
 
+  bool get _learningBoardEditorContextActive =>
+      _learningRole == LearningPanelRole.teacher && _showLearningPanel;
+
+  ({String kind, String? studentId, String fen})? _resolveBoardEditorTarget() {
+    if (_learningBoardEditorContextActive) {
+      if (_learningCommonBoardEnabled && _learningCommonBoardSelected) {
+        return (
+          kind: 'learningCommon',
+          studentId: null,
+          fen: _learningCommonGame.fen,
+        );
+      }
+
+      final focusedId = _learningFocusedStudentId ?? _selectedLearningStudentId;
+      if (focusedId != null) {
+        final session = _learningGameSessions[focusedId];
+        if (session == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: MakeChessLocalizedText(
+                'Для редактора сначала запустите партию на выбранной доске',
+              ),
+            ),
+          );
+          return null;
+        }
+        return (
+          kind: 'learningStudent',
+          studentId: focusedId,
+          fen: session.game.fen,
+        );
+      }
+    }
+
+    return (kind: 'main', studentId: null, fen: game.fen);
+  }
+
+  bool get _isSelectedLearningBoardBeingEdited {
+    if (!_editMode || !_learningBoardEditorContextActive) return false;
+
+    if (_learningCommonBoardEnabled && _learningCommonBoardSelected) {
+      return _editorTargetKind == 'learningCommon';
+    }
+
+    final selectedId = _learningFocusedStudentId ?? _selectedLearningStudentId;
+    return _editorTargetKind == 'learningStudent' &&
+        selectedId != null &&
+        _editorLearningStudentId == selectedId;
+  }
+
+  void _toggleSelectedLearningBoardEditor() {
+    final target = _resolveBoardEditorTarget();
+    if (target == null) return;
+
+    final sameTarget = _editMode &&
+        _editorTargetKind == target.kind &&
+        _editorLearningStudentId == target.studentId;
+
+    if (sameTarget) {
+      _applyEditor();
+      return;
+    }
+
+    // Если редактор был открыт для другой доски, не применяем её позицию
+    // случайно. Просто переключаем редактор на текущую выделенную доску.
+    _enterEditor();
+  }
+
   void _enterEditor() {
-    final parts = game.fen.split(' ');
+    final target = _resolveBoardEditorTarget();
+    if (target == null) return;
+
+    final parts = target.fen.split(' ');
     final cr = parts.length > 2 ? parts[2] : '-';
     setState(() {
+      _editorTargetKind = target.kind;
+      _editorLearningStudentId = target.studentId;
       _editMode = true;
-      _editBoard = _fenToBoard(game.fen);
+      _editBoard = _fenToBoard(target.fen);
       _editTurn = (parts.length > 1 && parts[1] == 'b')
           ? ch.Color.BLACK
           : ch.Color.WHITE;
@@ -11166,20 +15893,108 @@ $prettyJson
       _castleQ = cr.contains('Q');
       _castlek = cr.contains('k');
       _castleq = cr.contains('q');
-
-      // ВАЖНО: именно поле класса, а не локальная переменная!
       _dragFromSquare = null;
     });
 
-    // ← СИНХРОН РЕДАКТОРА (только когда включён «Совместный режим»)
-    _syncSendEditMode(true); // сообщаем второму, что редактор включён
-    _syncSendEditFen(); // отправляем текущую сетку редактора
+    if (_editorTargetKind == 'learningCommon') {
+      _refreshLearningCommonBoardOverlay();
+      return;
+    }
+
+    if (_editorTargetKind == 'main') {
+      // Синхрон редактора относится только к обычной общей игровой доске.
+      _syncSendEditMode(true);
+      _syncSendEditFen();
+    }
+  }
+
+  void _finishLearningEditorMode() {
+    setState(() {
+      _editMode = false;
+      _dragFromSquare = null;
+    });
+    _refreshLearningCommonBoardOverlay();
   }
 
   void _applyEditor() {
     final fen = _boardToFen();
-    final ok = game.load(fen);
+    final probe = ch.Chess();
+    bool valid = false;
+    try {
+      valid = probe.load(fen);
+    } catch (_) {
+      valid = false;
+    }
 
+    if (!valid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: MakeChessLocalizedText('Некорректный FEN: $fen')),
+      );
+      return;
+    }
+
+    if (_editorTargetKind == 'learningCommon') {
+      final ok = _learningCommonGame.load(fen);
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: MakeChessLocalizedText('Некорректный FEN: $fen')),
+        );
+        return;
+      }
+
+      setState(() {
+        _learningCommonSelectedSquare = null;
+        _learningCommonLegalTargets.clear();
+        _learningCommonCaptureTargets.clear();
+      });
+      _finishLearningEditorMode();
+      unawaited(
+        _broadcastLearningCommonPosition(source: 'common_editor'),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: MakeChessLocalizedText('Общая позиция применена')),
+      );
+      return;
+    }
+
+    if (_editorTargetKind == 'learningStudent') {
+      final studentId = _editorLearningStudentId;
+      final session =
+          studentId == null ? null : _learningGameSessions[studentId];
+      if (session == null) {
+        _finishLearningEditorMode();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  MakeChessLocalizedText('Доска ученика больше не подключена')),
+        );
+        return;
+      }
+
+      _applyLearningFenToSession(session, fen);
+      _finishLearningEditorMode();
+      unawaited(
+        session.room.sendLearningControl(<String, dynamic>{
+          'type': 'learning_set_position',
+          'fen': session.game.fen,
+          'teacherColor': session.myColor,
+          'clientId': _clientId,
+          'source': 'teacher_editor',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText(
+            'Позиция применена на доске: ${session.student.nickname}',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final ok = game.load(fen);
     if (ok) {
       setState(() {
         _fenController.text = game.fen;
@@ -11195,18 +16010,16 @@ $prettyJson
         _editMode = false;
       });
 
-      // ← ВНЕ setState: синхрон для совместного режима
-      _syncSendFen(); // разослать итоговую позицию
-      _syncSendEditMode(false); // выключить редактор у обоих
-
+      _syncSendFen();
+      _syncSendEditMode(false);
       unawaited(_refreshEvalBar());
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Позиция применена')),
+        const SnackBar(content: MakeChessLocalizedText('Позиция применена')),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Некорректный FEN: $fen')),
+        SnackBar(content: MakeChessLocalizedText('Некорректный FEN: $fen')),
       );
     }
   }
@@ -11223,7 +16036,8 @@ $prettyJson
               onTap: () => Navigator.pop(context, fenChar),
               child: Padding(
                 padding: const EdgeInsets.all(10),
-                child: Text(label, style: const TextStyle(fontSize: 28)),
+                child: MakeChessLocalizedText(label,
+                    style: const TextStyle(fontSize: 28)),
               ),
             );
 
@@ -11231,7 +16045,7 @@ $prettyJson
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text('Выберите фигуру',
+              const MakeChessLocalizedText('Выберите фигуру',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               Wrap(
@@ -11255,8 +16069,13 @@ $prettyJson
     if (choice == null) return;
     setState(() => _editBoard[ri][fi] = choice);
 
-    // ← Живое превью партнёру (в совместном режиме)
-    _syncSendEditFen();
+    // Живое превью отправляется только для обычной игровой доски.
+    if (_editorTargetKind == 'main') {
+      _syncSendEditFen();
+    }
+    if (_editorTargetKind == 'learningCommon') {
+      _refreshLearningCommonBoardOverlay();
+    }
   }
 }
 
@@ -11281,17 +16100,19 @@ class _PromptDialogState extends State<_PromptDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.title),
+      title: MakeChessLocalizedText(widget.title),
       content: TextField(
           controller: ctl,
-          decoration: InputDecoration(labelText: widget.label)),
+          decoration: InputDecoration(
+            labelText: MakeChessLocalization.phrase(widget.label),
+          )),
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена')),
+            child: const MakeChessLocalizedText('Отмена')),
         FilledButton(
             onPressed: () => Navigator.pop(context, ctl.text.trim()),
-            child: const Text('OK')),
+            child: const MakeChessLocalizedText('OK')),
       ],
     );
   }
@@ -11341,7 +16162,7 @@ class _TcDialogState extends State<_TcDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Сменить контроль'),
+      title: const MakeChessLocalizedText('Сменить контроль'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -11351,7 +16172,7 @@ class _TcDialogState extends State<_TcDialog> {
               _noTime = v ?? false;
               if (_noTime) _rated = false;
             }),
-            title: const Text('Без контроля времени'),
+            title: const MakeChessLocalizedText('Без контроля времени'),
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
           ),
@@ -11359,7 +16180,8 @@ class _TcDialogState extends State<_TcDialog> {
           TextField(
             enabled: !_noTime,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Минуты'),
+            decoration: InputDecoration(
+                labelText: MakeChessLocalization.phrase('Минуты')),
             controller: TextEditingController(text: _minutes.toString()),
             onChanged: (s) {
               final v = int.tryParse(s) ?? _minutes;
@@ -11370,7 +16192,8 @@ class _TcDialogState extends State<_TcDialog> {
           TextField(
             enabled: !_noTime,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Прибавка (сек)'),
+            decoration: InputDecoration(
+                labelText: MakeChessLocalization.phrase('Прибавка (сек)')),
             controller: TextEditingController(text: _increment.toString()),
             onChanged: (s) {
               final v = int.tryParse(s) ?? _increment;
@@ -11381,7 +16204,7 @@ class _TcDialogState extends State<_TcDialog> {
           SwitchListTile(
             value: _rated,
             onChanged: _noTime ? null : (v) => setState(() => _rated = v),
-            title: const Text('Рейтинговая'),
+            title: const MakeChessLocalizedText('Рейтинговая'),
             contentPadding: EdgeInsets.zero,
           )
         ],
@@ -11389,7 +16212,7 @@ class _TcDialogState extends State<_TcDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Отмена'),
+          child: const MakeChessLocalizedText('Отмена'),
         ),
         FilledButton(
           onPressed: () {
@@ -11401,7 +16224,7 @@ class _TcDialogState extends State<_TcDialog> {
             );
             Navigator.pop(context, res);
           },
-          child: const Text('ОК'),
+          child: const MakeChessLocalizedText('ОК'),
         ),
       ],
     );
@@ -11459,7 +16282,7 @@ class _GptExplainSheet extends StatelessWidget {
               children: [
                 const Icon(Icons.travel_explore, size: 18),
                 const SizedBox(width: 8),
-                const Text('Объяснение позиции (GPT)',
+                const MakeChessLocalizedText('Объяснение позиции (GPT)',
                     style:
                         TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                 const Spacer(),
@@ -11497,6 +16320,7 @@ class _PuzzleBoardArrow {
     required this.color,
     this.isCircle = false,
     this.side = 'white',
+    this.boardId,
   });
 
   final String from;
@@ -11505,6 +16329,10 @@ class _PuzzleBoardArrow {
   final Color color;
   final bool isCircle;
   final String side;
+
+  /// Для панели «Учиться» хранит ID доски/ученика.
+  /// В обычных задачах и в настройке остаётся null.
+  final String? boardId;
 }
 
 class _PuzzleAnalysisArrowPainter extends CustomPainter {

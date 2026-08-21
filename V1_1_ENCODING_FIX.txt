@@ -1,0 +1,5 @@
+V1.1 fix:
+- The PowerShell installer is now UTF-8 with BOM for Windows PowerShell 5.1.
+- The CMD launcher remains UTF-8 without BOM.
+- No application logic was changed.
+- The previous V1 parser error happened before any source-file changes.

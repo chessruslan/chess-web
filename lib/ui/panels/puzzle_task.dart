@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'anti_blunder_trainer.dart';
+
 class PuzzleTask {
   const PuzzleTask({
     required this.id,
@@ -11,6 +13,7 @@ class PuzzleTask {
     required this.solutionLines,
     this.description = '',
     this.analysisArrows = const {},
+    this.antiBlunder,
   });
 
   final String id;
@@ -23,9 +26,13 @@ class PuzzleTask {
   final String description;
 
   /// Правильные элементы анализа по категориям.
-  /// Стрелки: threat, pin, xray, r1, r3.
+  /// Стрелки: threat, pin, xray, r1, r3, safe_corridor, blunder_zone.
   /// Кружки: weakness, r2, r4. Для кружка from == to.
   final Map<String, List<PuzzleAnalysisArrow>> analysisArrows;
+
+  /// Данные отдельного антизевкового тренажёра.
+  /// Для обычных композиций остаётся null.
+  final AntiBlunderTaskSpec? antiBlunder;
 
   factory PuzzleTask.fromJsonString(String source) {
     final decoded = jsonDecode(source);
@@ -44,6 +51,10 @@ class PuzzleTask {
     final analysisRaw =
         json['analysisArrows'] ?? json['analysis_arrows'] ?? json['analysis'];
 
+    final antiBlunderRaw = json['antiBlunder'] ??
+        json['anti_blunder'] ??
+        json['antiBlunderTrainer'];
+
     return PuzzleTask(
       id: '${json['id'] ?? DateTime.now().microsecondsSinceEpoch}',
       type: type.isEmpty ? _typeKeyFromTitle(typeTitle) : type,
@@ -56,6 +67,11 @@ class PuzzleTask {
       solutionLines: _parseLines(linesRaw),
       description: '${json['description'] ?? ''}',
       analysisArrows: _parseAnalysisArrows(analysisRaw),
+      antiBlunder: antiBlunderRaw is Map
+          ? AntiBlunderTaskSpec.fromJson(
+              Map<String, dynamic>.from(antiBlunderRaw),
+            )
+          : null,
     );
   }
 
@@ -75,6 +91,7 @@ class PuzzleTask {
           value.map((arrow) => arrow.toJson()).toList(),
         ),
       ),
+      if (antiBlunder != null) 'antiBlunder': antiBlunder!.toJson(),
     };
   }
 
@@ -201,6 +218,8 @@ class PuzzleTask {
         return 'mate';
       case 'Найти лучший ход':
         return 'bestMove';
+      case 'Антизевковый тренажёр':
+        return 'antiBlunderTrainer';
       default:
         return 'blunders';
     }
@@ -214,6 +233,8 @@ class PuzzleTask {
         return 'Мат';
       case 'bestMove':
         return 'Найти лучший ход';
+      case 'antiBlunderTrainer':
+        return 'Антизевковый тренажёр';
       default:
         return 'Задачи на зевки';
     }

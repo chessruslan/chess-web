@@ -1,8 +1,10 @@
+// MAKECHESS_LOBBY_LOCALIZED_CORE_V2_20260807
 import 'package:flutter/material.dart';
 
 import '../../features/call/room_selection.dart';
 import '../app_controls.dart';
 import '../app_style.dart';
+import '../../localization/makechess_localization.dart';
 
 class LobbyPanel extends StatefulWidget {
   const LobbyPanel({
@@ -47,8 +49,8 @@ class _LobbyPanelState extends State<LobbyPanel> {
             children: [
               Row(
                 children: [
-                  const Text(
-                    'Контакты',
+                  Text(
+                    MakeChessLocalization.text(MakeChessTextKey.contacts),
                     style: AppControls.sectionTitle,
                   ),
                   const SizedBox(width: 12),
@@ -68,7 +70,8 @@ class _LobbyPanelState extends State<LobbyPanel> {
                             ),
                             decoration: AppControls.input(
                               dense: true,
-                              labelText: 'Room ID',
+                              labelText: MakeChessLocalization.text(
+                                  MakeChessTextKey.roomId),
                               prefixIcon:
                                   const Icon(Icons.meeting_room, size: 18),
                             ),
@@ -82,13 +85,15 @@ class _LobbyPanelState extends State<LobbyPanel> {
                     FilledButton(
                       style: AppControls.pillButton(),
                       onPressed: widget.isLoggedIn ? widget.onEnterLobby : null,
-                      child: const Text('Войти'),
+                      child: Text(
+                          MakeChessLocalization.text(MakeChessTextKey.enter)),
                     )
                   else
                     OutlinedButton(
                       style: AppControls.outlinedPill(),
                       onPressed: widget.onLeaveLobby,
-                      child: const Text('Выйти'),
+                      child: Text(
+                          MakeChessLocalization.text(MakeChessTextKey.exit)),
                     ),
                 ],
               ),
@@ -96,9 +101,10 @@ class _LobbyPanelState extends State<LobbyPanel> {
               Expanded(
                 child: widget.inLobby
                     ? (widget.online.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
-                              'Онлайн никого 😴',
+                              MakeChessLocalization.text(
+                                  MakeChessTextKey.nobodyOnline),
                               style: AppControls.muted,
                             ),
                           )
@@ -113,11 +119,17 @@ class _LobbyPanelState extends State<LobbyPanel> {
                               final isMe = (u['id'] == widget.myId);
 
                               final title = isMe
-                                  ? '${u['username'] ?? 'player'} (вы)'
+                                  ? '${u['username'] ?? 'player'} ${MakeChessLocalization.text(MakeChessTextKey.youSuffix)}'
                                   : (u['username'] ?? 'player');
 
-                              final subtitle =
-                                  'Рейт: ${isMe ? widget.myRating : (u['rating'] ?? '—')}';
+                              final subtitle = MakeChessLocalization.text(
+                                MakeChessTextKey.rating,
+                                params: <String, Object?>{
+                                  'rating': isMe
+                                      ? widget.myRating
+                                      : (u['rating'] ?? '—'),
+                                },
+                              );
 
                               final isSelected = (RoomSelection.instance.room
                                           ?.trim()
@@ -154,7 +166,14 @@ class _LobbyPanelState extends State<LobbyPanel> {
                                   RoomSelection.instance.setRoom(name);
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text('Room ID: $name выбран'),
+                                      content: Text(
+                                        MakeChessLocalization.text(
+                                          MakeChessTextKey.roomSelected,
+                                          params: <String, Object?>{
+                                            'name': name
+                                          },
+                                        ),
+                                      ),
                                     ),
                                   );
                                   setState(() {});
@@ -167,7 +186,8 @@ class _LobbyPanelState extends State<LobbyPanel> {
                                             u['id']!,
                                             u['username'] ?? 'player',
                                           ),
-                                  child: const Text('Играть'),
+                                  child: Text(MakeChessLocalization.text(
+                                      MakeChessTextKey.play)),
                                 ),
                               );
 
@@ -179,16 +199,22 @@ class _LobbyPanelState extends State<LobbyPanel> {
                               );
                             },
                           ))
-                    : const Center(
+                    : Center(
                         child: Text(
-                          'Откройте контакты, чтобы видеть игроков',
+                          MakeChessLocalization.text(
+                              MakeChessTextKey.openContacts),
                           style: AppControls.muted,
                         ),
                       ),
               ),
               const SizedBox(height: 8),
               Text(
-                'Онлайн: ${widget.inLobby ? widget.online.length : 0}',
+                MakeChessLocalization.text(
+                  MakeChessTextKey.onlineCount,
+                  params: <String, Object?>{
+                    'count': widget.inLobby ? widget.online.length : 0,
+                  },
+                ),
                 textAlign: TextAlign.right,
                 style: AppControls.muted,
               ),

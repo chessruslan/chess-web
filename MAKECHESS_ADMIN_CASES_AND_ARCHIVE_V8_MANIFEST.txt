@@ -1,0 +1,32 @@
+﻿MAKECHESS ADMIN CASES + ARCHIVE V8
+
+New module:
+  lib\ui\dialogs\admin_management_panel.dart
+
+Semantically patched current files:
+  lib\ui\dialogs\site_settings_dialog.dart
+  lib\ui\messages\general_messages_dialog.dart
+  lib\localization\makechess_localization.dart
+
+V8 translation rows: 86
+Languages: RU EN DE FR ES AR ZH HI JA KO VI
+
+Key rules:
+  - no block/restriction without an explanatory message
+  - warning timer is optional
+  - deadline expiry never blocks automatically
+  - user can Reply or report Fixed
+  - admin sees history/replies in the same workspace
+  - archive has 4 modes
+  - admin_* messages use makechess_messages_v1
+
+Static checks:
+  OK - new admin module
+  OK - single admin workspace
+  OK - message required before actions
+  OK - timer is reminder, not auto-block
+  OK - user reply mechanics
+  OK - generic DB messages
+  OK - archive four modes
+  OK - 11-language V8 table
+  OK - automatic rollback

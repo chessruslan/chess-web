@@ -1,0 +1,20 @@
+
+MakeChessMessage _messageFromGeneralRow(Map<String, dynamic> row) {
+  return MakeChessMessage(
+    id: '${row['id'] ?? ''}',
+    recipientId: '${row['recipient_id'] ?? ''}',
+    senderId: '${row['sender_id'] ?? ''}',
+    senderName: '${row['sender_name'] ?? 'MakeChess'}',
+    category: '${row['category'] ?? 'system'}',
+    title: '${row['title'] ?? 'Сообщение'}',
+    body: '${row['body'] ?? ''}',
+    createdAt: DateTime.tryParse('${row['created_at'] ?? ''}') ?? DateTime.now(),
+    tournamentId:
+        row['tournament_id'] == null ? null : '${row['tournament_id']}',
+    status: '${row['status'] ?? 'unread'}',
+    metadata: row['payload'] is Map
+        ? Map<String, dynamic>.from(row['payload'] as Map)
+        : const <String, dynamic>{},
+  );
+}
+

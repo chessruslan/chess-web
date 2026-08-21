@@ -1,4 +1,7 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
+
+import '../localization/makechess_localization.dart';
 
 class EvalBar extends StatelessWidget {
   final double eval; // от -15 до +15
@@ -108,7 +111,7 @@ class EvalBar extends StatelessWidget {
                       ),
                     ],
                   ),
-                  child: Text(
+                  child: MakeChessLocalizedText(
                     clamped.toStringAsFixed(2),
                     style: const TextStyle(
                       color: Colors.white,

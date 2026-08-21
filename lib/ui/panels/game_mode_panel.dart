@@ -1,8 +1,10 @@
+// MAKECHESS_GAME_MODE_LOCALIZED_CORE_V2_20260807
 import 'package:chess/chess.dart' as ch;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_style.dart';
+import '../../localization/makechess_localization.dart';
 
 class GameModePanel extends StatelessWidget {
   const GameModePanel({
@@ -61,9 +63,8 @@ class GameModePanel extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final panelWidth = constraints.maxWidth.isFinite
-            ? constraints.maxWidth
-            : leftColWidth;
+        final panelWidth =
+            constraints.maxWidth.isFinite ? constraints.maxWidth : leftColWidth;
 
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
@@ -77,30 +78,33 @@ class GameModePanel extends StatelessWidget {
                 children: [
                   twoEqualCells(
                     _NeoModeButton(
-                      text: 'Продолжить с компьютером',
+                      text: MakeChessLocalization.text(
+                          MakeChessTextKey.continueWithComputer),
                       icon: Icons.smart_toy,
-                      onTap:
-                          canContinueVsEngine ? onContinueVsEngine : null,
+                      onTap: canContinueVsEngine ? onContinueVsEngine : null,
                     ),
                     _NeoModeButton(
-                      text: 'С человеком',
+                      text: MakeChessLocalization.text(
+                          MakeChessTextKey.withHuman),
                       icon: Icons.group,
-                      onTap:
-                          canContinueVsHuman ? onContinueVsHuman : null,
+                      onTap: canContinueVsHuman ? onContinueVsHuman : null,
                     ),
                   ),
                   const SizedBox(height: 10),
                   twoEqualCells(
                     _NeoModeButton(
-                      text: syncBoard
-                          ? 'Совместный режим: ВКЛ'
-                          : 'Совместный режим',
+                      text: MakeChessLocalization.text(
+                        syncBoard
+                            ? MakeChessTextKey.sharedModeOn
+                            : MakeChessTextKey.sharedMode,
+                      ),
                       icon: syncBoard ? Icons.sync : Icons.sync_disabled,
                       onTap: inRoom ? onToggleSyncBoard : null,
                       active: syncBoard,
                     ),
                     _NeoModeButton(
-                      text: 'Компьютер vs Компьютер',
+                      text: MakeChessLocalization.text(
+                          MakeChessTextKey.computerVsComputer),
                       icon: Icons.auto_awesome_motion,
                       onTap: canVsEngine ? onStartEngineDuel : null,
                     ),
@@ -123,7 +127,8 @@ class GameModePanel extends StatelessWidget {
                   SizedBox(
                     width: double.infinity,
                     child: _NeoModeButton(
-                      text: 'Новый игрок',
+                      text: MakeChessLocalization.text(
+                          MakeChessTextKey.newPlayer),
                       icon: Icons.fiber_new,
                       onTap: onNewGame,
                     ),
@@ -136,7 +141,6 @@ class GameModePanel extends StatelessWidget {
       },
     );
   }
-
 }
 
 class _NeoModeButton extends StatefulWidget {
@@ -244,13 +248,14 @@ class _ColorSelectorCompact extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Вы играете за:', style: AppTextStyles.caption),
+          Text(MakeChessLocalization.text(MakeChessTextKey.youPlayAs),
+              style: AppTextStyles.caption),
           const SizedBox(height: 6),
           Row(
             children: [
               Expanded(
                 child: _ColorButton(
-                  text: 'Белые',
+                  text: MakeChessLocalization.text(MakeChessTextKey.white),
                   selected: whiteSelected,
                   enabled: enabled,
                   onTap: () => onChanged(ch.Color.WHITE),
@@ -259,7 +264,7 @@ class _ColorSelectorCompact extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: _ColorButton(
-                  text: 'Чёрные',
+                  text: MakeChessLocalization.text(MakeChessTextKey.black),
                   selected: blackSelected,
                   enabled: enabled,
                   onTap: () => onChanged(ch.Color.BLACK),
@@ -363,7 +368,8 @@ class _EngineDelayFieldCompact extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Задержка, мс', style: AppTextStyles.caption),
+          Text(MakeChessLocalization.text(MakeChessTextKey.delayMs),
+              style: AppTextStyles.caption),
           const SizedBox(height: 6),
           TextField(
             controller: controller,
@@ -371,7 +377,6 @@ class _EngineDelayFieldCompact extends StatelessWidget {
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: AppInputs.dark(),
-
             onChanged: onChanged,
           ),
         ],

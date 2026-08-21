@@ -1,0 +1,30 @@
+    "Камера": <String>[
+      "Камера", "Camera", "Kamera", "Caméra", "Cámara", "الكاميرا", "摄像头", "कैमरा", "カメラ", "카메라", "Camera"
+    ],
+    "Выключить камеру": <String>[
+      "Выключить камеру", "Turn camera off", "Kamera ausschalten", "Désactiver la caméra", "Apagar cámara", "إيقاف الكاميرا", "关闭摄像头", "कैमरा बंद करें", "カメラをオフ", "카메라 끄기", "Tắt camera"
+    ],
+    "Камера выключена": <String>[
+      "Камера выключена", "Camera is off", "Kamera ist aus", "Caméra désactivée", "Cámara apagada", "الكاميرا متوقفة", "摄像头已关闭", "कैमरा बंद है", "カメラはオフです", "카메라가 꺼져 있습니다", "Camera đang tắt"
+    ],
+    "Запрашиваем доступ к камере...": <String>[
+      "Запрашиваем доступ к камере...", "Requesting camera access...", "Kamerazugriff wird angefordert...", "Demande d’accès à la caméra...", "Solicitando acceso a la cámara...", "جارٍ طلب الوصول إلى الكاميرا...", "正在请求摄像头权限…", "कैमरा अनुमति का अनुरोध किया जा रहा है...", "カメラへのアクセスを要求しています…", "카메라 접근 권한을 요청하는 중...", "Đang yêu cầu quyền truy cập camera..."
+    ],
+    "Камера подключена": <String>[
+      "Камера подключена", "Camera connected", "Kamera verbunden", "Caméra connectée", "Cámara conectada", "تم توصيل الكاميرا", "摄像头已连接", "कैमरा जुड़ा है", "カメラ接続済み", "카메라 연결됨", "Camera đã kết nối"
+    ],
+    "Не удалось открыть камеру": <String>[
+      "Не удалось открыть камеру", "Could not open camera", "Kamera konnte nicht geöffnet werden", "Impossible d’ouvrir la caméra", "No se pudo abrir la cámara", "تعذر فتح الكاميرا", "无法打开摄像头", "कैमरा नहीं खुल सका", "カメラを開けませんでした", "카메라를 열 수 없습니다", "Không thể mở camera"
+    ],
+    "Камера доступна в веб-версии сайта.": <String>[
+      "Камера доступна в веб-версии сайта.", "Camera is available in the web version of the site.", "Die Kamera ist in der Webversion der Website verfügbar.", "La caméra est disponible dans la version Web du site.", "La cámara está disponible en la versión web del sitio.", "الكاميرا متاحة في إصدار الويب من الموقع.", "摄像头可在网站的网页版中使用。", "कैमरा साइट के वेब संस्करण में उपलब्ध है।", "カメラはサイトのWeb版で利用できます。", "카메라는 사이트 웹 버전에서 사용할 수 있습니다.", "Camera có sẵn trong phiên bản web của trang web."
+    ],
+    "Ширина ячейки": <String>[
+      "Ширина ячейки", "Cell width", "Zellenbreite", "Largeur de cellule", "Ancho de celda", "عرض الخلية", "单元格宽度", "सेल की चौड़ाई", "セル幅", "셀 너비", "Chiều rộng ô"
+    ],
+    "Высота ячейки": <String>[
+      "Высота ячейки", "Cell height", "Zellenhöhe", "Hauteur de cellule", "Alto de celda", "ارتفاع الخلية", "单元格高度", "सेल की ऊँचाई", "セル高さ", "셀 높이", "Chiều cao ô"
+    ],
+    "Размер сетки": <String>[
+      "Размер сетки", "Grid size", "Rastergröße", "Taille de la grille", "Tamaño de cuadrícula", "حجم الشبكة", "网格尺寸", "ग्रिड आकार", "グリッドサイズ", "그리드 크기", "Kích thước lưới"
+    ],

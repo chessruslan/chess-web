@@ -1,3 +1,4 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -7,6 +8,8 @@ import 'ring_service.dart';
 import 'voice_service.dart';
 import 'video_overlay.dart';
 import 'room_selection.dart';
+
+import '../../localization/makechess_localization.dart';
 
 class CallOverlay extends StatefulWidget {
   final String? initialRoomId;
@@ -101,7 +104,8 @@ class _CallOverlayState extends State<CallOverlay> {
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: MakeChessLocalizedText(msg)));
   }
 
   // ----- действия (локальные, если пользуешься этим окном) -----
@@ -176,7 +180,7 @@ class _CallOverlayState extends State<CallOverlay> {
           child: TextField(
             controller: _roomCtrl,
             style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Room ID',
               labelStyle: TextStyle(color: Colors.white70),
               enabledBorder: UnderlineInputBorder(
@@ -195,15 +199,17 @@ class _CallOverlayState extends State<CallOverlay> {
           ),
         ),
         const SizedBox(width: 12),
-        FilledButton(onPressed: _create, child: const Text('Создать')),
+        FilledButton(
+            onPressed: _create, child: const MakeChessLocalizedText('Создать')),
         const SizedBox(width: 8),
         FilledButton.tonal(
-            onPressed: _join, child: const Text('Присоединиться')),
+            onPressed: _join,
+            child: const MakeChessLocalizedText('Присоединиться')),
         const SizedBox(width: 8),
         IconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           icon: const Icon(Icons.close, color: Colors.white70),
-          tooltip: 'Закрыть',
+          tooltip: MakeChessLocalization.phrase('Закрыть'),
         ),
         const SizedBox(width: 8),
       ],
@@ -224,7 +230,7 @@ class _CallOverlayState extends State<CallOverlay> {
           // ===== Заголовок + поле Room ID =====
           Row(
             children: [
-              const Text(
+              const MakeChessLocalizedText(
                 'Контакты',
                 style: TextStyle(color: Colors.white70, fontSize: 16),
               ),
@@ -288,7 +294,7 @@ class _CallOverlayState extends State<CallOverlay> {
                 final users = LobbyStore.instance.users.value;
                 if (users.isEmpty) {
                   return const Center(
-                    child: Text(
+                    child: MakeChessLocalizedText(
                       'Пока никого нет',
                       style: TextStyle(color: Colors.white54),
                     ),
@@ -315,27 +321,28 @@ class _CallOverlayState extends State<CallOverlay> {
                       tileColor: isHovered
                           ? Colors.white10
                           : null, // подсветка наведения
-                      title: Text(
+                      title: MakeChessLocalizedText(
                         u.username,
                         style: const TextStyle(color: Colors.white),
                       ),
                       subtitle: u.rating == null
                           ? null
-                          : Text('Рейт: ${u.rating}',
+                          : MakeChessLocalizedText('Рейт: ${u.rating}',
                               style: const TextStyle(color: Colors.white54)),
                       onTap: () {
                         RoomSelection.instance.setRoom(u.username);
                         setState(() => _selected = u);
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                              content: Text('Room ID: ${u.username} выбран')),
+                              content: MakeChessLocalizedText(
+                                  'Room ID: ${u.username} выбран')),
                         );
                       },
                       trailing: TextButton(
                         onPressed: () {
                           // оставь здесь свою игровую логику «Вызвать» (матч), если нужна
                         },
-                        child: const Text('Вызвать'),
+                        child: const MakeChessLocalizedText('Вызвать'),
                       ),
                     );
 
@@ -363,7 +370,7 @@ class _CallOverlayState extends State<CallOverlay> {
         border: Border.all(color: Colors.white10),
       ),
       child: const Center(
-        child: Text(
+        child: MakeChessLocalizedText(
           'Видео выводится в плавающих окнах',
           style: TextStyle(color: Colors.white54),
         ),

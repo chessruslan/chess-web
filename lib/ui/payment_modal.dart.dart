@@ -1,5 +1,8 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // lib/ui/payment_modal.dart
 import 'package:flutter/material.dart';
+
+import '../localization/makechess_localization.dart';
 
 class PaymentModal {
   static Future<void> show({
@@ -29,7 +32,7 @@ class PaymentModal {
               mainAxisSize: MainAxisSize.min,
               children: [
                 // Заголовок
-                Text('MakeChess',
+                MakeChessLocalizedText('MakeChess',
                     style: Theme.of(context)
                         .textTheme
                         .headlineSmall
@@ -62,7 +65,7 @@ class PaymentModal {
                                       size: 18, color: Color(0xFF4CAF50)),
                                   const SizedBox(width: 8),
                                   Flexible(
-                                    child: Text(
+                                    child: MakeChessLocalizedText(
                                       f,
                                       style: Theme.of(context)
                                           .textTheme
@@ -115,7 +118,7 @@ class PaymentModal {
                 const SizedBox(height: 8),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Отмена'),
+                  child: const MakeChessLocalizedText('Отмена'),
                 ),
               ],
             ),
@@ -163,11 +166,11 @@ class _PlanTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
+                MakeChessLocalizedText(title,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: textColor, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
-                Text(subtitle,
+                MakeChessLocalizedText(subtitle,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: (highlight
                             ? Colors.white.withOpacity(.9)
@@ -190,7 +193,7 @@ class _PlanTile extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Text(trialLabel!,
+                    MakeChessLocalizedText(trialLabel!,
                         style: Theme.of(context).textTheme.labelLarge?.copyWith(
                             color: Colors.white, fontWeight: FontWeight.w700)),
                     const SizedBox(width: 6),
@@ -232,7 +235,7 @@ class _BottomButton extends StatelessWidget {
           color: filled ? cs.primary : cs.primary.withOpacity(.18),
           borderRadius: BorderRadius.circular(14),
         ),
-        child: Text(
+        child: MakeChessLocalizedText(
           text,
           style: Theme.of(context).textTheme.titleSmall?.copyWith(
                 color: filled ? cs.onPrimary : cs.primary,

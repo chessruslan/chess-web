@@ -1,0 +1,37 @@
+Future<void> _updateInvitationStatus(
+  MakeChessMessage message,
+  String status,
+) async {
+  final client = Supabase.instance.client;
+  final userId = (client.auth.currentUser?.id ?? '').trim();
+  if (userId.isEmpty) return;
+
+  if (message.category.startsWith('admin_')) {
+    final values = <String, dynamic>{'status': status};
+    if (status == 'read') {
+      values['read_at'] = DateTime.now().toIso8601String();
+    }
+    if (status == 'accepted' || status == 'declined') {
+      values['responded_at'] = DateTime.now().toIso8601String();
+    }
+    await client
+        .from('makechess_messages_v1')
+        .update(values)
+        .eq('id', message.id)
+        .eq('recipient_id', userId);
+    return;
+  }
+
+  if (message.category != 'tournament_invite') return;
+  final values = <String, dynamic>{'status': status};
+  if (status == 'read') values['read_at'] = DateTime.now().toIso8601String();
+  if (status == 'accepted' || status == 'declined') {
+    values['responded_at'] = DateTime.now().toIso8601String();
+  }
+  await client
+      .from('tournament_invitations')
+      .update(values)
+      .eq('message_id', message.id)
+      .eq('recipient_id', userId);
+}
+

@@ -1,0 +1,94 @@
+    "Электронная доска": <String>[
+      "Электронная доска",
+      "Electronic board",
+      "Elektronisches Brett",
+      "Échiquier électronique",
+      "Tablero electrónico",
+      "الرقعة الإلكترونية",
+      "电子棋盘",
+      "इलेक्ट्रॉनिक बोर्ड",
+      "電子チェス盤",
+      "전자 체스판",
+      "Bàn cờ điện tử"
+    ],
+    "Цифровая доска": <String>[
+      "Цифровая доска",
+      "Digital board",
+      "Digitales Brett",
+      "Échiquier numérique",
+      "Tablero digital",
+      "الرقعة الرقمية",
+      "数字棋盘",
+      "डिजिटल बोर्ड",
+      "デジタルチェス盤",
+      "디지털 체스판",
+      "Bàn cờ kỹ thuật số"
+    ],
+    "Настройка соответствия световых каналов клеткам шахматной доски.": <String>[
+      "Настройка соответствия световых каналов клеткам шахматной доски.",
+      "Map light channels to chessboard squares.",
+      "Lichtkanäle den Schachbrettfeldern zuordnen.",
+      "Associer les canaux lumineux aux cases de l’échiquier.",
+      "Asignar los canales de luz a las casillas del tablero.",
+      "مطابقة قنوات الضوء مع مربعات رقعة الشطرنج.",
+      "将光通道映射到棋盘格。",
+      "प्रकाश चैनलों को शतरंज की खानों से मिलाएँ।",
+      "光チャンネルをチェス盤のマスに対応付けます。",
+      "광 채널을 체스판 칸에 매핑합니다.",
+      "Ánh xạ các kênh ánh sáng với các ô cờ."
+    ],
+    "Количество строк": <String>[
+      "Количество строк", "Rows", "Zeilen", "Lignes", "Filas", "عدد الصفوف", "行数", "पंक्तियाँ", "行数", "행 수", "Số hàng"
+    ],
+    "Количество столбцов": <String>[
+      "Количество столбцов", "Columns", "Spalten", "Colonnes", "Columnas", "عدد الأعمدة", "列数", "स्तंभ", "列数", "열 수", "Số cột"
+    ],
+    "Смещение по горизонтали": <String>[
+      "Смещение по горизонтали", "Horizontal offset", "Horizontaler Versatz", "Décalage horizontal", "Desplazamiento horizontal", "الإزاحة الأفقية", "水平偏移", "क्षैतिज ऑफ़सेट", "水平オフセット", "가로 오프셋", "Độ lệch ngang"
+    ],
+    "Смещение по вертикали": <String>[
+      "Смещение по вертикали", "Vertical offset", "Vertikaler Versatz", "Décalage vertical", "Desplazamiento vertical", "الإزاحة الرأسية", "垂直偏移", "ऊर्ध्वाधर ऑफ़सेट", "垂直オフセット", "세로 오프셋", "Độ lệch dọc"
+    ],
+    "Применить сетку": <String>[
+      "Применить сетку", "Apply grid", "Raster anwenden", "Appliquer la grille", "Aplicar cuadrícula", "تطبيق الشبكة", "应用网格", "ग्रिड लागू करें", "グリッドを適用", "그리드 적용", "Áp dụng lưới"
+    ],
+    "Изображение камеры": <String>[
+      "Изображение камеры", "Camera image", "Kamerabild", "Image de la caméra", "Imagen de la cámara", "صورة الكاميرا", "摄像头图像", "कैमरा छवि", "カメラ画像", "카메라 영상", "Hình ảnh camera"
+    ],
+    "Камера будет подключена на следующем этапе.": <String>[
+      "Камера будет подключена на следующем этапе.", "The camera will be connected at the next stage.", "Die Kamera wird im nächsten Schritt angeschlossen.", "La caméra sera connectée à l’étape suivante.", "La cámara se conectará en la siguiente etapa.", "سيتم توصيل الكاميرا في المرحلة التالية.", "摄像头将在下一阶段连接。", "कैमरा अगले चरण में जोड़ा जाएगा।", "カメラは次の段階で接続します。", "카메라는 다음 단계에서 연결됩니다.", "Camera sẽ được kết nối ở bước tiếp theo."
+    ],
+    "Сопоставления ячеек": <String>[
+      "Сопоставления ячеек", "Cell mappings", "Zellenzuordnungen", "Correspondances des cellules", "Asignaciones de celdas", "مطابقة الخلايا", "单元格映射", "सेल मैपिंग", "セル対応", "셀 매핑", "Ánh xạ ô"
+    ],
+    "Назначено": <String>[
+      "Назначено", "Assigned", "Zugeordnet", "Assigné", "Asignado", "تم التعيين", "已分配", "निर्धारित", "割り当て済み", "할당됨", "Đã gán"
+    ],
+    "Очистить сопоставления": <String>[
+      "Очистить сопоставления", "Clear mappings", "Zuordnungen löschen", "Effacer les correspondances", "Borrar asignaciones", "مسح المطابقات", "清除映射", "मैपिंग साफ़ करें", "対応をクリア", "매핑 지우기", "Xóa ánh xạ"
+    ],
+    "Кликните по ячейке сетки и укажите адрес шахматной клетки A1–H8. Пустые ячейки игнорируются.": <String>[
+      "Кликните по ячейке сетки и укажите адрес шахматной клетки A1–H8. Пустые ячейки игнорируются.",
+      "Click a grid cell and enter the chess square address A1–H8. Empty cells are ignored.",
+      "Klicken Sie auf eine Rasterzelle und geben Sie das Schachfeld A1–H8 ein. Leere Zellen werden ignoriert.",
+      "Cliquez sur une cellule de la grille et saisissez la case A1–H8. Les cellules vides sont ignorées.",
+      "Haga clic en una celda de la cuadrícula e introduzca la casilla A1–H8. Las celdas vacías se ignoran.",
+      "انقر على خلية في الشبكة وأدخل عنوان مربع الشطرنج A1–H8. يتم تجاهل الخلايا الفارغة.",
+      "单击网格单元格并输入棋盘坐标 A1–H8。空单元格将被忽略。",
+      "ग्रिड सेल पर क्लिक करें और शतरंज खाने का पता A1–H8 दर्ज करें। खाली सेल अनदेखे किए जाते हैं।",
+      "グリッドのセルをクリックし、チェス盤のマス A1–H8 を入力します。空のセルは無視されます。",
+      "그리드 셀을 클릭하고 체스판 좌표 A1–H8을 입력하세요. 빈 셀은 무시됩니다.",
+      "Nhấp vào ô lưới và nhập địa chỉ ô cờ A1–H8. Các ô trống sẽ bị bỏ qua."
+    ],
+    "Адрес клетки": <String>[
+      "Адрес клетки", "Square address", "Feldadresse", "Adresse de la case", "Dirección de casilla", "عنوان المربع", "棋盘坐标", "खाने का पता", "マスの座標", "칸 주소", "Địa chỉ ô"
+    ],
+    "Не назначено": <String>[
+      "Не назначено", "Unassigned", "Nicht zugeordnet", "Non assigné", "Sin asignar", "غير معيّن", "未分配", "निर्धारित नहीं", "未割り当て", "미할당", "Chưa gán"
+    ],
+    "Ячейка сетки": <String>[
+      "Ячейка сетки", "Grid cell", "Rasterzelle", "Cellule de grille", "Celda de cuadrícula", "خلية الشبكة", "网格单元格", "ग्रिड सेल", "グリッドセル", "그리드 셀", "Ô lưới"
+    ],
+    "Раздел цифровой доски пока пуст.": <String>[
+      "Раздел цифровой доски пока пуст.", "The digital board section is empty for now.", "Der Bereich für das digitale Brett ist vorerst leer.", "La section de l’échiquier numérique est vide pour le moment.", "La sección del tablero digital está vacía por ahora.", "قسم الرقعة الرقمية فارغ حالياً.", "数字棋盘部分目前为空。", "डिजिटल बोर्ड अनुभाग अभी खाली है।", "デジタルチェス盤のセクションは現在空です。", "디지털 체스판 섹션은 현재 비어 있습니다.", "Mục bàn cờ kỹ thuật số hiện đang trống."
+    ],

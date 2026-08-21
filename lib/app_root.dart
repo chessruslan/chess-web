@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'ui/app_shell.dart';
 import 'ui/board_theme_controller.dart';
 import 'services/site_design_controller.dart';
+import 'services/lichess_service.dart';
 
 typedef PlayBuilder = Widget Function(
   Key? key,
@@ -23,7 +24,11 @@ class AppRoot extends StatelessWidget {
     final boardTheme = BoardThemeController();
 
     return AnimatedBuilder(
-      animation: Listenable.merge([boardTheme, SiteDesignController.instance]),
+      animation: Listenable.merge([
+        boardTheme,
+        SiteDesignController.instance,
+        LichessPlayGuard.instance,
+      ]),
       builder: (context, _) {
         final design = SiteDesignController.instance.effective;
         final primary = switch (design.buttonsTheme) {

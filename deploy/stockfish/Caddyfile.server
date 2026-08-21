@@ -1,0 +1,42 @@
+{$PROXY_DOMAIN} {
+    handle_path /stockfish/* {
+        reverse_proxy makechess-stockfish:8080
+    }
+
+    @supabase_api path /auth/v1/* /rest/v1/* /graphql/v1 /realtime/v1/* /storage/v1/* /functions/v1/* /mcp /sso/*
+
+    handle @supabase_api {
+        reverse_proxy kong:8000
+    }
+
+    handle {
+        basic_auth {
+            # PROXY_AUTH_PASSWORD is overwritten with the bcrypt on startup
+            {$PROXY_AUTH_USERNAME} {$PROXY_AUTH_PASSWORD}
+        }
+
+        reverse_proxy studio:3000
+    }
+
+    header -server
+}
+
+makechess.com, chess.111-88-227-25.sslip.io {
+    root * /etc/caddy/makechess
+    encode zstd gzip
+    try_files {path} /index.html
+
+    header {
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Embedder-Policy "require-corp"
+        Cross-Origin-Resource-Policy "cross-origin"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+
+    file_server
+}
+
+www.makechess.com {
+    redir https://makechess.com{uri} permanent
+}

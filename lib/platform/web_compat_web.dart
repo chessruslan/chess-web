@@ -15,3 +15,9 @@ void writeLocalStorage(String key, String value) {
 void removeLocalStorage(String key) {
   html.window.localStorage.remove(key);
 }
+
+String currentPageUrl() => html.window.location.href;
+
+void navigateToUrl(String url) {
+  html.window.location.assign(url);
+}

@@ -1,0 +1,65 @@
+  Future<void> send(MakeChessMessage message) async {
+    final client = _client ?? Supabase.instance.client;
+    final senderId = (client.auth.currentUser?.id ?? '').trim();
+    if (senderId.isEmpty) {
+      throw StateError('Для отправки сообщения требуется вход в аккаунт.');
+    }
+    final recipientId = message.recipientId.trim();
+    if (recipientId.isEmpty) {
+      throw StateError('Получатель сообщения не определён.');
+    }
+
+    final snapshot = <String, dynamic>{...message.metadata};
+
+    if (message.category.startsWith('admin_')) {
+      await client.from('makechess_messages_v1').insert(<String, dynamic>{
+        'id': message.id,
+        'recipient_id': recipientId,
+        'sender_id': senderId,
+        'sender_name': message.senderName,
+        'category': message.category,
+        'title': message.title,
+        'body': message.body,
+        'tournament_id': message.tournamentId,
+        'status': 'unread',
+        'payload': snapshot,
+        'created_at': message.createdAt.toIso8601String(),
+      });
+    } else {
+      await client.from('tournament_invitations').insert(<String, dynamic>{
+        'message_id': message.id,
+        'tournament_id': message.tournamentId ?? '',
+        'tournament_name': '${snapshot['tournamentName'] ?? message.title}',
+        'recipient_id': recipientId,
+        'recipient_name': '${snapshot['recipientName'] ?? ''}',
+        'sender_id': senderId,
+        'sender_name': message.senderName,
+        'category': message.category,
+        'title': message.title,
+        'body': message.body,
+        'status': 'sent',
+        'tournament_snapshot': snapshot,
+        'created_at': message.createdAt.toIso8601String(),
+      });
+    }
+
+    // Realtime speeds up online delivery; the database remains the source of truth.
+    final channel = client.channel(_channelName(recipientId));
+    try {
+      await channel.subscribe();
+      await channel.sendBroadcastMessage(
+        event: 'general_message',
+        payload: message.toJson(),
+      );
+    } catch (_) {
+      // The database record will be loaded on the recipient's next session.
+    } finally {
+      try {
+        await channel.unsubscribe();
+      } catch (_) {}
+      try {
+        await client.removeChannel(channel);
+      } catch (_) {}
+    }
+  }
+

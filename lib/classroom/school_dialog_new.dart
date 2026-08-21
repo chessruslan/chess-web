@@ -1,8 +1,11 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'classroom_signaling.dart';
 import 'classroom_call_service.dart';
+
+import '../localization/makechess_localization.dart';
 
 /// Диалог выбора роли + запуск звонка
 class SchoolDialogNew extends StatefulWidget {
@@ -76,25 +79,25 @@ class _SchoolDialogState extends State<SchoolDialogNew> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Учитель в классе. Ждём учеников…'),
+      title: const MakeChessLocalizedText('Учитель в классе. Ждём учеников…'),
       content: _busy
           ? const Padding(
               padding: EdgeInsets.all(8.0),
-              child: Text('Подключаемся…'),
+              child: MakeChessLocalizedText('Подключаемся…'),
             )
           : const SizedBox.shrink(),
       actions: [
         TextButton(
           onPressed: _busy ? null : _startAsTeacher,
-          child: const Text('Войти как учитель'),
+          child: const MakeChessLocalizedText('Войти как учитель'),
         ),
         FilledButton(
           onPressed: _busy ? null : _startAsStudent,
-          child: const Text('Войти как ученик'),
+          child: const MakeChessLocalizedText('Войти как ученик'),
         ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Остановить'),
+          child: const MakeChessLocalizedText('Остановить'),
         ),
       ],
     );

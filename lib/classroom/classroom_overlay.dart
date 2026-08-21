@@ -1,80 +1,316 @@
+// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-/// Независимые плавающие окна видеокласса поверх сайта.
+import '../localization/makechess_localization.dart';
+
+/// Один видеопоток видеокласса.
 ///
-/// Каждый ученик получает собственное окно. Окна можно:
-/// - перетаскивать мышкой за верхнюю полосу;
-/// - менять по размеру за правый нижний угол;
-/// - накладывать друг на друга независимо от шахматной доски и панелей сайта.
-class ClassroomOverlay {
+/// Этот объект используется одновременно:
+/// - плавающими окнами видеосвязи;
+/// - встроенными окнами в учительской компоновке.
+class ClassroomVideoFeed {
+  const ClassroomVideoFeed({
+    required this.peerId,
+    required this.title,
+    required this.renderer,
+    this.local = false,
+    this.waitingForVideo = false,
+  });
+
+  final String peerId;
+  final String title;
+  final RTCVideoRenderer renderer;
+  final bool local;
+  final bool waitingForVideo;
+
+  bool get hasVideo => renderer.srcObject?.getVideoTracks().isNotEmpty ?? false;
+}
+
+/// Видеослой класса «учитель ↔ ученики».
+///
+/// Важно: старый рабочий механизм ожидания Overlay сохранён полностью.
+/// Видеопоток может прийти раньше, чем Flutter успеет построить окно. В таком
+/// случае он сохраняется в очереди и показывается после готовности Overlay.
+///
+/// Класс реализует [Listenable] вручную, а не наследуется от ChangeNotifier.
+/// Это сохраняет рабочий асинхронный метод [dispose], который вызывается через
+/// `await ClassroomOverlay.instance.dispose()`.
+class ClassroomOverlay implements Listenable {
   ClassroomOverlay._();
+
   static final ClassroomOverlay instance = ClassroomOverlay._();
 
-  static const String _localWindowId = '__classroom_local__';
+  final ChangeNotifier _changes = ChangeNotifier();
 
   OverlayEntry? _entry;
   _OverlayState? _state;
+  Completer<void>? _ready;
 
-  RTCVideoRenderer? _local;
-  String _localTitle = 'Вы';
-  final Map<String, _RemoteVideoEntry> _remotes =
-      <String, _RemoteVideoEntry>{};
-  final List<String> _zOrder = <String>[];
+  ({RTCVideoRenderer renderer, String label})? _pendingLocal;
 
-  void attach(BuildContext context) {
-    if (_entry != null) return;
-    _entry = OverlayEntry(
-      builder: (_) => _Overlay(owner: this),
-    );
-    Overlay.of(context, rootOverlay: true).insert(_entry!);
+  final Map<
+      String,
+      ({
+        RTCVideoRenderer renderer,
+        String title,
+        bool waitingForVideo,
+      })> _pendingRemotes = <String,
+      ({
+    RTCVideoRenderer renderer,
+    String title,
+    bool waitingForVideo,
+  })>{};
+
+  ClassroomVideoFeed? _localFeed;
+  final Map<String, ClassroomVideoFeed> _remoteFeeds =
+      <String, ClassroomVideoFeed>{};
+
+  bool _dockAllRemotes = false;
+  Set<String> _dockedRemoteIds = <String>{};
+
+  // В режимах с одним встроенным видео остальные ученические потоки
+  // продолжают работать, но не рисуются плавающими окнами. Локальное
+  // видео учителя этим флагом никогда не скрывается.
+  bool _hideUndockedRemotes = false;
+
+  @override
+  void addListener(VoidCallback listener) {
+    _changes.addListener(listener);
   }
 
-  void _register(_OverlayState state) {
-    _state = state;
-    state.refresh();
+  @override
+  void removeListener(VoidCallback listener) {
+    _changes.removeListener(listener);
   }
 
-  void _unregister(_OverlayState state) {
-    if (identical(_state, state)) _state = null;
-  }
-
-  void _notify() {
-    _state?.refresh();
+  void _notifyChanged() {
+    _changes.notifyListeners();
     _entry?.markNeedsBuild();
   }
 
-  void _ensureWindowInOrder(String id) {
-    if (!_zOrder.contains(id)) _zOrder.add(id);
+  ClassroomVideoFeed? get localFeed => _localFeed;
+
+  Map<String, ClassroomVideoFeed> get remoteFeeds =>
+      Map<String, ClassroomVideoFeed>.unmodifiable(_remoteFeeds);
+
+  ClassroomVideoFeed? remoteFeedFor(String peerId) {
+    final id = peerId.trim();
+    if (id.isEmpty) return null;
+    return _remoteFeeds[id];
   }
 
-  void bringToFront(String id) {
-    if (_zOrder.isNotEmpty && _zOrder.last == id) return;
-    if (!_zOrder.remove(id)) return;
-    _zOrder.add(id);
-    _notify();
+  bool get docksAllRemotes => _dockAllRemotes;
+
+  Set<String> get dockedRemoteIds => Set<String>.unmodifiable(_dockedRemoteIds);
+
+  bool get hidesUndockedRemotes => _hideUndockedRemotes;
+
+  bool isRemoteDocked(String peerId) {
+    final id = peerId.trim();
+    if (id.isEmpty) return false;
+    return _dockAllRemotes || _dockedRemoteIds.contains(id);
+  }
+
+  /// Управляет только удалёнными видео учеников. Локальное видео учителя
+  /// всегда остаётся отдельным плавающим окном.
+  ///
+  /// [dockAll] используется для режимов «видео над досками» и «все видео».
+  /// [peerIds] используется для режимов, где в интерфейс встраивается только
+  /// видео выбранного ученика.
+  ///
+  /// Если [hideUndocked] включён, остальные ученические видеопотоки остаются
+  /// подключёнными, но не создают плавающих окон. Это нужно для компоновок
+  /// «одно видео + 8 досок» и «одно видео + одна доска».
+  void setRemoteDocking({
+    required bool dockAll,
+    Set<String> peerIds = const <String>{},
+    bool hideUndocked = false,
+  }) {
+    final normalized =
+        peerIds.map((id) => id.trim()).where((id) => id.isNotEmpty).toSet();
+    if (_dockAllRemotes == dockAll &&
+        _hideUndockedRemotes == hideUndocked &&
+        _dockedRemoteIds.length == normalized.length &&
+        _dockedRemoteIds.containsAll(normalized)) {
+      return;
+    }
+    _dockAllRemotes = dockAll;
+    _dockedRemoteIds = normalized;
+    _hideUndockedRemotes = hideUndocked;
+    _notifyChanged();
+  }
+
+  /// Совместимость с предыдущими версиями main.dart.
+  /// true — встроить все удалённые видео учеников;
+  /// false — вернуть их в плавающие окна.
+  /// Локальное видео учителя этот метод не затрагивает.
+  void setDocked(bool value) {
+    setRemoteDocking(
+      dockAll: value,
+      hideUndocked: value,
+    );
+  }
+
+  void showAllRemotesFloating() {
+    setRemoteDocking(
+      dockAll: false,
+      hideUndocked: false,
+    );
+  }
+
+  Future<void> attach(BuildContext context) async {
+    final current = _entry;
+
+    if (current != null && current.mounted && _state != null) {
+      _flushPending();
+      return;
+    }
+
+    // Если OverlayEntry уже вставлен, но его State ещё строится, сначала ждём
+    // завершения текущего построения. Так не создаётся второй видеослой.
+    if (current != null && current.mounted && _state == null) {
+      final ready = _ready;
+      if (ready != null && !ready.isCompleted) {
+        try {
+          await ready.future.timeout(const Duration(seconds: 2));
+        } catch (_) {
+          // Ниже старый неготовый слой будет удалён и создан заново.
+        }
+      }
+
+      if (_state != null) {
+        _flushPending();
+        return;
+      }
+
+      if (current.mounted) {
+        current.remove();
+      }
+    }
+
+    // Старый объект мог пережить перестройку интерфейса, хотя его OverlayEntry
+    // уже был снят. Удаляем такую «мёртвую» ссылку и создаём окно заново.
+    _entry = null;
+    _state = null;
+    _ready = Completer<void>();
+
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) {
+      _ready = null;
+      throw StateError('Корневой Overlay для видеокласса не найден');
+    }
+
+    final entry = OverlayEntry(
+      builder: (_) => _Overlay(
+        host: (state) {
+          _state = state;
+
+          final ready = _ready;
+          if (ready != null && !ready.isCompleted) {
+            ready.complete();
+          }
+
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _flushPending();
+          });
+        },
+      ),
+    );
+
+    _entry = entry;
+    overlay.insert(entry);
+
+    final ready = _ready;
+    if (_state == null && ready != null && !ready.isCompleted) {
+      await ready.future.timeout(const Duration(seconds: 2));
+    }
+
+    _flushPending();
+  }
+
+  void _flushPending() {
+    final state = _state;
+    if (state == null || !state.mounted) return;
+
+    final local = _pendingLocal;
+    if (local != null) {
+      _pendingLocal = null;
+      state.showLocal(
+        local.renderer,
+        label: local.label,
+      );
+    }
+
+    final remotes = Map<
+        String,
+        ({
+          RTCVideoRenderer renderer,
+          String title,
+          bool waitingForVideo,
+        })>.from(_pendingRemotes);
+
+    _pendingRemotes.clear();
+
+    for (final entry in remotes.entries) {
+      state.addRemote(
+        entry.key,
+        entry.value.title,
+        entry.value.renderer,
+        waitingForVideo: entry.value.waitingForVideo,
+      );
+    }
   }
 
   Future<void> dispose() async {
-    _local = null;
-    _remotes.clear();
-    _zOrder.clear();
-    _state?.refresh();
-    _entry?.remove();
-    _entry = null;
+    _pendingLocal = null;
+    _pendingRemotes.clear();
+
+    _localFeed = null;
+    _remoteFeeds.clear();
+    _dockAllRemotes = false;
+    _dockedRemoteIds = <String>{};
+    _hideUndockedRemotes = false;
+    _notifyChanged();
+
+    final state = _state;
     _state = null;
+    if (state != null && state.mounted) {
+      state.clear();
+    }
+
+    final current = _entry;
+    _entry = null;
+    _ready = null;
+
+    if (current != null && current.mounted) {
+      current.remove();
+    }
   }
 
   Future<void> showLocal(
     RTCVideoRenderer renderer, {
     String label = 'Вы',
   }) async {
-    _local = renderer;
-    _localTitle = label;
-    _ensureWindowInOrder(_localWindowId);
-    _notify();
+    final normalizedLabel = label.trim().isEmpty ? 'Вы' : label.trim();
+
+    _localFeed = ClassroomVideoFeed(
+      peerId: '__local__',
+      title: normalizedLabel,
+      renderer: renderer,
+      local: true,
+    );
+
+    _pendingLocal = (
+      renderer: renderer,
+      label: normalizedLabel,
+    );
+
+    _notifyChanged();
+    _flushPending();
   }
 
   Future<void> addRemote(
@@ -83,395 +319,475 @@ class ClassroomOverlay {
     RTCVideoRenderer renderer, {
     bool waitingForVideo = false,
   }) async {
-    _remotes[peerId] = _RemoteVideoEntry(
+    final id = peerId.trim();
+    if (id.isEmpty) return;
+
+    final normalizedTitle = title.trim().isEmpty ? 'Ученик' : title.trim();
+
+    _remoteFeeds[id] = ClassroomVideoFeed(
+      peerId: id,
+      title: normalizedTitle,
       renderer: renderer,
-      title: title,
       waitingForVideo: waitingForVideo,
     );
-    _ensureWindowInOrder(peerId);
-    _notify();
+
+    _pendingRemotes[id] = (
+      renderer: renderer,
+      title: normalizedTitle,
+      waitingForVideo: waitingForVideo,
+    );
+
+    _notifyChanged();
+    _flushPending();
   }
 
   Future<void> removeRemote(String peerId) async {
-    _remotes.remove(peerId);
-    _zOrder.remove(peerId);
-    _notify();
+    final id = peerId.trim();
+    if (id.isEmpty) return;
+
+    _pendingRemotes.remove(id);
+    final removed = _remoteFeeds.remove(id);
+
+    final state = _state;
+    if (state != null && state.mounted) {
+      state.removeRemote(id);
+    }
+
+    if (removed != null) {
+      _notifyChanged();
+    }
   }
 }
 
-class _RemoteVideoEntry {
-  const _RemoteVideoEntry({
-    required this.renderer,
-    required this.title,
-    required this.waitingForVideo,
-  });
-
-  final RTCVideoRenderer renderer;
-  final String title;
-  final bool waitingForVideo;
-}
-
 class _Overlay extends StatefulWidget {
-  const _Overlay({required this.owner});
+  const _Overlay({required this.host});
 
-  final ClassroomOverlay owner;
+  final void Function(_OverlayState state) host;
 
   @override
   State<_Overlay> createState() => _OverlayState();
 }
 
 class _OverlayState extends State<_Overlay> {
+  RTCVideoRenderer? _local;
+  String _localTitle = 'Вы';
+
+  final Map<
+      String,
+      ({
+        RTCVideoRenderer renderer,
+        String title,
+        bool waitingForVideo,
+      })> _remotes = <String,
+      ({
+    RTCVideoRenderer renderer,
+    String title,
+    bool waitingForVideo,
+  })>{};
+
   @override
   void initState() {
     super.initState();
-    widget.owner._register(this);
+    widget.host(this);
   }
 
-  @override
-  void dispose() {
-    widget.owner._unregister(this);
-    super.dispose();
-  }
-
-  void refresh() {
+  void showLocal(
+    RTCVideoRenderer renderer, {
+    required String label,
+  }) {
     if (!mounted) return;
-    setState(() {});
+    setState(() {
+      _local = renderer;
+      _localTitle = label;
+    });
+  }
+
+  void addRemote(
+    String peerId,
+    String title,
+    RTCVideoRenderer renderer, {
+    required bool waitingForVideo,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      _remotes[peerId] = (
+        renderer: renderer,
+        title: title,
+        waitingForVideo: waitingForVideo,
+      );
+    });
+  }
+
+  void removeRemote(String peerId) {
+    if (!mounted) return;
+    setState(() {
+      _remotes.remove(peerId);
+    });
+  }
+
+  void clear() {
+    if (!mounted) return;
+    setState(() {
+      _local = null;
+      _remotes.clear();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final owner = widget.owner;
-    final local = owner._local;
-    final remotes = Map<String, _RemoteVideoEntry>.from(owner._remotes);
-    final order = List<String>.from(owner._zOrder);
+    return AnimatedBuilder(
+      animation: ClassroomOverlay.instance,
+      builder: (context, _) {
+        final overlay = ClassroomOverlay.instance;
+        final visibleRemotes = overlay.hidesUndockedRemotes
+            ? _remotes.entries.where((_) => false).toList(growable: false)
+            : _remotes.entries
+                .where(
+                  (entry) => !overlay.isRemoteDocked(entry.key),
+                )
+                .toList(growable: false);
 
-    return IgnorePointer(
-      ignoring: false,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final screenSize = Size(
-            constraints.maxWidth,
-            constraints.maxHeight,
-          );
-          final remoteIds = remotes.keys.toList(growable: false);
-          final children = <Widget>[];
+        // Локальное видео не зависит от компоновки: у учителя оно всегда
+        // остаётся плавающим. У ученика сохраняется прежнее плавающее окно.
+        if (visibleRemotes.isEmpty && _local == null) {
+          return const SizedBox.shrink();
+        }
 
-          for (final id in order) {
-            if (id == ClassroomOverlay._localWindowId) {
-              if (local == null) continue;
-              children.add(
-                _FloatingVideoWindow(
-                  key: const ValueKey(ClassroomOverlay._localWindowId),
-                  windowId: ClassroomOverlay._localWindowId,
-                  title: owner._localTitle,
-                  renderer: local,
-                  local: true,
-                  waitingForVideo: false,
-                  screenSize: screenSize,
-                  initialLeft: math.max(10.0, screenSize.width - 250.0),
-                  initialTop: math.max(72.0, screenSize.height - 180.0),
-                  initialWidth: 230.0,
-                  initialHeight: 150.0,
-                  onActivate: owner.bringToFront,
-                ),
+        return IgnorePointer(
+          ignoring: false,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final maxWidth = constraints.maxWidth;
+              final maxHeight = constraints.maxHeight;
+              final remoteWidth = maxWidth < 900 ? 300.0 : 360.0;
+              final remoteHeight = remoteWidth * 0.66;
+
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  for (var index = 0; index < visibleRemotes.length; index++)
+                    _ClassroomFloatingWindow(
+                      key: ValueKey(
+                        'classroom_remote_${visibleRemotes[index].key}',
+                      ),
+                      feed: ClassroomVideoFeed(
+                        peerId: visibleRemotes[index].key,
+                        title: visibleRemotes[index].value.title,
+                        renderer: visibleRemotes[index].value.renderer,
+                        waitingForVideo:
+                            visibleRemotes[index].value.waitingForVideo,
+                      ),
+                      initialLeft: 24.0 + (index % 4) * 42.0,
+                      initialTop: 92.0 + (index % 4) * 38.0,
+                      initialWidth: remoteWidth,
+                      initialHeight: remoteHeight,
+                      boundaryWidth: maxWidth,
+                      boundaryHeight: maxHeight,
+                    ),
+                  if (_local != null)
+                    _ClassroomFloatingWindow(
+                      key: const ValueKey('classroom_local_teacher'),
+                      feed: ClassroomVideoFeed(
+                        peerId: '__local__',
+                        title: _localTitle,
+                        renderer: _local!,
+                        local: true,
+                      ),
+                      initialLeft: 18.0,
+                      initialTop: math.max(92.0, maxHeight - 280.0).toDouble(),
+                      initialWidth: maxWidth < 900 ? 260.0 : 320.0,
+                      initialHeight: maxWidth < 900 ? 180.0 : 220.0,
+                      boundaryWidth: maxWidth,
+                      boundaryHeight: maxHeight,
+                    ),
+                ],
               );
-              continue;
-            }
+            },
+          ),
+        );
+      },
+    );
+  }
+}
 
-            final entry = remotes[id];
-            if (entry == null) continue;
-            final index = remoteIds.indexOf(id);
-            final column = index % 4;
-            final row = index ~/ 4;
-            children.add(
-              _FloatingVideoWindow(
-                key: ValueKey(id),
-                windowId: id,
-                title: entry.title,
-                renderer: entry.renderer,
-                waitingForVideo: entry.waitingForVideo,
-                screenSize: screenSize,
-                initialLeft: 10.0 + column * 34.0,
-                initialTop: 76.0 + row * 34.0,
-                initialWidth: screenSize.width < 760 ? 300.0 : 400.0,
-                initialHeight: screenSize.width < 760 ? 200.0 : 250.0,
-                onActivate: owner.bringToFront,
+class _ClassroomFloatingWindow extends StatefulWidget {
+  const _ClassroomFloatingWindow({
+    super.key,
+    required this.feed,
+    required this.initialLeft,
+    required this.initialTop,
+    required this.initialWidth,
+    required this.initialHeight,
+    required this.boundaryWidth,
+    required this.boundaryHeight,
+  });
+
+  final ClassroomVideoFeed feed;
+  final double initialLeft;
+  final double initialTop;
+  final double initialWidth;
+  final double initialHeight;
+  final double boundaryWidth;
+  final double boundaryHeight;
+
+  @override
+  State<_ClassroomFloatingWindow> createState() =>
+      _ClassroomFloatingWindowState();
+}
+
+class _ClassroomFloatingWindowState extends State<_ClassroomFloatingWindow> {
+  late double _left = widget.initialLeft;
+  late double _top = widget.initialTop;
+  late double _width = widget.initialWidth;
+  late double _height = widget.initialHeight;
+  bool _minimized = false;
+  Offset? _dragStart;
+  Size? _resizeStart;
+
+  static const double _titleHeight = 34.0;
+  static const double _minWidth = 220.0;
+  static const double _minHeight = 150.0;
+
+  double _clampLeft(double value) {
+    final maximum = math.max(0.0, widget.boundaryWidth - _width);
+    return value.clamp(0.0, maximum).toDouble();
+  }
+
+  double _clampTop(double value) {
+    final visibleHeight = _minimized ? _titleHeight : _height;
+    final maximum = math.max(0.0, widget.boundaryHeight - visibleHeight);
+    return value.clamp(0.0, maximum).toDouble();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ClassroomFloatingWindow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _left = _clampLeft(_left);
+    _top = _clampTop(_top);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final actualHeight = _minimized ? _titleHeight : _height;
+    return Positioned(
+      left: _clampLeft(_left),
+      top: _clampTop(_top),
+      width: _width,
+      height: actualHeight,
+      child: Material(
+        elevation: 18,
+        color: const Color(0xFF151C25),
+        borderRadius: BorderRadius.circular(11),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            if (!_minimized)
+              Positioned.fill(
+                top: _titleHeight,
+                child: ClassroomVideoTile(
+                  feed: widget.feed,
+                  compact: false,
+                ),
               ),
-            );
-          }
-
-          return Stack(children: children);
-        },
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (details) {
+                _dragStart = details.globalPosition;
+              },
+              onPanUpdate: (details) {
+                final start = _dragStart;
+                if (start == null) return;
+                final delta = details.globalPosition - start;
+                setState(() {
+                  _left = _clampLeft(_left + delta.dx);
+                  _top = _clampTop(_top + delta.dy);
+                });
+                _dragStart = details.globalPosition;
+              },
+              child: Container(
+                height: _titleHeight,
+                padding: const EdgeInsets.only(left: 10, right: 4),
+                color: const Color(0xFF27303B),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: MakeChessLocalizedText(
+                        widget.feed.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: _minimized
+                          ? MakeChessLocalization.phrase('Развернуть')
+                          : MakeChessLocalization.phrase('Свернуть'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 32,
+                        height: 32,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _minimized = !_minimized;
+                          _top = _clampTop(_top);
+                        });
+                      },
+                      icon: Icon(
+                        _minimized ? Icons.crop_square : Icons.minimize,
+                        size: 18,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (!_minimized)
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (details) {
+                    _dragStart = details.globalPosition;
+                    _resizeStart = Size(_width, _height);
+                  },
+                  onPanUpdate: (details) {
+                    final start = _dragStart;
+                    final size = _resizeStart;
+                    if (start == null || size == null) return;
+                    final delta = details.globalPosition - start;
+                    setState(() {
+                      _width =
+                          math.max(_minWidth, size.width + delta.dx).toDouble();
+                      _height = math
+                          .max(_minHeight, size.height + delta.dy)
+                          .toDouble();
+                      _width = math
+                          .min(
+                            _width,
+                            math.max(_minWidth, widget.boundaryWidth - _left),
+                          )
+                          .toDouble();
+                      _height = math
+                          .min(
+                            _height,
+                            math.max(_minHeight, widget.boundaryHeight - _top),
+                          )
+                          .toDouble();
+                    });
+                  },
+                  child: const SizedBox(
+                    width: 26,
+                    height: 26,
+                    child: Icon(
+                      Icons.drag_handle,
+                      color: Colors.white70,
+                      size: 17,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _FloatingVideoWindow extends StatefulWidget {
-  const _FloatingVideoWindow({
+/// Универсальная видеоплитка.
+///
+/// Она используется и внутри плавающего Overlay, и непосредственно в
+/// учительской области рядом с соответствующей доской ученика.
+class ClassroomVideoTile extends StatelessWidget {
+  const ClassroomVideoTile({
     super.key,
-    required this.windowId,
-    required this.title,
-    required this.renderer,
-    required this.screenSize,
-    required this.initialLeft,
-    required this.initialTop,
-    required this.initialWidth,
-    required this.initialHeight,
-    required this.onActivate,
-    this.local = false,
-    this.waitingForVideo = false,
+    required this.feed,
+    this.onTap,
+    this.compact = false,
   });
 
-  final String windowId;
-  final String title;
-  final RTCVideoRenderer renderer;
-  final Size screenSize;
-  final double initialLeft;
-  final double initialTop;
-  final double initialWidth;
-  final double initialHeight;
-  final ValueChanged<String> onActivate;
-  final bool local;
-  final bool waitingForVideo;
-
-  @override
-  State<_FloatingVideoWindow> createState() => _FloatingVideoWindowState();
-}
-
-class _FloatingVideoWindowState extends State<_FloatingVideoWindow> {
-  static const double _titleHeight = 34;
-  static const double _minWidth = 210;
-  static const double _minHeight = 140;
-  static const double _edge = 8;
-  static const double _topLimit = 66;
-
-  late double _left;
-  late double _top;
-  late double _width;
-  late double _height;
-
-  @override
-  void initState() {
-    super.initState();
-    _left = widget.initialLeft;
-    _top = widget.initialTop;
-    _width = widget.initialWidth;
-    _height = widget.initialHeight;
-  }
-
-  double _clampDouble(double value, double minimum, double maximum) {
-    if (maximum < minimum) return minimum;
-    return value.clamp(minimum, maximum).toDouble();
-  }
-
-  void _moveBy(Offset delta) {
-    widget.onActivate(widget.windowId);
-    setState(() {
-      final maxLeft = math.max(_edge, widget.screenSize.width - _width - _edge);
-      final maxTop = math.max(
-        _topLimit,
-        widget.screenSize.height - _height - _edge,
-      );
-      _left = _clampDouble(_left + delta.dx, _edge, maxLeft);
-      _top = _clampDouble(_top + delta.dy, _topLimit, maxTop);
-    });
-  }
-
-  void _resizeBy(Offset delta) {
-    widget.onActivate(widget.windowId);
-    setState(() {
-      final maxWidth = math.max(
-        _minWidth,
-        widget.screenSize.width - _left - _edge,
-      );
-      final maxHeight = math.max(
-        _minHeight,
-        widget.screenSize.height - _top - _edge,
-      );
-      _width = _clampDouble(_width + delta.dx, _minWidth, maxWidth);
-      _height = _clampDouble(_height + delta.dy, _minHeight, maxHeight);
-    });
-  }
+  final ClassroomVideoFeed feed;
+  final VoidCallback? onTap;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = math.max(
-      _minWidth,
-      widget.screenSize.width - _left - _edge,
-    );
-    final maxHeight = math.max(
-      _minHeight,
-      widget.screenSize.height - _top - _edge,
-    );
-    final width = _clampDouble(_width, _minWidth, maxWidth);
-    final height = _clampDouble(_height, _minHeight, maxHeight);
-    final maxLeft = math.max(_edge, widget.screenSize.width - width - _edge);
-    final maxTop = math.max(
-      _topLimit,
-      widget.screenSize.height - height - _edge,
-    );
-    final left = _clampDouble(_left, _edge, maxLeft);
-    final top = _clampDouble(_top, _topLimit, maxTop);
+    final waiting = feed.waitingForVideo && !feed.hasVideo;
+    final radius = compact ? 8.0 : 12.0;
 
-    return Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: Material(
-        color: Colors.transparent,
-        elevation: 18,
-        borderRadius: BorderRadius.circular(12),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapDown: (_) => widget.onActivate(widget.windowId),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: widget.local
-                    ? const Color(0xFF58D7FF)
-                    : Colors.white38,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(radius),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(
+              color: feed.local ? const Color(0xFF58D7FF) : Colors.white24,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black54,
+                blurRadius: 10,
               ),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black54,
-                  blurRadius: 12,
-                  offset: Offset(0, 5),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(radius - 1),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                RTCVideoView(
+                  feed.renderer,
+                  mirror: feed.local,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                ),
+                if (waiting)
+                  const Center(
+                    child: CircularProgressIndicator(
+                      color: Color(0xFF58D7FF),
+                      strokeWidth: 3,
+                    ),
+                  ),
+                Positioned(
+                  left: compact ? 5 : 8,
+                  right: compact ? 5 : null,
+                  bottom: compact ? 5 : 7,
+                  child: Align(
+                    alignment: Alignment.bottomLeft,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: compact ? 6 : 8,
+                          vertical: compact ? 3 : 4,
+                        ),
+                        child: MakeChessLocalizedText(
+                          feed.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: compact ? 10 : 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(11),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Positioned.fill(
-                    top: _titleHeight,
-                    child: ColoredBox(
-                      color: Colors.black,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          RTCVideoView(
-                            widget.renderer,
-                            mirror: widget.local,
-                            objectFit: RTCVideoViewObjectFit
-                                .RTCVideoViewObjectFitCover,
-                          ),
-                          if (widget.waitingForVideo)
-                            const ColoredBox(
-                              color: Color(0xAA000000),
-                              child: Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    CircularProgressIndicator(
-                                      color: Color(0xFF58D7FF),
-                                      strokeWidth: 3,
-                                    ),
-                                    SizedBox(height: 10),
-                                    Text(
-                                      'Подключаем видео…',
-                                      style: TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Align(
-                    alignment: Alignment.topCenter,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.move,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: (_) =>
-                            widget.onActivate(widget.windowId),
-                        onPanUpdate: (details) => _moveBy(details.delta),
-                        child: Container(
-                          height: _titleHeight,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          decoration: const BoxDecoration(
-                            color: Color(0xEE171C24),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                widget.local
-                                    ? Icons.person
-                                    : Icons.videocam_rounded,
-                                color: widget.local
-                                    ? const Color(0xFF58D7FF)
-                                    : Colors.white70,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 7),
-                              Expanded(
-                                child: Text(
-                                  widget.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
-                              const Icon(
-                                Icons.open_with_rounded,
-                                color: Colors.white38,
-                                size: 15,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.resizeDownRight,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: (_) =>
-                            widget.onActivate(widget.windowId),
-                        onPanUpdate: (details) => _resizeBy(details.delta),
-                        child: Container(
-                          width: 30,
-                          height: 30,
-                          alignment: Alignment.bottomRight,
-                          padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [Colors.transparent, Colors.black54],
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.drag_handle,
-                            color: Colors.white70,
-                            size: 18,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
             ),
           ),
         ),

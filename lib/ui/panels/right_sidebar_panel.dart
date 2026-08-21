@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../app_style.dart';
+import '../../localization/makechess_localization.dart';
+import '../../services/lichess_service.dart';
+import '../../stockfish_service.dart' as sf;
 
 class RightSidebarPanel extends StatelessWidget {
   final int plyIndex;
@@ -60,6 +63,7 @@ class RightSidebarPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final assistanceDisabled = LichessPlayGuard.instance.active;
     return DecoratedBox(
       decoration: AppDecorations.panel(),
       child: Padding(
@@ -68,7 +72,7 @@ class RightSidebarPanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Управление',
+              MakeChessLocalization.text(MakeChessTextKey.controls),
               style: compact
                   ? AppTextStyles.panelTitle.copyWith(fontSize: 14)
                   : AppTextStyles.panelTitle,
@@ -78,7 +82,8 @@ class RightSidebarPanel extends StatelessWidget {
               children: [
                 Expanded(
                   child: _SidebarIconButton(
-                    tooltip: 'В начало',
+                    tooltip:
+                        MakeChessLocalization.text(MakeChessTextKey.goStart),
                     icon: Icons.first_page,
                     onTap: plyIndex > 0 ? onGoStart : null,
                   ),
@@ -86,7 +91,7 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 3 : AppSpacing.sm),
                 Expanded(
                   child: _SidebarIconButton(
-                    tooltip: 'Назад',
+                    tooltip: MakeChessLocalization.text(MakeChessTextKey.back),
                     icon: Icons.chevron_left,
                     onTap: plyIndex > 0 ? onGoPrev : null,
                   ),
@@ -94,7 +99,8 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 3 : AppSpacing.sm),
                 Expanded(
                   child: _SidebarIconButton(
-                    tooltip: 'Вперёд',
+                    tooltip:
+                        MakeChessLocalization.text(MakeChessTextKey.forward),
                     icon: Icons.chevron_right,
                     onTap: plyIndex < sanMoves.length ? onGoNext : null,
                   ),
@@ -102,7 +108,7 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 3 : AppSpacing.sm),
                 Expanded(
                   child: _SidebarIconButton(
-                    tooltip: 'В конец',
+                    tooltip: MakeChessLocalization.text(MakeChessTextKey.goEnd),
                     icon: Icons.last_page,
                     onTap: plyIndex < sanMoves.length ? onGoEnd : null,
                   ),
@@ -114,7 +120,7 @@ class RightSidebarPanel extends StatelessWidget {
               children: [
                 Expanded(
                   child: AppNeoButton(
-                    text: 'Сдаться',
+                    text: MakeChessLocalization.text(MakeChessTextKey.resign),
                     icon: Icons.flag,
                     onTap: onResignPressed,
                     danger: true,
@@ -125,7 +131,7 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 4 : AppSpacing.sm),
                 Expanded(
                   child: AppNeoButton(
-                    text: 'Ничья',
+                    text: MakeChessLocalization.text(MakeChessTextKey.draw),
                     icon: Icons.handshake_outlined,
                     onTap: offerDrawUniversal,
                     showIcon: !compact,
@@ -138,24 +144,47 @@ class RightSidebarPanel extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: AppNeoButton(
-                    text: loading ? 'Загрузка...' : 'Лучший ход',
-                    icon: Icons.flash_on,
-                    onTap: loading
-                        ? null
-                        : () {
-                            onBestMove();
-                          },
-                    showIcon: !compact,
-                    compact: compact,
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: sf.localStockfishEnabledNotifier,
+                    builder: (context, localEnabled, _) {
+                      return ValueListenableBuilder<String>(
+                        valueListenable: MakeChessLocalizationController.languageCode,
+                        builder: (context, languageCode, _) {
+                          return AppNeoButton(
+                            text: loading
+                                ? MakeChessLocalization.text(
+                                    MakeChessTextKey.loading,
+                                    languageCode: languageCode,
+                                  )
+                                : MakeChessLocalization.phrase(
+                                    localEnabled
+                                        ? 'Локальный Stockfish: ВКЛ'
+                                        : 'Локальный Stockfish: ВЫКЛ',
+                                    languageCode: languageCode,
+                                  ),
+                            icon: localEnabled ? Icons.memory : Icons.memory_outlined,
+                            onTap: assistanceDisabled || loading
+                                ? null
+                                : () {
+                                    onBestMove();
+                                  },
+                            showIcon: !compact,
+                            compact: compact,
+                          );
+                        },
+                      );
+                    },
                   ),
                 ),
                 SizedBox(width: compact ? 4 : AppSpacing.sm),
                 Expanded(
                   child: AppNeoButton(
-                    text: gptLoading ? 'GPT...' : 'Объяснить',
+                    text: gptLoading
+                        ? 'GPT...'
+                        : MakeChessLocalization.text(MakeChessTextKey.explain),
                     icon: Icons.psychology,
-                    onTap: gptLoading ? null : explainHere,
+                    onTap:
+                        assistanceDisabled || gptLoading ? null : explainHere,
                     showIcon: !compact,
                     compact: compact,
                   ),
@@ -167,9 +196,11 @@ class RightSidebarPanel extends StatelessWidget {
               children: [
                 Expanded(
                   child: AppNeoButton(
-                    text: showFenInput ? 'Скрыть FEN' : 'Введите FEN',
+                    text: showFenInput
+                        ? MakeChessLocalization.text(MakeChessTextKey.hideFen)
+                        : MakeChessLocalization.text(MakeChessTextKey.enterFen),
                     icon: Icons.code,
-                    onTap: toggleFenInput,
+                    onTap: assistanceDisabled ? null : toggleFenInput,
                     showIcon: !compact,
                     compact: compact,
                   ),
@@ -177,9 +208,12 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 4 : AppSpacing.sm),
                 Expanded(
                   child: AppNeoButton(
-                    text: 'С вопросом…',
+                    text: MakeChessLocalization.text(
+                        MakeChessTextKey.withQuestion),
                     icon: Icons.question_answer,
-                    onTap: gptLoading ? null : openGptPromptDialog,
+                    onTap: assistanceDisabled || gptLoading
+                        ? null
+                        : openGptPromptDialog,
                     showIcon: !compact,
                     compact: compact,
                   ),
@@ -191,9 +225,13 @@ class RightSidebarPanel extends StatelessWidget {
               children: [
                 Expanded(
                   child: AppNeoButton(
-                    text: loadingBest ? 'Загрузка...' : 'Взять ход',
+                    text: loadingBest
+                        ? MakeChessLocalization.text(MakeChessTextKey.loading)
+                        : MakeChessLocalization.text(MakeChessTextKey.takeMove),
                     icon: Icons.auto_fix_high,
-                    onTap: loadingBest ? null : onTakeBestMove,
+                    onTap: assistanceDisabled || loadingBest
+                        ? null
+                        : onTakeBestMove,
                     showIcon: !compact,
                     compact: compact,
                   ),
@@ -201,9 +239,14 @@ class RightSidebarPanel extends StatelessWidget {
                 SizedBox(width: compact ? 4 : AppSpacing.sm),
                 Expanded(
                   child: AppNeoButton(
-                    text: loadingAnalysis ? 'Анализ...' : 'Analysis',
+                    text: loadingAnalysis
+                        ? MakeChessLocalization.text(
+                            MakeChessTextKey.analysisLoading)
+                        : MakeChessLocalization.text(MakeChessTextKey.analysis),
                     icon: Icons.analytics,
-                    onTap: loadingAnalysis ? null : onOpenAnalysis,
+                    onTap: assistanceDisabled || loadingAnalysis
+                        ? null
+                        : onOpenAnalysis,
                     showIcon: !compact,
                     compact: compact,
                   ),
@@ -212,9 +255,11 @@ class RightSidebarPanel extends StatelessWidget {
             ),
             SizedBox(height: compact ? 5 : AppSpacing.md),
             AppNeoButton(
-              text: editMode ? 'Выйти из редактора' : 'Редактор',
+              text: editMode
+                  ? MakeChessLocalization.text(MakeChessTextKey.exitEditor)
+                  : MakeChessLocalization.text(MakeChessTextKey.editor),
               icon: Icons.edit,
-              onTap: (inRoom && !sharedControl)
+              onTap: assistanceDisabled || (inRoom && !sharedControl)
                   ? null
                   : (editMode ? applyEditor : enterEditor),
               showIcon: !compact,
