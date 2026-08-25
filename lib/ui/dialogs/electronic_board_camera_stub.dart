@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../localization/makechess_localization.dart';
+import 'electronic_board_optics.dart';
 
 class ElectronicBoardCameraView extends StatelessWidget {
   const ElectronicBoardCameraView({
@@ -10,6 +11,9 @@ class ElectronicBoardCameraView extends StatelessWidget {
     required this.onStatusChanged,
     required this.onFailed,
     required this.onAspectRatioChanged,
+    this.scanRegions = const <ElectronicBoardScanRegion>[],
+    this.onBrightnessFrame,
+    this.selectedRegionId,
   });
 
   final bool active;
@@ -17,6 +21,9 @@ class ElectronicBoardCameraView extends StatelessWidget {
   final ValueChanged<String> onStatusChanged;
   final VoidCallback onFailed;
   final ValueChanged<double?> onAspectRatioChanged;
+  final List<ElectronicBoardScanRegion> scanRegions;
+  final ValueChanged<ElectronicBoardBrightnessFrame>? onBrightnessFrame;
+  final String? selectedRegionId;
 
   @override
   Widget build(BuildContext context) {
