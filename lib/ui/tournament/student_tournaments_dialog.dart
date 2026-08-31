@@ -19,6 +19,10 @@ enum _StudentTournamentSection {
 
 enum _CurrentTournamentFilter { all, mine, accepted }
 
+enum _TournamentStartFilter { all, started, notStarted }
+
+enum _FilterLogic { and, or }
+
 Future<void> showStudentTournamentsDialog({
   required BuildContext context,
   required String studentId,
@@ -103,9 +107,35 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
   bool _loading = true;
   String? _loadError;
   _CurrentTournamentFilter _currentFilter = _CurrentTournamentFilter.all;
+  _TournamentStartFilter _startFilter = _TournamentStartFilter.all;
+  _FilterLogic _filterLogic = _FilterLogic.and;
+  bool _filtersExpanded = false;
+  final Set<String> _enabledFilters = <String>{};
   String? _selectedTournamentKey;
   List<Map<String, dynamic>> _tournaments = <Map<String, dynamic>>[];
   final TextEditingController _searchCtl = TextEditingController();
+  final Map<String, TextEditingController> _filterControllers = {
+    for (final key in const <String>[
+      'name',
+      'dateFrom',
+      'dateTo',
+      'ratingFrom',
+      'ratingTo',
+      'rounds',
+      'participants',
+      'title',
+      'group',
+      'age',
+      'geography',
+      'finance',
+      'rated',
+      'prize',
+      'grandmaster',
+      'master',
+      'candidateMaster',
+    ])
+      key: TextEditingController(),
+  };
 
   @override
   void initState() {
@@ -135,12 +165,14 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
     }
   }
 
-  List<Map<String, dynamic>> get _current => _tournaments
-      .where((e) =>
-          e['isTemplate'] != true && '${e['status'] ?? ''}' != 'finished')
-      .toList();
+  List<Map<String, dynamic>> get _current => _tournaments.where((e) {
+        final status = '${e['status'] ?? ''}'.toLowerCase();
+        return e['isTemplate'] != true &&
+            (status == 'ready' || status == 'running' || status == 'paused');
+      }).toList();
 
-  List<Map<String, dynamic>> get _filteredCurrent => switch (_currentFilter) {
+  List<Map<String, dynamic>> get _baseFilteredCurrent =>
+      switch (_currentFilter) {
         _CurrentTournamentFilter.all => _current,
         _CurrentTournamentFilter.mine => _current
             .where((e) =>
@@ -150,6 +182,85 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
         _CurrentTournamentFilter.accepted =>
           _current.where(_isParticipant).toList(),
       };
+
+  List<Map<String, dynamic>> get _filteredCurrent => _baseFilteredCurrent
+      .where(_matchesStartFilter)
+      .where(_matchesAdvancedFilters)
+      .toList(growable: false);
+
+  bool _matchesStartFilter(Map<String, dynamic> tournament) {
+    final status = '${tournament['status'] ?? ''}'.toLowerCase();
+    final started = status == 'running' || status == 'paused';
+    return switch (_startFilter) {
+      _TournamentStartFilter.all => true,
+      _TournamentStartFilter.started => started,
+      _TournamentStartFilter.notStarted => !started,
+    };
+  }
+
+  String _filterValue(String key) =>
+      _filterControllers[key]?.text.trim().toLowerCase() ?? '';
+
+  String _searchableTournament(Map<String, dynamic> tournament) =>
+      tournament.entries
+          .map((e) => '${e.key} ${e.value}')
+          .join(' ')
+          .toLowerCase();
+
+  bool _matchesAdvancedFilters(Map<String, dynamic> tournament) {
+    if (_enabledFilters.isEmpty) return true;
+    final searchable = _searchableTournament(tournament);
+    final checks = <bool>[];
+    for (final key in _enabledFilters) {
+      final value = _filterValue(key);
+      bool match;
+      switch (key) {
+        case 'name':
+          match = '${tournament['name'] ?? ''}'.toLowerCase().contains(value);
+          break;
+        case 'rounds':
+          match = '${tournament['rounds'] ?? ''}' == value;
+          break;
+        case 'participants':
+          final count = tournament['participantIds'] is List
+              ? (tournament['participantIds'] as List).length
+              : 0;
+          match = '$count' == value;
+          break;
+        case 'ratingFrom':
+          final minimum = int.tryParse(value);
+          final rating = int.tryParse(
+              '${tournament['minRating'] ?? tournament['ratingFrom'] ?? ''}');
+          match = minimum != null && rating != null && rating >= minimum;
+          break;
+        case 'ratingTo':
+          final maximum = int.tryParse(value);
+          final rating = int.tryParse(
+              '${tournament['maxRating'] ?? tournament['ratingTo'] ?? ''}');
+          match = maximum != null && rating != null && rating <= maximum;
+          break;
+        case 'dateFrom':
+          final from = DateTime.tryParse(value);
+          final date = DateTime.tryParse(
+              '${tournament['createdAt'] ?? tournament['start'] ?? ''}');
+          match = from != null && date != null && !date.isBefore(from);
+          break;
+        case 'dateTo':
+          final to = DateTime.tryParse(value);
+          final date = DateTime.tryParse(
+              '${tournament['createdAt'] ?? tournament['start'] ?? ''}');
+          match = to != null && date != null && !date.isAfter(to);
+          break;
+        default:
+          match = value.isNotEmpty && searchable.contains(value);
+          break;
+      }
+      checks.add(match);
+    }
+    return _filterLogic == _FilterLogic.and
+        ? checks.every((value) => value)
+        : checks.any((value) => value);
+  }
 
   List<Map<String, dynamic>> get _archive => _tournaments
       .where((e) =>
@@ -744,6 +855,61 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
             ],
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 6, 18, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() {
+                    _startFilter =
+                        _startFilter == _TournamentStartFilter.started
+                            ? _TournamentStartFilter.all
+                            : _TournamentStartFilter.started;
+                  }),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor:
+                        _startFilter == _TournamentStartFilter.started
+                            ? Colors.cyanAccent.withOpacity(.14)
+                            : null,
+                  ),
+                  icon: const Icon(Icons.play_circle_outline),
+                  label: const Text('Начатые турниры'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() {
+                    _startFilter =
+                        _startFilter == _TournamentStartFilter.notStarted
+                            ? _TournamentStartFilter.all
+                            : _TournamentStartFilter.notStarted;
+                  }),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor:
+                        _startFilter == _TournamentStartFilter.notStarted
+                            ? Colors.cyanAccent.withOpacity(.14)
+                            : null,
+                  ),
+                  icon: const Icon(Icons.hourglass_empty),
+                  label: const Text('Не начатые турниры'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () =>
+                    setState(() => _filtersExpanded = !_filtersExpanded),
+                icon: Icon(_filtersExpanded
+                    ? Icons.filter_alt_off_outlined
+                    : Icons.filter_alt_outlined),
+                label: Text(
+                    'Фильтры${_enabledFilters.isEmpty ? '' : ' (${_enabledFilters.length})'}'),
+              ),
+            ],
+          ),
+        ),
+        if (_filtersExpanded) _advancedFilterPanel(),
         Expanded(
           child: _tournamentList(
             _filteredCurrent,
@@ -752,6 +918,109 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _advancedFilterPanel() {
+    const definitions = <(String, String, String)>[
+      ('name', 'Название', 'Текст названия'),
+      ('dateFrom', 'Дата от', '2026-09-01'),
+      ('dateTo', 'Дата до', '2026-09-30'),
+      ('ratingFrom', 'Рейтинг от', '1200'),
+      ('ratingTo', 'Рейтинг до', '2400'),
+      ('rounds', 'Число туров', '5'),
+      ('participants', 'Число участников', '12'),
+      ('title', 'Звание участников', 'Гроссмейстер, мастер, КМС'),
+      ('group', 'Группа / школа / клуб', 'Название группы'),
+      ('age', 'Возрастной критерий', 'Например: до 14 лет'),
+      ('geography', 'География', 'Страна, регион, город'),
+      ('finance', 'Участие', 'Платный / бесплатный'),
+      ('rated', 'Расчёт рейтинга', 'С расчётом / без расчёта'),
+      ('prize', 'Призовой фонд', 'Есть / нет'),
+      ('grandmaster', 'Участие гроссмейстеров', 'Есть / нет'),
+      ('master', 'Участие мастеров', 'Есть / нет'),
+      ('candidateMaster', 'Участие КМС', 'Есть / нет'),
+    ];
+    return Container(
+      height: 320,
+      margin: const EdgeInsets.fromLTRB(18, 4, 18, 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(.18),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Text('Логика поиска:',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(width: 12),
+              ChoiceChip(
+                label: const Text('И — совпадают все'),
+                selected: _filterLogic == _FilterLogic.and,
+                onSelected: (_) =>
+                    setState(() => _filterLogic = _FilterLogic.and),
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('ИЛИ — совпадает любой'),
+                selected: _filterLogic == _FilterLogic.or,
+                onSelected: (_) =>
+                    setState(() => _filterLogic = _FilterLogic.or),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => setState(() {
+                  _enabledFilters.clear();
+                  for (final controller in _filterControllers.values) {
+                    controller.clear();
+                  }
+                }),
+                child: const Text('Сбросить'),
+              ),
+            ],
+          ),
+          const Divider(),
+          Expanded(
+            child: ListView.separated(
+              itemCount: definitions.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (_, index) {
+                final definition = definitions[index];
+                final enabled = _enabledFilters.contains(definition.$1);
+                return Row(
+                  children: [
+                    Checkbox(
+                      value: enabled,
+                      onChanged: (value) => setState(() {
+                        if (value == true) {
+                          _enabledFilters.add(definition.$1);
+                        } else {
+                          _enabledFilters.remove(definition.$1);
+                        }
+                      }),
+                    ),
+                    SizedBox(width: 235, child: Text(definition.$2)),
+                    Expanded(
+                      child: TextField(
+                        controller: _filterControllers[definition.$1],
+                        enabled: enabled,
+                        onChanged: (_) => setState(() {}),
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: definition.$3,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -925,6 +1194,9 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
   @override
   void dispose() {
     _searchCtl.dispose();
+    for (final controller in _filterControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 }

@@ -13,6 +13,7 @@ import '../../services/tournament_storage_service.dart';
 import '../../services/tournament_presence_service.dart';
 import 'tournament_pairing_control_dialog.dart';
 import 'tournament_participant_picker_dialog.dart';
+import 'tournament_template_schema.dart';
 import '../../localization/makechess_localization.dart';
 
 enum TournamentTableEditorResult {
@@ -49,6 +50,9 @@ class TournamentTableEditorDialog extends StatefulWidget {
     this.onFinishTournament,
     this.onParticipate,
     this.onAddParticipant,
+    this.templateSchema,
+    this.templateValues = const <String, String>{},
+    this.lockTournamentType = false,
   });
 
   final String tournamentId;
@@ -78,6 +82,9 @@ class TournamentTableEditorDialog extends StatefulWidget {
   final Future<void> Function()? onParticipate;
   final Future<Map<String, dynamic>?> Function(Set<String> excludedIds)?
       onAddParticipant;
+  final TournamentTemplateSchema? templateSchema;
+  final Map<String, String> templateValues;
+  final bool lockTournamentType;
 
   @override
   State<TournamentTableEditorDialog> createState() =>
@@ -113,6 +120,9 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
   Future<void> Function()? onParticipate,
   Future<Map<String, dynamic>?> Function(Set<String> excludedIds)?
       onAddParticipant,
+  TournamentTemplateSchema? templateSchema,
+  Map<String, String> templateValues = const <String, String>{},
+  bool lockTournamentType = false,
 }) {
   return showDialog<TournamentTableEditorResult>(
     context: context,
@@ -144,6 +154,9 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
       onFinishTournament: onFinishTournament,
       onParticipate: onParticipate,
       onAddParticipant: onAddParticipant,
+      templateSchema: templateSchema,
+      templateValues: templateValues,
+      lockTournamentType: lockTournamentType,
     ),
   );
 }
@@ -216,6 +229,7 @@ class _TournamentTableEditorDialogState
   String _status = 'Шаблон';
   final List<_EditableParticipant> _participants = <_EditableParticipant>[];
   final Map<String, String> _results = <String, String>{};
+  final Map<String, String> _templateValues = <String, String>{};
   List<Map<String, dynamic>> _pairings = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _pairingSchedule = <Map<String, dynamic>>[];
   String _logoDataUrl = '';
@@ -243,6 +257,9 @@ class _TournamentTableEditorDialogState
   }
 
   void _setDefaults() {
+    _templateValues
+      ..clear()
+      ..addAll(widget.templateValues);
     _nameCtl.text = widget.initialName;
     _judgeCtl.text = widget.initialJudge ?? '';
     _venueCtl.text = widget.initialVenue ?? 'Онлайн • MakeChess';
@@ -282,7 +299,9 @@ class _TournamentTableEditorDialogState
   }
 
   Future<void> _openParticipantPicker() async {
-    if (_registeredParticipantCount >= (widget.maxParticipants ?? 999)) {
+    final expandable = widget.templateSchema?.expandableRows == true;
+    if (!expandable &&
+        _registeredParticipantCount >= (widget.maxParticipants ?? 999)) {
       _message('Достигнут максимальный лимит участников');
       return;
     }
@@ -326,7 +345,9 @@ class _TournamentTableEditorDialogState
       _participants.where((participant) => !_isEmptySlot(participant)).length;
 
   void _ensureParticipantSlots() {
-    final requested = widget.maxParticipants ?? _participants.length;
+    final requested = widget.templateSchema?.rowCount ??
+        widget.maxParticipants ??
+        _participants.length;
     final capacity = requested.clamp(_participants.length, 128);
     var slotNumber = 1;
     while (_participants.length < capacity) {
@@ -390,6 +411,14 @@ class _TournamentTableEditorDialogState
         _ageCtl.text = '${map['age'] ?? _ageCtl.text}';
         _type = '${map['type'] ?? _type}';
         _status = '${map['status'] ?? _status}';
+        final savedTemplateValues = map['templateValues'];
+        if (savedTemplateValues is Map) {
+          _templateValues
+            ..clear()
+            ..addAll(savedTemplateValues.map(
+              (key, value) => MapEntry('$key', '$value'),
+            ));
+        }
         _logoDataUrl = '${map['logo'] ?? _logoDataUrl}';
         final people = map['participants'];
         if (people is List) {
@@ -475,6 +504,9 @@ class _TournamentTableEditorDialogState
       'pairingSettings': _pairingSettings.toJson(),
       'pairings': _pairings,
       'pairingSchedule': _pairingSchedule,
+      if (widget.templateSchema != null)
+        'templateSchema': widget.templateSchema!.toJson(),
+      'templateValues': _templateValues,
     };
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storageKey, jsonEncode(data));
@@ -658,10 +690,18 @@ class _TournamentTableEditorDialogState
 
   String _resultKey(int row, int column) => '$row:$column';
 
+  bool get _isSwissTournament => _type.toLowerCase().contains('швейцар');
+
+  int get _resultColumnCount {
+    if (!_isSwissTournament) return _participants.length;
+    final configuredRounds = int.tryParse(_roundsCtl.text.trim()) ?? 0;
+    return configuredRounds > 0 ? configuredRounds : 1;
+  }
+
   double _pointsFor(int row) {
     var result = 0.0;
-    for (var column = 0; column < _participants.length; column++) {
-      if (row == column) continue;
+    for (var column = 0; column < _resultColumnCount; column++) {
+      if (!_isSwissTournament && row == column) continue;
       final value = _results[_resultKey(row, column)];
       if (value == '1') result += 1;
       if (value == '½') result += 0.5;
@@ -932,11 +972,18 @@ class _TournamentTableEditorDialogState
                   Expanded(
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-                      child: (widget.previewMode || _showPreview)
+                      // Просмотр шаблона и турнир по шаблону обязаны
+                      // рисоваться одним и тем же компонентом. Публикационный
+                      // вид включается только внутри реального турнира.
+                      child: (_showPreview && !widget.previewMode)
                           ? _buildPublicationPreview()
                           : Column(
                               children: [
                                 _buildHeaderEditor(),
+                                if (widget.templateSchema != null) ...[
+                                  const SizedBox(height: 14),
+                                  _buildTemplateFieldsSummary(),
+                                ],
                                 const SizedBox(height: 14),
                                 _buildTable(),
                                 const SizedBox(height: 14),
@@ -1019,19 +1066,21 @@ class _TournamentTableEditorDialogState
                     Expanded(child: _field(_nameCtl, 'Название турнира')),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: _dropdown(
-                        'Тип турнира',
-                        _type,
-                        const [
-                          'Круговая система',
-                          'Швейцарская система',
-                          'На выбывание',
-                          'Командный турнир',
-                          'Сеанс одновременной игры',
-                          'Турнир 2×2 / 4×4',
-                        ],
-                        (value) => setState(() => _type = value),
-                      ),
+                      child: widget.lockTournamentType
+                          ? _readonlyValue('Тип турнира', _type)
+                          : _dropdown(
+                              'Тип турнира',
+                              _type,
+                              const [
+                                'Круговая система',
+                                'Швейцарская система',
+                                'На выбывание',
+                                'Командный турнир',
+                                'Сеанс одновременной игры',
+                                'Турнир 2×2 / 4×4',
+                              ],
+                              (value) => setState(() => _type = value),
+                            ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1090,8 +1139,12 @@ class _TournamentTableEditorDialogState
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child:
-                          _field(_roundsCtl, 'Количество туров', numeric: true),
+                      child: _field(
+                        _roundsCtl,
+                        'Количество туров',
+                        numeric: true,
+                        onChanged: (_) => setState(() {}),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(child: _field(_ageCtl, 'Возрастная категория')),
@@ -1103,6 +1156,240 @@ class _TournamentTableEditorDialogState
         ],
       ),
     );
+  }
+
+  Widget _buildTemplateFieldsSummary() {
+    final schema = widget.templateSchema;
+    if (schema == null) return const SizedBox.shrink();
+    final fields = schema.fields
+        .where((item) => !_isBuiltInTemplateField(item))
+        .toList(growable: false);
+    if (fields.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _panel2,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 18,
+            runSpacing: 8,
+            children: [
+              for (final field in fields)
+                SizedBox(
+                  width: 280,
+                  child: field.kind == TournamentTemplateFieldKind.staticText ||
+                          widget.previewMode
+                      ? Text(
+                          '${field.label}: ${_templateValues[field.id]?.trim().isNotEmpty == true ? _templateValues[field.id] : field.value.isEmpty ? '—' : field.value}',
+                          style: const TextStyle(color: Colors.white70),
+                        )
+                      : TextFormField(
+                          initialValue: _templateValues[field.id] ?? '',
+                          maxLines: field.lines,
+                          decoration: InputDecoration(
+                            labelText: field.label,
+                            hintText: field.prompt,
+                          ),
+                          onChanged: (value) =>
+                              _templateValues[field.id] = value,
+                        ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCoordinateTemplateLayout(TournamentTemplateSchema schema) {
+    TournamentTemplatePosition? position(String id) {
+      for (final item in schema.positions) {
+        if (item.elementId == id) return item;
+      }
+      return null;
+    }
+
+    return Container(
+      width: double.infinity,
+      height: 430,
+      decoration: BoxDecoration(
+        color: _panel2,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _gold.withOpacity(.45)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          Positioned placed({
+            required String id,
+            required int fallbackIndex,
+            required double width,
+            required Widget child,
+          }) {
+            final saved = position(id);
+            final x = saved?.xPercent ?? 2;
+            final y = saved?.yPercent ?? (4 + fallbackIndex * 9);
+            return Positioned(
+              left: x / 100 * math.max(0, constraints.maxWidth - width),
+              top: y / 100 * math.max(0, constraints.maxHeight - 40),
+              width: width,
+              child: child,
+            );
+          }
+
+          return Stack(
+            clipBehavior: Clip.hardEdge,
+            children: [
+              for (var index = 0; index < schema.fields.length; index++)
+                if (!_isBuiltInTemplateField(schema.fields[index]))
+                  placed(
+                    id: schema.fields[index].id,
+                    fallbackIndex: index,
+                    width: 290,
+                    child: Text(
+                      '${schema.fields[index].label}: '
+                      '${_templateValues[schema.fields[index].id]?.trim().isNotEmpty == true ? _templateValues[schema.fields[index].id] : '—'}',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+              placed(
+                id: 'table',
+                fallbackIndex: schema.fields.length + 1,
+                width: math.min(700, constraints.maxWidth * .62),
+                child: Container(
+                  height: 120,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: _line),
+                    color: _background,
+                  ),
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: 42,
+                        child: Row(
+                          children: [
+                            for (final column in schema.columns.take(6))
+                              Expanded(
+                                child: Container(
+                                  alignment: Alignment.center,
+                                  decoration: const BoxDecoration(
+                                    border:
+                                        Border(right: BorderSide(color: _line)),
+                                  ),
+                                  child: Text(column.label,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          color: _gold,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700)),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const Expanded(
+                        child: Center(
+                          child: Text('Турнирная таблица',
+                              style: TextStyle(color: Colors.white38)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              for (var index = 0; index < schema.buttons.length; index++)
+                placed(
+                  id: schema.buttons[index].id,
+                  fallbackIndex: schema.fields.length + 5 + index,
+                  width: 165,
+                  child: OutlinedButton(
+                    onPressed: widget.previewMode
+                        ? null
+                        : () =>
+                            _runTemplateAction(schema.buttons[index].action),
+                    child: Text(schema.buttons[index].label,
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  bool _isBuiltInTemplateField(TournamentTemplateField field) {
+    final label = field.label.trim().toLowerCase();
+    return label == 'главный судья' ||
+        label == 'судья' ||
+        label == 'организатор' ||
+        label == 'место' ||
+        label == 'место проведения';
+  }
+
+  void _runTemplateAction(TournamentTemplateAction action) {
+    switch (action) {
+      case TournamentTemplateAction.editData:
+        setState(() => _showPreview = false);
+        return;
+      case TournamentTemplateAction.save:
+        _saveAndClose(TournamentTableEditorResult.saved);
+        return;
+      case TournamentTemplateAction.callTournament:
+        widget.onCallTournament?.call();
+        return;
+      case TournamentTemplateAction.participate:
+        widget.onParticipate?.call();
+        return;
+      case TournamentTemplateAction.addParticipant:
+        _openParticipantPicker();
+        return;
+      case TournamentTemplateAction.removeParticipant:
+        final index =
+            _participants.lastIndexWhere((item) => !_isEmptySlot(item));
+        if (index < 0) {
+          _message('В таблице нет участников для удаления');
+        } else {
+          setState(() => _participants.removeAt(index));
+        }
+        return;
+      case TournamentTemplateAction.createPairing:
+        _openPairingControl();
+        return;
+      case TournamentTemplateAction.enterResult:
+        _message('Выберите результат в ячейке таблицы');
+        return;
+      case TournamentTemplateAction.startTournament:
+        widget.onStartTournament?.call();
+        return;
+      case TournamentTemplateAction.pauseTournament:
+        widget.onPauseTournament?.call();
+        return;
+      case TournamentTemplateAction.finishTournament:
+        widget.onFinishTournament?.call();
+        return;
+      case TournamentTemplateAction.startRound:
+        widget.onStartTournament?.call();
+        return;
+      case TournamentTemplateAction.finishRound:
+        widget.onFinishTournament?.call();
+        return;
+      case TournamentTemplateAction.recalculate:
+        setState(() {});
+        _message('Таблица пересчитана');
+        return;
+      case TournamentTemplateAction.publish:
+        _saveAndClose(TournamentTableEditorResult.published);
+        return;
+      case TournamentTemplateAction.printTable:
+        _message('Печать будет подключена отдельно');
+        return;
+    }
   }
 
   Widget _buildPublicationPreview() {
@@ -1130,12 +1417,28 @@ class _TournamentTableEditorDialogState
       child: Column(
         children: [
           _buildPublicationHeader(compact: compact),
+          if (widget.templateSchema != null) ...[
+            const SizedBox(height: 14),
+            _buildTemplateFieldsSummary(),
+          ],
           const SizedBox(height: 20),
           if (_pairings.isNotEmpty) ...[
             _buildPairingsSummary(),
             const SizedBox(height: 14),
           ],
           _buildPublicationTable(),
+          if (widget.organizerMode &&
+              widget.templateSchema?.expandableRows == true) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _openParticipantPicker,
+                icon: const Icon(Icons.add_circle_outline),
+                label: const Text('Добавить игрока'),
+              ),
+            ),
+          ],
           const SizedBox(height: 20),
           Row(
             children: [
@@ -1539,7 +1842,8 @@ class _TournamentTableEditorDialogState
 
   Widget _buildPublicationTable() {
     final count = _participants.length;
-    final matrixWidth = count * 48.0;
+    final resultColumnCount = _resultColumnCount;
+    final matrixWidth = resultColumnCount * 48.0;
     final totalWidth =
         50 + 210 + 78 + 170 + 72 + matrixWidth + 72 + 76 * 3 + 64;
     return Container(
@@ -1568,7 +1872,8 @@ class _TournamentTableEditorDialogState
                     _prettyHead('Рейтинг', 78),
                     _prettyHead('Готов', 72),
                     _prettyHead('Школа / клуб', 170),
-                    for (var i = 0; i < count; i++) _prettyHead('${i + 1}', 48),
+                    for (var i = 0; i < resultColumnCount; i++)
+                      _prettyHead('${i + 1}', 48),
                     _prettyHead('Очки', 72),
                     _prettyHead('Бухг.', 76),
                     _prettyHead('Бергер', 76),
@@ -1748,7 +2053,7 @@ class _TournamentTableEditorDialogState
               ),
             ),
           ),
-          for (var column = 0; column < _participants.length; column++)
+          for (var column = 0; column < _resultColumnCount; column++)
             _prettyResultCell(row, column),
           _prettyCell(
             72,
@@ -1783,7 +2088,7 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _prettyResultCell(int row, int column) {
-    if (row == column) {
+    if (!_isSwissTournament && row == column) {
       return _prettyCell(
         48,
         const MakeChessLocalizedText('×',
@@ -1825,12 +2130,14 @@ class _TournamentTableEditorDialogState
     TextEditingController controller,
     String label, {
     bool numeric = false,
+    ValueChanged<String>? onChanged,
   }) {
     return TextField(
       controller: controller,
       keyboardType: numeric ? TextInputType.number : TextInputType.text,
       style: const TextStyle(color: Colors.white),
       decoration: _decoration(label),
+      onChanged: onChanged,
     );
   }
 
@@ -1872,9 +2179,28 @@ class _TournamentTableEditorDialogState
     );
   }
 
+  Widget _readonlyValue(String label, String value) => InputDecorator(
+        decoration: _decoration(label),
+        child: Row(
+          children: [
+            const Icon(Icons.lock_outline, size: 16, color: _gold),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                value,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      );
+
   Widget _buildTable() {
     final count = _participants.length;
-    final matrixWidth = count * 54.0;
+    final resultColumnCount = _resultColumnCount;
+    final matrixWidth = resultColumnCount * 54.0;
     return Container(
       decoration: BoxDecoration(
         color: _panel,
@@ -1891,7 +2217,7 @@ class _TournamentTableEditorDialogState
                 width: 84 + 260 + 92 + 230 + matrixWidth + 92 + 105 * 3 + 82,
                 child: Column(
                   children: [
-                    _tableHeader(count),
+                    _tableHeader(resultColumnCount),
                     for (var row = 0; row < count; row++) _participantRow(row),
                   ],
                 ),
@@ -2067,7 +2393,7 @@ class _TournamentTableEditorDialogState
               onChanged: (value) => person.school = value,
             ),
           ),
-          for (var column = 0; column < _participants.length; column++)
+          for (var column = 0; column < _resultColumnCount; column++)
             _resultCell(row, column),
           _cell(
             92,
@@ -2173,7 +2499,7 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _resultCell(int row, int column) {
-    if (row == column) {
+    if (!_isSwissTournament && row == column) {
       return _cell(
         54,
         const MakeChessLocalizedText(
@@ -2212,12 +2538,14 @@ class _TournamentTableEditorDialogState
                 _results.remove(key);
               } else {
                 _results[key] = next;
-                final opposite = _resultKey(column, row);
-                _results[opposite] = next == '1'
-                    ? '0'
-                    : next == '0'
-                        ? '1'
-                        : '½';
+                if (!_isSwissTournament) {
+                  final opposite = _resultKey(column, row);
+                  _results[opposite] = next == '1'
+                      ? '0'
+                      : next == '0'
+                          ? '1'
+                          : '½';
+                }
               }
             });
           },
@@ -2248,114 +2576,59 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _buildActions() {
-    return Row(
-      children: [
-        OutlinedButton.icon(
-          onPressed: () {
-            if (!widget.previewMode && _showPreview) {
-              setState(() => _showPreview = false);
-              return;
-            }
-            Navigator.pop(context);
-          },
-          icon: const Icon(Icons.arrow_back),
-          label: MakeChessLocalizedText(!widget.previewMode && _showPreview
-              ? 'Вернуться к заполнению'
-              : 'Назад'),
-        ),
-        const SizedBox(width: 10),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF80601C),
-            foregroundColor: Colors.white,
-          ),
-          onPressed: () => _saveAndClose(TournamentTableEditorResult.saved),
-          icon: const Icon(Icons.save),
-          label: const MakeChessLocalizedText('Сохранить'),
-        ),
-        const SizedBox(width: 10),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF167C4D),
-            foregroundColor: Colors.white,
-          ),
-          onPressed: () => _saveAndClose(TournamentTableEditorResult.published),
-          icon: const Icon(Icons.publish),
-          label: const MakeChessLocalizedText('Опубликовать'),
-        ),
-        const SizedBox(width: 10),
-        OutlinedButton.icon(
-          onPressed: () => setState(() => _showPreview = true),
-          icon: const Icon(Icons.visibility_outlined),
-          label: const MakeChessLocalizedText('Предпросмотр'),
-        ),
-        const SizedBox(width: 10),
-        OutlinedButton.icon(
-          onPressed: () {
-            _message('Копирование шаблона будет подключено отдельно');
-          },
-          icon: const Icon(Icons.copy_all),
-          label: const MakeChessLocalizedText('Сохранить как'),
-        ),
-        if (widget.onParticipate != null) ...[
-          FilledButton.icon(
-            onPressed: widget.onParticipate,
-            icon: const Icon(Icons.person_add_alt_1),
-            label: const MakeChessLocalizedText('Участвовать в турнире'),
-          ),
-          const SizedBox(width: 10),
+    final buttons = widget.templateSchema?.buttons ??
+        TournamentTemplateSchema.defaults.buttons;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (var index = 0; index < buttons.length; index++) ...[
+            _templateActionButton(buttons[index]),
+            if (index != buttons.length - 1) const SizedBox(width: 10),
+          ],
         ],
-        const Spacer(),
-        if (!widget.previewMode) ...[
-          OutlinedButton.icon(
-            onPressed: widget.onCallTournament,
-            icon: const Icon(Icons.notifications_active_outlined),
-            label: const MakeChessLocalizedText('Вызвать на турнир'),
-          ),
-          const SizedBox(width: 10),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF167C4D),
-              foregroundColor: Colors.white,
-            ),
-            onPressed: widget.onStartTournament,
-            icon: const Icon(Icons.play_arrow),
-            label: const MakeChessLocalizedText('Начать турнир'),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            onPressed: widget.onPauseTournament,
-            icon: const Icon(Icons.pause),
-            label: const MakeChessLocalizedText('Приостановить'),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            onPressed: widget.onFinishTournament,
-            icon: const Icon(Icons.stop_circle_outlined),
-            label: const MakeChessLocalizedText('Закончить'),
-          ),
-          const SizedBox(width: 10),
-        ],
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF0D5A91),
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 17),
-          ),
-          onPressed: _openPairingControl,
-          icon: const Icon(Icons.casino),
-          label: const MakeChessLocalizedText(
-            'ЖЕРЕБЬЁВКА',
-            style: TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-        const SizedBox(width: 10),
-        OutlinedButton.icon(
-          onPressed: () => _message('Печать будет подключена отдельно'),
-          icon: const Icon(Icons.print),
-          label: const MakeChessLocalizedText('Печать'),
-        ),
-      ],
+      ),
+    );
+  }
+
+  Widget _templateActionButton(TournamentTemplateButton button) {
+    final prominent = button.action == TournamentTemplateAction.startTournament;
+    final pairing = button.action == TournamentTemplateAction.createPairing;
+    final icon = switch (button.action) {
+      TournamentTemplateAction.editData => Icons.edit_outlined,
+      TournamentTemplateAction.save => Icons.save_outlined,
+      TournamentTemplateAction.callTournament => Icons.notifications_outlined,
+      TournamentTemplateAction.startTournament => Icons.play_arrow,
+      TournamentTemplateAction.pauseTournament => Icons.pause,
+      TournamentTemplateAction.finishTournament => Icons.stop_circle_outlined,
+      TournamentTemplateAction.participate => Icons.person_add_alt_1,
+      TournamentTemplateAction.addParticipant => Icons.person_add_alt,
+      TournamentTemplateAction.removeParticipant => Icons.person_remove_alt_1,
+      TournamentTemplateAction.createPairing => Icons.casino,
+      TournamentTemplateAction.enterResult => Icons.scoreboard_outlined,
+      TournamentTemplateAction.startRound => Icons.play_circle_outline,
+      TournamentTemplateAction.finishRound => Icons.stop_circle_outlined,
+      TournamentTemplateAction.recalculate => Icons.calculate_outlined,
+      TournamentTemplateAction.publish => Icons.publish,
+      TournamentTemplateAction.printTable => Icons.print,
+    };
+    return FilledButton.icon(
+      style: FilledButton.styleFrom(
+        backgroundColor: prominent
+            ? const Color(0xFF167C4D)
+            : pairing
+                ? const Color(0xFF0D5A91)
+                : const Color(0xFF8CCDEE),
+        foregroundColor:
+            prominent || pairing ? Colors.white : const Color(0xFF183347),
+      ),
+      onPressed: () => _runTemplateAction(button.action),
+      icon: Icon(icon),
+      label: Text(
+        pairing ? button.label.toUpperCase() : button.label,
+        style:
+            TextStyle(fontWeight: pairing ? FontWeight.w800 : FontWeight.w500),
+      ),
     );
   }
 

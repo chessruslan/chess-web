@@ -15,6 +15,7 @@ import '../messages/general_messages_dialog.dart';
 import 'tournament_game_platform_dialog.dart';
 import 'student_tournaments_dialog.dart';
 import 'tournament_table_editor.dart';
+import 'tournament_template_schema.dart';
 import '../../localization/makechess_localization.dart';
 
 class TournamentStudent {
@@ -77,7 +78,7 @@ enum _TournamentSection {
 }
 
 enum _OpenTournamentTab {
-  current,
+  created,
   newTournament,
 }
 
@@ -159,7 +160,7 @@ extension on _TournamentStatus {
       case _TournamentStatus.draft:
         return 'Черновик';
       case _TournamentStatus.ready:
-        return 'Готов к запуску';
+        return 'Набор игроков';
       case _TournamentStatus.running:
         return 'Идёт';
       case _TournamentStatus.paused:
@@ -306,6 +307,8 @@ class _TournamentData {
     this.pairings = const <_TournamentPairing>[],
     this.roundHistory = const <_TournamentRoundSnapshot>[],
     this.finishedAt,
+    this.templateSchema,
+    this.templateValues = const <String, String>{},
   });
 
   final String id;
@@ -329,6 +332,8 @@ class _TournamentData {
   final List<_TournamentPairing> pairings;
   final List<_TournamentRoundSnapshot> roundHistory;
   final DateTime? finishedAt;
+  final TournamentTemplateSchema? templateSchema;
+  final Map<String, String> templateValues;
 
   _TournamentData copyWith({
     String? name,
@@ -349,6 +354,8 @@ class _TournamentData {
     List<_TournamentRoundSnapshot>? roundHistory,
     DateTime? finishedAt,
     bool? isTemplate,
+    TournamentTemplateSchema? templateSchema,
+    Map<String, String>? templateValues,
   }) {
     return _TournamentData(
       id: id,
@@ -371,6 +378,8 @@ class _TournamentData {
       pairings: pairings ?? this.pairings,
       roundHistory: roundHistory ?? this.roundHistory,
       finishedAt: finishedAt ?? this.finishedAt,
+      templateSchema: templateSchema ?? this.templateSchema,
+      templateValues: templateValues ?? this.templateValues,
     );
   }
 
@@ -396,6 +405,8 @@ class _TournamentData {
         'pairings': pairings.map((e) => e.toJson()).toList(),
         'roundHistory': roundHistory.map((e) => e.toJson()).toList(),
         'finishedAt': finishedAt?.toIso8601String(),
+        if (templateSchema != null) 'templateSchema': templateSchema!.toJson(),
+        'templateValues': templateValues,
       };
 
   factory _TournamentData.fromJson(Map<String, dynamic> json) {
@@ -476,6 +487,16 @@ class _TournamentData {
               .toList()
           : <_TournamentRoundSnapshot>[],
       finishedAt: DateTime.tryParse('${json['finishedAt'] ?? ''}'),
+      templateSchema: json['templateSchema'] == null
+          ? null
+          : TournamentTemplateSchema.fromJson(json['templateSchema']),
+      templateValues: json['templateValues'] is Map
+          ? Map<String, String>.fromEntries(
+              (json['templateValues'] as Map).entries.map(
+                    (entry) => MapEntry('${entry.key}', '${entry.value}'),
+                  ),
+            )
+          : const <String, String>{},
     );
   }
 }
@@ -511,12 +532,15 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   final TextEditingController _minutesCtl = TextEditingController(text: '5');
   final TextEditingController _incrementCtl = TextEditingController(text: '0');
   final TextEditingController _roundsCtl = TextEditingController(text: '3');
+  final TextEditingController _templateRowsCtl =
+      TextEditingController(text: '8');
+  TournamentTemplateSchema _templateSchema = TournamentTemplateSchema.defaults;
   final TextEditingController _participantSearchCtl = TextEditingController();
   final TextEditingController _tournamentSearchCtl = TextEditingController();
   final TextEditingController _schoolSearchCtl = TextEditingController();
 
   _TournamentSection _section = _TournamentSection.create;
-  _OpenTournamentTab _openTab = _OpenTournamentTab.current;
+  _OpenTournamentTab _openTab = _OpenTournamentTab.created;
   _TournamentType _type = _TournamentType.learning;
   _TournamentFormat _format = _TournamentFormat.roundRobin;
   bool _rated = false;
@@ -583,6 +607,18 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   List<_TournamentData> get _workingTournaments => _tournaments
       .where((e) => e.status != _TournamentStatus.finished && !e.isTemplate)
+      .toList(growable: false);
+
+  List<_TournamentData> get _createdTournaments => _tournaments
+      .where((e) => e.status == _TournamentStatus.draft && !e.isTemplate)
+      .toList(growable: false);
+
+  List<_TournamentData> get _currentTournaments => _tournaments
+      .where((e) =>
+          !e.isTemplate &&
+          (e.status == _TournamentStatus.ready ||
+              e.status == _TournamentStatus.running ||
+              e.status == _TournamentStatus.paused))
       .toList(growable: false);
 
   List<_TournamentData> get _tournamentTemplates => _tournaments
@@ -693,6 +729,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     _minutesCtl.dispose();
     _incrementCtl.dispose();
     _roundsCtl.dispose();
+    _templateRowsCtl.dispose();
     _participantSearchCtl.dispose();
     _tournamentSearchCtl.dispose();
     _schoolSearchCtl.dispose();
@@ -908,8 +945,19 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       _message('Введите название турнира');
       return;
     }
+    if (_templateSchema.columns.isEmpty) {
+      _message('Добавьте хотя бы один столбец турнирной таблицы');
+      return;
+    }
 
-    final maxParticipants = _positiveInt(_maxCtl, 8).clamp(2, 128).toInt();
+    final requestedParticipants =
+        _positiveInt(_maxCtl, _format == _TournamentFormat.swiss ? 12 : 8)
+            .clamp(2, 128)
+            .toInt();
+    // Расширяемая швейцарская таблица не имеет лимита участников.
+    // Большое int-значение нужно только для совместимости с хранимой моделью.
+    final maxParticipants =
+        _templateSchema.expandableRows ? 2147483647 : requestedParticipants;
     final minutes = _positiveInt(_minutesCtl, 5).clamp(1, 180).toInt();
     final increment = _positiveInt(_incrementCtl, 0).clamp(0, 60).toInt();
     final rounds = _positiveInt(_roundsCtl, 3).clamp(1, 50).toInt();
@@ -935,13 +983,16 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       isTemplate: true,
       participantIds: participantIds,
       participantNames: participantNames,
+      templateSchema: _templateSchema.copyWith(
+        rowCount: (int.tryParse(_templateRowsCtl.text.trim()) ??
+                requestedParticipants)
+            .clamp(1, 256)
+            .toInt(),
+      ),
     );
 
     setState(() {
       _tournaments.insert(0, tournament);
-      _activeTournamentId = null;
-      _openTab = _OpenTournamentTab.newTournament;
-      _section = _TournamentSection.open;
     });
     await _save();
     _message('Шаблон турнира «$name» создан');
@@ -1043,8 +1094,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     await _updateActive(active.copyWith(
       participantIds: ids,
       participantNames: names,
-      status:
-          ids.length >= 2 ? _TournamentStatus.ready : _TournamentStatus.draft,
+      // Набор игроков не меняет стадию турнира:
+      // draft -> ready происходит только по кнопке «Запустить турнир».
+      status: active.status,
       pairings: const <_TournamentPairing>[],
       currentRound: 0,
     ));
@@ -1579,6 +1631,8 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           item(_TournamentSection.open, Icons.add_box_outlined,
               'Создать турнир'),
           item(_TournamentSection.current, Icons.public, 'Текущие турниры'),
+          item(_TournamentSection.archive, Icons.task_alt,
+              'Законченные турниры'),
           item(_TournamentSection.digitalBoard, Icons.grid_view_outlined,
               'Цифровая доска'),
           item(_TournamentSection.participants, Icons.groups, 'Участники'),
@@ -1590,7 +1644,6 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           item(_TournamentSection.control, Icons.play_circle_outline,
               'Управление'),
           item(_TournamentSection.statistics, Icons.bar_chart, 'Статистика'),
-          item(_TournamentSection.archive, Icons.inventory_2_outlined, 'Архив'),
           const Spacer(),
           FilledButton.icon(
             onPressed: () => showTournamentGamePlatform(
@@ -1713,6 +1766,677 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     );
   }
 
+  Future<void> _addTemplateField() async {
+    final label = TextEditingController();
+    final value = TextEditingController();
+    final prompt = TextEditingController();
+    var kind = TournamentTemplateFieldKind.input;
+    var required = false;
+    final result = await showDialog<TournamentTemplateField>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Добавить поле шаблона'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<TournamentTemplateFieldKind>(
+                  value: kind,
+                  decoration: const InputDecoration(labelText: 'Тип поля'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: TournamentTemplateFieldKind.input,
+                      child: Text('Текст + поле для заполнения'),
+                    ),
+                    DropdownMenuItem(
+                      value: TournamentTemplateFieldKind.staticText,
+                      child: Text('Постоянный текст'),
+                    ),
+                  ],
+                  onChanged: (next) {
+                    if (next != null) setDialogState(() => kind = next);
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: label,
+                  decoration: const InputDecoration(
+                    labelText: 'Название поля, например «Главный судья»',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (kind == TournamentTemplateFieldKind.staticText)
+                  TextField(
+                    controller: value,
+                    decoration: const InputDecoration(
+                      labelText: 'Готовый неизменяемый текст',
+                    ),
+                  )
+                else ...[
+                  TextField(
+                    controller: prompt,
+                    decoration: const InputDecoration(
+                      labelText: 'Вопрос при создании турнира',
+                      hintText: 'Введите имя главного судьи',
+                    ),
+                  ),
+                  CheckboxListTile(
+                    value: required,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Обязательное поле'),
+                    onChanged: (next) =>
+                        setDialogState(() => required = next == true),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final fieldLabel = label.text.trim();
+                if (fieldLabel.isEmpty) return;
+                Navigator.pop(
+                  dialogContext,
+                  TournamentTemplateField(
+                    id: 'field_${DateTime.now().microsecondsSinceEpoch}',
+                    kind: kind,
+                    label: fieldLabel,
+                    value: value.text.trim(),
+                    prompt: prompt.text.trim().isEmpty
+                        ? 'Введите значение: $fieldLabel'
+                        : prompt.text.trim(),
+                    required: required,
+                  ),
+                );
+              },
+              child: const Text('Добавить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    label.dispose();
+    value.dispose();
+    prompt.dispose();
+    if (result == null || !mounted) return;
+    setState(() => _templateSchema = _templateSchema.copyWith(
+          fields: <TournamentTemplateField>[..._templateSchema.fields, result],
+        ));
+  }
+
+  Future<void> _addTemplateColumn() async {
+    final label = TextEditingController();
+    var kind = TournamentTemplateColumnKind.text;
+    var editable = false;
+    final result = await showDialog<TournamentTemplateColumn>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Добавить столбец'),
+          content: SizedBox(
+            width: 470,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: label,
+                  decoration: const InputDecoration(
+                    labelText: 'Заголовок столбца, например «Очки»',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<TournamentTemplateColumnKind>(
+                  value: kind,
+                  decoration: const InputDecoration(labelText: 'Содержимое'),
+                  items: TournamentTemplateColumnKind.values
+                      .map((item) => DropdownMenuItem(
+                            value: item,
+                            child: Text(tournamentColumnKindLabel(item)),
+                          ))
+                      .toList(),
+                  onChanged: (next) {
+                    if (next != null) setDialogState(() => kind = next);
+                  },
+                ),
+                CheckboxListTile(
+                  value: editable,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Разрешить ручное редактирование'),
+                  onChanged: (next) =>
+                      setDialogState(() => editable = next == true),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Отмена')),
+            FilledButton(
+              onPressed: () {
+                final title = label.text.trim();
+                if (title.isEmpty) return;
+                Navigator.pop(
+                  dialogContext,
+                  TournamentTemplateColumn(
+                    id: 'column_${DateTime.now().microsecondsSinceEpoch}',
+                    label: title,
+                    kind: kind,
+                    editable: editable,
+                  ),
+                );
+              },
+              child: const Text('Добавить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    label.dispose();
+    if (result == null || !mounted) return;
+    setState(() => _templateSchema = _templateSchema.copyWith(
+          columns: <TournamentTemplateColumn>[
+            ..._templateSchema.columns,
+            result
+          ],
+        ));
+  }
+
+  Future<void> _addTemplateButton() async {
+    final label = TextEditingController();
+    var action = TournamentTemplateAction.addParticipant;
+    final result = await showDialog<TournamentTemplateButton>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Добавить управляющую кнопку'),
+          content: SizedBox(
+            width: 470,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: label,
+                  decoration: const InputDecoration(labelText: 'Текст кнопки'),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<TournamentTemplateAction>(
+                  value: action,
+                  decoration: const InputDecoration(labelText: 'Действие'),
+                  items: TournamentTemplateAction.values
+                      .map((item) => DropdownMenuItem(
+                            value: item,
+                            child: Text(tournamentActionLabel(item)),
+                          ))
+                      .toList(),
+                  onChanged: (next) {
+                    if (next != null) setDialogState(() => action = next);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Отмена')),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                TournamentTemplateButton(
+                  id: 'button_${DateTime.now().microsecondsSinceEpoch}',
+                  label: label.text.trim().isEmpty
+                      ? tournamentActionLabel(action)
+                      : label.text.trim(),
+                  action: action,
+                ),
+              ),
+              child: const Text('Добавить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    label.dispose();
+    if (result == null || !mounted) return;
+    setState(() => _templateSchema = _templateSchema.copyWith(
+          buttons: <TournamentTemplateButton>[
+            ..._templateSchema.buttons,
+            result
+          ],
+        ));
+  }
+
+  Future<void> _editTemplatePosition(String elementId, String label) async {
+    TournamentTemplatePosition? current;
+    for (final item in _templateSchema.positions) {
+      if (item.elementId == elementId) current = item;
+    }
+    final x = TextEditingController(
+      text: (current?.xPercent ?? 0).toStringAsFixed(1),
+    );
+    final y = TextEditingController(
+      text: (current?.yPercent ?? 0).toStringAsFixed(1),
+    );
+    final result = await showDialog<TournamentTemplatePosition>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Расположение: $label'),
+        content: SizedBox(
+          width: 420,
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: x,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'X, %',
+                    helperText: '0 — слева, 100 — справа',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: TextField(
+                  controller: y,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Y, %',
+                    helperText: '0 — сверху, 100 — снизу',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              dialogContext,
+              TournamentTemplatePosition(
+                elementId: elementId,
+                xPercent: (double.tryParse(x.text.replaceAll(',', '.')) ?? 0)
+                    .clamp(0, 100)
+                    .toDouble(),
+                yPercent: (double.tryParse(y.text.replaceAll(',', '.')) ?? 0)
+                    .clamp(0, 100)
+                    .toDouble(),
+              ),
+            ),
+            child: const Text('Применить'),
+          ),
+        ],
+      ),
+    );
+    x.dispose();
+    y.dispose();
+    if (result == null || !mounted) return;
+    setState(() {
+      final positions = _templateSchema.positions
+          .where((item) => item.elementId != elementId)
+          .toList()
+        ..add(result);
+      _templateSchema = _templateSchema.copyWith(positions: positions);
+    });
+  }
+
+  Widget _templateConstructor() => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(.025),
+          borderRadius: AppRadius.r8,
+          border: Border.all(color: Colors.cyanAccent.withOpacity(.22)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Конструктор формы и турнирной таблицы',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            const Text(
+              'Постоянный текст показывается без ввода. Заполняемое поле задаёт вопрос при создании турнира.',
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            SegmentedButton<TournamentTemplateLayoutMode>(
+              segments: const [
+                ButtonSegment(
+                  value: TournamentTemplateLayoutMode.automatic,
+                  icon: Icon(Icons.auto_awesome_mosaic_outlined),
+                  label: Text('По умолчанию'),
+                ),
+                ButtonSegment(
+                  value: TournamentTemplateLayoutMode.coordinates,
+                  icon: Icon(Icons.open_with),
+                  label: Text('Редактируемый макет'),
+                ),
+              ],
+              selected: <TournamentTemplateLayoutMode>{
+                _templateSchema.layoutMode
+              },
+              onSelectionChanged: (selected) => setState(() {
+                _templateSchema =
+                    _templateSchema.copyWith(layoutMode: selected.first);
+              }),
+            ),
+            if (_templateSchema.layoutMode ==
+                TournamentTemplateLayoutMode.coordinates) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Координаты задаются в процентах от ширины и высоты области: X = слева направо, Y = сверху вниз.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _editTemplatePosition(
+                      'table',
+                      'Турнирная таблица',
+                    ),
+                    icon: const Icon(Icons.table_chart_outlined),
+                    label: const Text('Координаты таблицы'),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 12),
+            _constructorBlock(
+              title: 'Поля и надписи',
+              onAdd: _addTemplateField,
+              children: [
+                for (var index = 0;
+                    index < _templateSchema.fields.length;
+                    index++)
+                  _constructorRow(
+                    icon: _templateSchema.fields[index].kind ==
+                            TournamentTemplateFieldKind.input
+                        ? Icons.edit_note
+                        : Icons.text_fields,
+                    title: _templateSchema.fields[index].label,
+                    subtitle: _templateSchema.fields[index].kind ==
+                            TournamentTemplateFieldKind.input
+                        ? 'Заполняется: ${_templateSchema.fields[index].prompt}'
+                        : 'Постоянный текст: ${_templateSchema.fields[index].value}',
+                    onDelete: () => setState(() {
+                      final items = _templateSchema.fields.toList()
+                        ..removeAt(index);
+                      _templateSchema = _templateSchema.copyWith(fields: items);
+                    }),
+                    onPosition: _templateSchema.layoutMode ==
+                            TournamentTemplateLayoutMode.coordinates
+                        ? () => _editTemplatePosition(
+                              _templateSchema.fields[index].id,
+                              _templateSchema.fields[index].label,
+                            )
+                        : null,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                SizedBox(
+                  width: 170,
+                  child: TextField(
+                    controller: _templateRowsCtl,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: _inputDecoration('Количество строк'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SwitchListTile(
+                    value: _templateSchema.expandableRows,
+                    title: const Text('Расширяемое количество строк'),
+                    subtitle: const Text(
+                        'Можно добавлять участников сверх начального количества'),
+                    onChanged: (value) => setState(() => _templateSchema =
+                        _templateSchema.copyWith(expandableRows: value)),
+                  ),
+                ),
+                Expanded(
+                  child: SwitchListTile(
+                    value: _templateSchema.expandableColumns,
+                    title: const Text('Расширяемые столбцы'),
+                    subtitle:
+                        const Text('Разрешить добавление столбцов в турнире'),
+                    onChanged: (value) => setState(() => _templateSchema =
+                        _templateSchema.copyWith(expandableColumns: value)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _constructorBlock(
+              title: 'Столбцы таблицы',
+              onAdd: _addTemplateColumn,
+              children: [
+                for (var index = 0;
+                    index < _templateSchema.columns.length;
+                    index++)
+                  _constructorRow(
+                    icon: Icons.view_column_outlined,
+                    title: _templateSchema.columns[index].label,
+                    subtitle: tournamentColumnKindLabel(
+                        _templateSchema.columns[index].kind),
+                    onDelete: () => setState(() {
+                      final items = _templateSchema.columns.toList()
+                        ..removeAt(index);
+                      _templateSchema =
+                          _templateSchema.copyWith(columns: items);
+                    }),
+                    onPosition: _templateSchema.layoutMode ==
+                            TournamentTemplateLayoutMode.coordinates
+                        ? () => _editTemplatePosition(
+                              _templateSchema.columns[index].id,
+                              _templateSchema.columns[index].label,
+                            )
+                        : null,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _templateTablePreview(),
+            const SizedBox(height: 12),
+            _constructorBlock(
+              title: 'Кнопки управления',
+              onAdd: _addTemplateButton,
+              children: [
+                for (var index = 0;
+                    index < _templateSchema.buttons.length;
+                    index++)
+                  _constructorRow(
+                    icon: Icons.smart_button_outlined,
+                    title: _templateSchema.buttons[index].label,
+                    subtitle: tournamentActionLabel(
+                        _templateSchema.buttons[index].action),
+                    onDelete: () => setState(() {
+                      final items = _templateSchema.buttons.toList()
+                        ..removeAt(index);
+                      _templateSchema =
+                          _templateSchema.copyWith(buttons: items);
+                    }),
+                    onPosition: _templateSchema.layoutMode ==
+                            TournamentTemplateLayoutMode.coordinates
+                        ? () => _editTemplatePosition(
+                              _templateSchema.buttons[index].id,
+                              _templateSchema.buttons[index].label,
+                            )
+                        : null,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      );
+
+  Widget _templateTablePreview() {
+    String example(TournamentTemplateColumnKind kind) => switch (kind) {
+          TournamentTemplateColumnKind.text => 'Текст',
+          TournamentTemplateColumnKind.player => 'Иванов Пётр',
+          TournamentTemplateColumnKind.avatar => '👤',
+          TournamentTemplateColumnKind.flag => '🇷🇺',
+          TournamentTemplateColumnKind.country => 'Россия',
+          TournamentTemplateColumnKind.rating => '1842',
+          TournamentTemplateColumnKind.points => '5½',
+          TournamentTemplateColumnKind.place => '1',
+          TournamentTemplateColumnKind.games => '7',
+        };
+
+    if (_templateSchema.columns.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF07111B),
+        borderRadius: AppRadius.r8,
+        border: Border.all(color: Colors.amberAccent.withOpacity(.32)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Предварительный просмотр таблицы',
+              style: TextStyle(
+                  color: Colors.amberAccent, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    for (final column in _templateSchema.columns)
+                      Container(
+                        width: 130,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(.08),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: Text(column.label,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    for (final column in _templateSchema.columns)
+                      Container(
+                        width: 130,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(.18),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: Text(example(column.kind),
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white70)),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _constructorBlock({
+    required String title,
+    required VoidCallback onAdd,
+    required List<Widget> children,
+  }) =>
+      Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(.16),
+          borderRadius: AppRadius.r8,
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                    child: Text(title,
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.w700))),
+                OutlinedButton.icon(
+                  onPressed: onAdd,
+                  icon: const Icon(Icons.add, size: 17),
+                  label: const Text('Добавить'),
+                ),
+              ],
+            ),
+            if (children.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(10),
+                child: Text('Элементы пока не добавлены',
+                    style: TextStyle(color: Colors.white38)),
+              )
+            else
+              ...children,
+          ],
+        ),
+      );
+
+  Widget _constructorRow({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onDelete,
+    VoidCallback? onPosition,
+  }) =>
+      ListTile(
+        dense: true,
+        leading: Icon(icon, color: Colors.cyanAccent, size: 19),
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        subtitle: Text(subtitle, style: const TextStyle(color: Colors.white54)),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onPosition != null)
+              IconButton(
+                tooltip: 'Задать координаты X/Y',
+                onPressed: onPosition,
+                icon: const Icon(Icons.my_location, color: Colors.cyanAccent),
+              ),
+            IconButton(
+              tooltip: 'Удалить',
+              onPressed: onDelete,
+              icon: const Icon(Icons.delete_outline, color: Colors.white38),
+            ),
+          ],
+        ),
+      );
+
   Widget _buildCreate() {
     return _page(
       title: 'Создать шаблон турнира',
@@ -1744,7 +2468,20 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                         )
                         .toList(),
                     onChanged: (value) {
-                      if (value != null) setState(() => _format = value);
+                      if (value != null) {
+                        setState(() {
+                          _format = value;
+                          if (value == _TournamentFormat.swiss) {
+                            _maxCtl.text = '12';
+                            _templateRowsCtl.text = '12';
+                            _roundsCtl.text = '5';
+                            _templateSchema = _templateSchema.copyWith(
+                              rowCount: 12,
+                              expandableRows: true,
+                            );
+                          }
+                        });
+                      }
                     },
                   ),
                 ),
@@ -1754,7 +2491,11 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                     controller: _maxCtl,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Colors.white),
-                    decoration: _inputDecoration('Максимум участников'),
+                    decoration: _inputDecoration(
+                      _format == _TournamentFormat.swiss
+                          ? 'Игроков по умолчанию'
+                          : 'Максимум участников',
+                    ),
                   ),
                 ),
               ],
@@ -1785,7 +2526,11 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                     controller: _roundsCtl,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Colors.white),
-                    decoration: _inputDecoration('Количество туров'),
+                    decoration: _inputDecoration(
+                      _format == _TournamentFormat.swiss
+                          ? 'Количество туров (обязательно)'
+                          : 'Количество туров',
+                    ),
                   ),
                 ),
               ],
@@ -1835,19 +2580,57 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
               value: _saveGames,
               onChanged: (value) => setState(() => _saveGames = value),
             ),
+            const SizedBox(height: 14),
+            _templateConstructor(),
             const SizedBox(height: 18),
             Align(
               alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                onPressed: _createTournament,
-                icon: const Icon(Icons.add),
-                label: const MakeChessLocalizedText('Сохранить шаблон'),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _previewDraftTemplate,
+                    icon: const Icon(Icons.visibility_outlined),
+                    label: const Text('Посмотреть шаблон'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: _createTournament,
+                    icon: const Icon(Icons.add),
+                    label: const MakeChessLocalizedText('Сохранить шаблон'),
+                  ),
+                ],
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  void _previewDraftTemplate() {
+    final name = _nameCtl.text.trim();
+    final rowCount =
+        (int.tryParse(_templateRowsCtl.text.trim()) ?? 8).clamp(1, 256).toInt();
+    final maxParticipants = _positiveInt(_maxCtl, 8).clamp(2, 128).toInt();
+    final template = _TournamentData(
+      id: 'draft_template_preview',
+      name: name.isEmpty ? 'Новый шаблон турнира' : name,
+      type: _type,
+      format: _format,
+      maxParticipants: maxParticipants,
+      minutes: _positiveInt(_minutesCtl, 5).clamp(1, 180).toInt(),
+      increment: _positiveInt(_incrementCtl, 0).clamp(0, 60).toInt(),
+      rounds: _positiveInt(_roundsCtl, 3).clamp(1, 50).toInt(),
+      rated: _rated,
+      videoEnabled: _videoEnabled,
+      saveGames: _saveGames,
+      status: _TournamentStatus.draft,
+      createdAt: DateTime.now(),
+      isTemplate: true,
+      templateSchema: _templateSchema.copyWith(rowCount: rowCount),
+    );
+    _showTemplatePreview(template);
   }
 
   Widget _switchTile({
@@ -1881,6 +2664,16 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   Future<void> _createCurrentTournamentFromTemplate(
     _TournamentData template,
   ) async {
+    final maxParticipants = template.templateSchema?.expandableRows == true
+        ? 2147483647
+        : template.maxParticipants;
+    final templateValues = <String, String>{
+      for (final field in (template.templateSchema?.fields ??
+          const <TournamentTemplateField>[]))
+        field.id: field.kind == TournamentTemplateFieldKind.staticText
+            ? field.value
+            : '',
+    };
     final createdId = DateTime.now().microsecondsSinceEpoch.toString();
     const participantIds = <String>[];
     const participantNames = <String, String>{};
@@ -1892,7 +2685,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       name: template.name,
       type: template.type,
       format: template.format,
-      maxParticipants: template.maxParticipants,
+      maxParticipants: maxParticipants,
       minutes: template.minutes,
       increment: template.increment,
       rounds: template.rounds,
@@ -1904,6 +2697,8 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       isTemplate: false,
       participantIds: participantIds,
       participantNames: participantNames,
+      templateSchema: template.templateSchema,
+      templateValues: templateValues,
     );
     try {
       await TournamentStorageService.instance
@@ -1918,13 +2713,32 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       context: context,
       tournamentId: createdId,
       initialName: template.name,
-      initialType: template.format.label,
+      initialType: _editorTournamentTypeFor(template),
       initialStatus: _TournamentStatus.draft.label,
       initialMinutes: template.minutes,
       initialIncrement: template.increment,
       initialRounds: template.rounds,
       initialParticipantNames: const <String>[],
-      maxParticipants: template.maxParticipants,
+      maxParticipants: maxParticipants,
+      initialJudge: _templateValueByLabel(
+        template,
+        templateValues,
+        const <String>['главный судья', 'судья'],
+      ),
+      initialOrganizer: _templateValueByLabel(
+        template,
+        templateValues,
+        const <String>['организатор'],
+      ),
+      initialVenue: _templateValueByLabel(
+        template,
+        templateValues,
+        const <String>['место проведения', 'место'],
+      ),
+      templateSchema: template.templateSchema,
+      templateValues: templateValues,
+      lockTournamentType: true,
+      organizerMode: true,
     );
 
     if (!mounted) return;
@@ -1947,12 +2761,135 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     setState(() {
       _tournaments.insert(0, tournament);
       _activeTournamentId = tournament.id;
-      _openTab = _OpenTournamentTab.current;
+      _openTab = _OpenTournamentTab.created;
     });
     await _save();
     if (result == TournamentTableEditorResult.published) {
       // Creator joins only by explicit action; no self-invitation.
     }
+  }
+
+  String? _templateValueByLabel(
+    _TournamentData template,
+    Map<String, String> values,
+    List<String> labels,
+  ) {
+    final schema = template.templateSchema;
+    if (schema == null) return null;
+    for (final field in schema.fields) {
+      if (labels.contains(field.label.trim().toLowerCase())) {
+        final value = values[field.id]?.trim() ?? '';
+        if (value.isNotEmpty) return value;
+      }
+    }
+    return null;
+  }
+
+  Future<Map<String, String>?> _collectTemplateValues(
+    _TournamentData template,
+  ) async {
+    final schema = template.templateSchema;
+    if (schema == null || schema.fields.isEmpty) {
+      return <String, String>{};
+    }
+    final controllers = <String, TextEditingController>{
+      for (final field in schema.fields
+          .where((item) => item.kind == TournamentTemplateFieldKind.input))
+        field.id: TextEditingController(),
+    };
+    String? error;
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Создать турнир: ${template.name}'),
+          content: SizedBox(
+            width: 620,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${template.type.label} • ${template.format.label}',
+                      style: const TextStyle(color: Colors.white54)),
+                  const SizedBox(height: 14),
+                  for (final field in schema.fields) ...[
+                    if (field.kind == TournamentTemplateFieldKind.staticText)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Text(
+                          field.value.isEmpty
+                              ? field.label
+                              : '${field.label}: ${field.value}',
+                          style: const TextStyle(
+                              color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: TextField(
+                          controller: controllers[field.id],
+                          maxLines: field.lines,
+                          decoration: InputDecoration(
+                            labelText: field.label,
+                            hintText: field.prompt,
+                            suffixText: field.required ? 'обязательно' : null,
+                          ),
+                        ),
+                      ),
+                  ],
+                  if (error != null)
+                    Text(error!,
+                        style: const TextStyle(color: Colors.redAccent)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Таблица: ${schema.rowCount} строк'
+                    '${schema.expandableRows ? ', строки расширяемые' : ', точное количество'}; '
+                    '${schema.columns.length} столбцов'
+                    '${schema.expandableColumns ? ', столбцы расширяемые' : ''}.',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Отмена'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final missing = schema.fields.where((field) =>
+                    field.kind == TournamentTemplateFieldKind.input &&
+                    field.required &&
+                    (controllers[field.id]?.text.trim().isEmpty ?? true));
+                if (missing.isNotEmpty) {
+                  setDialogState(() => error =
+                      'Заполните обязательное поле «${missing.first.label}»');
+                  return;
+                }
+                Navigator.pop(dialogContext, <String, String>{
+                  for (final field in schema.fields)
+                    field.id:
+                        field.kind == TournamentTemplateFieldKind.staticText
+                            ? field.value
+                            : controllers[field.id]?.text.trim() ?? '',
+                });
+              },
+              icon: const Icon(Icons.add_task),
+              label: const Text('Продолжить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    for (final controller in controllers.values) {
+      controller.dispose();
+    }
+    return result;
   }
 
   Widget _openTabButton({
@@ -2132,29 +3069,31 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   }
 
   void _showTemplatePreview(_TournamentData template) {
-    final participants = _previewParticipantsFor(template);
+    final rowCount =
+        (template.templateSchema ?? TournamentTemplateSchema.defaults).rowCount;
     showTournamentTableEditor(
       context: context,
       tournamentId: 'preview_${template.id}',
       initialName: template.name,
       initialType: _editorTournamentTypeFor(template),
-      initialStatus: 'Завершён',
+      initialStatus: 'Черновик',
       initialMinutes: template.minutes,
       initialIncrement: template.increment,
       initialRounds: template.rounds,
-      initialParticipantNames: participants
-          .map((e) => '${e['name'] ?? 'Участник'}')
-          .toList(growable: false),
+      initialParticipantNames: List<String>.filled(rowCount, ''),
       maxParticipants: template.maxParticipants,
       previewMode: true,
-      initialJudge: 'Ирина Волкова',
-      initialVenue: 'Москва • Шахматный центр MakeChess',
-      initialOrganizer: 'MakeChess',
-      initialStart: '10.10.2026',
-      initialEnd: '12.10.2026',
-      initialAge: 'Юноши и девушки до 14 лет',
-      initialParticipantsData: participants,
-      initialResults: _previewResultsMatrix(),
+      initialJudge: '',
+      initialVenue: '',
+      initialOrganizer: '',
+      templateSchema: template.templateSchema,
+      templateValues: <String, String>{
+        for (final field in (template.templateSchema?.fields ??
+            const <TournamentTemplateField>[]))
+          field.id: field.kind == TournamentTemplateFieldKind.staticText
+              ? field.value
+              : '',
+      },
     );
   }
 
@@ -2229,7 +3168,11 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                     _templateSynopsisItem('Система', template.format.label),
                     _templateSynopsisItem('Тип', template.type.label),
                     _templateSynopsisItem(
-                        'Участники', 'до ${template.maxParticipants}'),
+                      'Участники',
+                      template.templateSchema?.expandableRows == true
+                          ? '${template.templateSchema!.rowCount} по умолчанию, расширяемо'
+                          : 'до ${template.maxParticipants}',
+                    ),
                     _templateSynopsisItem('Туры', '${template.rounds}'),
                   ],
                 ),
@@ -2238,8 +3181,14 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
               Expanded(
                 child: Column(
                   children: [
-                    _templateSynopsisItem('Судья', 'заполняется'),
-                    _templateSynopsisItem('Организатор', 'заполняется'),
+                    _templateSynopsisItem(
+                      'Поля',
+                      '${(template.templateSchema ?? TournamentTemplateSchema.defaults).fields.length}',
+                    ),
+                    _templateSynopsisItem(
+                      'Столбцы',
+                      '${(template.templateSchema ?? TournamentTemplateSchema.defaults).columns.length}',
+                    ),
                     _templateSynopsisItem('Рейтинг',
                         template.rated ? 'учитывается' : 'не учитывается'),
                     _templateSynopsisItem('Контроль',
@@ -2376,6 +3325,23 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     _message('Турнир начат. Игровые доски участников активированы.');
   }
 
+  Future<void> _launchTournamentForRegistration(
+    _TournamentData tournament,
+  ) async {
+    final launched = tournament.copyWith(status: _TournamentStatus.ready);
+    await _updateActive(launched);
+    await TournamentStorageService.instance.updateOwnedTournamentFields(
+      tournament.id,
+      <String, dynamic>{'status': _TournamentStatus.ready.name},
+    );
+    if (!mounted) return;
+    _setActive(launched);
+    setState(() => _section = _TournamentSection.current);
+    _message(
+      'Турнир запущен для набора игроков и перенесён в «Текущие турниры».',
+    );
+  }
+
   Future<void> _setTournamentStatusFromTable(
     _TournamentData tournament,
     _TournamentStatus status,
@@ -2405,23 +3371,24 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   }
 
   Widget _buildOpen() {
-    final tournaments = _workingTournaments;
     final templates = _tournamentTemplates;
-    final showingCurrent = _openTab == _OpenTournamentTab.current;
+    final showingCreated = _openTab == _OpenTournamentTab.created;
+    final tournaments =
+        showingCreated ? _createdTournaments : const <_TournamentData>[];
 
     return _page(
       title: 'Создать турнир',
-      subtitle: showingCurrent
-          ? 'Созданные и уже готовые к работе турниры.'
+      subtitle: showingCreated
+          ? 'Созданные, но ещё не запущенные турниры.'
           : 'Выберите сохранённый шаблон и создайте на его основе новый турнир.',
       child: Column(
         children: [
           Row(
             children: [
               _openTabButton(
-                tab: _OpenTournamentTab.current,
-                label: 'Текущие турниры',
-                icon: Icons.play_circle_outline,
+                tab: _OpenTournamentTab.created,
+                label: 'Созданные турниры',
+                icon: Icons.inventory_2_outlined,
               ),
               const SizedBox(width: 10),
               _openTabButton(
@@ -2433,9 +3400,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           ),
           const SizedBox(height: 14),
           Expanded(
-            child: showingCurrent
+            child: _openTab != _OpenTournamentTab.newTournament
                 ? (tournaments.isEmpty
-                    ? _empty('Пока нет заполненных текущих турниров')
+                    ? _empty('Пока нет созданных турниров')
                     : ListView.separated(
                         itemCount: tournaments.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 9),
@@ -2508,6 +3475,10 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                           tournament.maxParticipants,
                                       startInPreview: true,
                                       organizerMode: true,
+                                      templateSchema: tournament.templateSchema,
+                                      templateValues: tournament.templateValues,
+                                      lockTournamentType:
+                                          tournament.templateSchema != null,
                                       onCallTournament: () =>
                                           _callTournamentParticipants(
                                               tournament),
@@ -2556,6 +3527,17 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                       'Открыть турнир'),
                                 ),
                                 const SizedBox(width: 6),
+                                if (showingCreated) ...[
+                                  FilledButton.icon(
+                                    onPressed: () =>
+                                        _launchTournamentForRegistration(
+                                            tournament),
+                                    icon: const Icon(Icons.rocket_launch),
+                                    label: const MakeChessLocalizedText(
+                                        'Запустить турнир'),
+                                  ),
+                                  const SizedBox(width: 6),
+                                ],
                                 OutlinedButton(
                                   onPressed: () {
                                     _setActive(tournament);
@@ -3359,7 +4341,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
     final source = _visibleInvitationTournaments.isNotEmpty
         ? _visibleInvitationTournaments
-        : _workingTournaments
+        : _currentTournaments
             .map(
               (tournament) => _VisibleInvitationTournament(
                 tournament: tournament,
@@ -3458,7 +4440,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                             return;
                           }
                           _TournamentData? owned;
-                          for (final candidate in _workingTournaments) {
+                          for (final candidate in _currentTournaments) {
                             if (candidate.id == tournament.id) {
                               owned = candidate;
                               break;
@@ -4211,7 +5193,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       });
 
     return _page(
-      title: 'Архив',
+      title: 'Законченные турниры',
       subtitle:
           'Завершённые турниры. Результаты и партии доступны только для просмотра.',
       child: tournaments.isEmpty
@@ -4323,7 +5305,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       title: tournament.name,
       localizeTitle: false,
       subtitle:
-          'Архивный турнир. Изменение результатов и настроек заблокировано.',
+          'Законченный турнир. Изменение результатов и настроек заблокировано.',
       child: Column(
         children: [
           Row(

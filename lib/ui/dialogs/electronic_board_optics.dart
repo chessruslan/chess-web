@@ -1,5 +1,76 @@
 import 'package:flutter/foundation.dart';
 
+enum ElectronicBoardCalibrationTool { fill, point, line }
+
+@immutable
+class ElectronicBoardCalibrationPoint {
+  const ElectronicBoardCalibrationPoint(this.x, this.y);
+
+  final double x;
+  final double y;
+
+  Map<String, double> toJson() => <String, double>{'x': x, 'y': y};
+
+  static ElectronicBoardCalibrationPoint? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final x = value['x'];
+    final y = value['y'];
+    if (x is! num || y is! num) return null;
+    return ElectronicBoardCalibrationPoint(
+      x.toDouble().clamp(0, 1).toDouble(),
+      y.toDouble().clamp(0, 1).toDouble(),
+    );
+  }
+}
+
+@immutable
+class ElectronicBoardCalibrationMark {
+  const ElectronicBoardCalibrationMark({
+    required this.tool,
+    required this.colorValue,
+    required this.size,
+    required this.points,
+  });
+
+  final ElectronicBoardCalibrationTool tool;
+  final int colorValue;
+  final double size;
+  final List<ElectronicBoardCalibrationPoint> points;
+
+  Map<String, Object> toJson() => <String, Object>{
+        'tool': tool.name,
+        'color': colorValue,
+        'size': size,
+        'points': points.map((point) => point.toJson()).toList(),
+      };
+
+  static ElectronicBoardCalibrationMark? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final toolName = '${value['tool']}';
+    ElectronicBoardCalibrationTool? tool;
+    for (final candidate in ElectronicBoardCalibrationTool.values) {
+      if (candidate.name == toolName) tool = candidate;
+    }
+    final color = value['color'];
+    final size = value['size'];
+    final rawPoints = value['points'];
+    if (tool == null || color is! num || size is! num || rawPoints is! List) {
+      return null;
+    }
+    final points = rawPoints
+        .map(ElectronicBoardCalibrationPoint.fromJson)
+        .whereType<ElectronicBoardCalibrationPoint>()
+        .toList();
+    if (points.isEmpty) return null;
+    return ElectronicBoardCalibrationMark(
+      tool: tool,
+      colorValue: color.toInt(),
+      size: size.toDouble().clamp(1, 200).toDouble(),
+      points: points,
+    );
+  }
+}
+
 @immutable
 class ElectronicBoardScanRegion {
   const ElectronicBoardScanRegion({

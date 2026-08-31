@@ -14,6 +14,11 @@ class ElectronicBoardCameraView extends StatelessWidget {
     this.scanRegions = const <ElectronicBoardScanRegion>[],
     this.onBrightnessFrame,
     this.selectedRegionId,
+    this.calibrationEnabled = false,
+    this.calibrationBackgroundColor = 0xFF050708,
+    this.calibrationMarks = const <ElectronicBoardCalibrationMark>[],
+    this.calibrationReferenceWidth = 1,
+    this.calibrationReferenceHeight = 1,
   });
 
   final bool active;
@@ -24,6 +29,11 @@ class ElectronicBoardCameraView extends StatelessWidget {
   final List<ElectronicBoardScanRegion> scanRegions;
   final ValueChanged<ElectronicBoardBrightnessFrame>? onBrightnessFrame;
   final String? selectedRegionId;
+  final bool calibrationEnabled;
+  final int calibrationBackgroundColor;
+  final List<ElectronicBoardCalibrationMark> calibrationMarks;
+  final double calibrationReferenceWidth;
+  final double calibrationReferenceHeight;
 
   @override
   Widget build(BuildContext context) {

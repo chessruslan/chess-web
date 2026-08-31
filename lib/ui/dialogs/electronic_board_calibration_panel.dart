@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../localization/makechess_localization.dart';
 import '../app_style.dart';
 import 'electronic_board_camera.dart';
+import 'electronic_board_floating_board.dart';
 import 'electronic_board_optics.dart';
 
 class ElectronicBoardCalibrationPanel extends StatefulWidget {
@@ -44,6 +45,16 @@ class _ElectronicBoardCalibrationPanelState
   bool _cameraRunning = false;
   String _cameraStatus = 'Камера выключена';
   double _cameraAspectRatio = 4 / 3;
+  bool _calibrationLayerEnabled = false;
+  bool _gridEnabled = true;
+  ElectronicBoardCalibrationTool _calibrationTool =
+      ElectronicBoardCalibrationTool.point;
+  int _calibrationBackgroundColor = 0xFF050708;
+  int _calibrationDrawColor = 0xFFFFF176;
+  double _calibrationPointSize = 18;
+  double _calibrationLineWidth = 8;
+  final List<ElectronicBoardCalibrationMark> _calibrationMarks = [];
+  List<ElectronicBoardCalibrationPoint>? _activeLine;
 
   String? _selectedCellId;
   final Map<String, String> _boardSquares = <String, String>{};
@@ -57,6 +68,9 @@ class _ElectronicBoardCalibrationPanelState
   double? _draftThreshold;
   String? _lastSavedThresholdCellId;
   Timer? _saveTimer;
+  final GlobalKey<ElectronicBoardFloatingBoardState> _floatingBoardKey =
+      GlobalKey<ElectronicBoardFloatingBoardState>();
+  OverlayEntry? _floatingBoardEntry;
 
   @override
   void initState() {
@@ -66,6 +80,8 @@ class _ElectronicBoardCalibrationPanelState
 
   @override
   void dispose() {
+    _floatingBoardEntry?.remove();
+    _floatingBoardEntry = null;
     _saveTimer?.cancel();
     _rowsController.dispose();
     _columnsController.dispose();
@@ -113,6 +129,18 @@ class _ElectronicBoardCalibrationPanelState
         _thresholds
           ..clear()
           ..addAll(numberMap(data['thresholds']));
+        _calibrationBackgroundColor =
+            number(data['calibrationBackgroundColor'],
+                    _calibrationBackgroundColor.toDouble())
+                .toInt();
+        final rawMarks = data['calibrationMarks'];
+        if (rawMarks is List) {
+          _calibrationMarks
+            ..clear()
+            ..addAll(rawMarks
+                .map(ElectronicBoardCalibrationMark.fromJson)
+                .whereType<ElectronicBoardCalibrationMark>());
+        }
         _syncGridControllers();
       });
     } catch (_) {
@@ -142,7 +170,7 @@ class _ElectronicBoardCalibrationPanelState
     await preferences.setString(
       _storageKey,
       jsonEncode(<String, dynamic>{
-        'version': 1,
+        'version': 2,
         'rows': _rows,
         'columns': _columns,
         'left': _left,
@@ -151,6 +179,9 @@ class _ElectronicBoardCalibrationPanelState
         'cellHeight': _cellHeight,
         'boardSquares': _boardSquares,
         'thresholds': _thresholds,
+        'calibrationBackgroundColor': _calibrationBackgroundColor,
+        'calibrationMarks':
+            _calibrationMarks.map((mark) => mark.toJson()).toList(),
       }),
     );
   }
@@ -359,7 +390,61 @@ class _ElectronicBoardCalibrationPanelState
     }
     // Brightness values are diagnostic and should remain visibly live.
     setState(() {});
+    _updateFloatingBoard();
     if (stateChanged) _scheduleSave();
+  }
+
+  bool get _allBoardSquaresMapped {
+    final mapped = _boardSquares.entries
+        .where((entry) => _visibleCellIds.contains(entry.key))
+        .map((entry) => entry.value.toLowerCase())
+        .where((square) => RegExp(r'^[a-h][1-8]$').hasMatch(square))
+        .toSet();
+    return mapped.length == 64;
+  }
+
+  void _updateFloatingBoard() {
+    final occupiedSquares = <String>{};
+    final brightnessBySquare = <String, double>{};
+    for (final entry in _boardSquares.entries) {
+      final square = entry.value.toLowerCase();
+      if (!RegExp(r'^[a-h][1-8]$').hasMatch(square)) continue;
+      if (_occupied[entry.key] == true) occupiedSquares.add(square);
+      final brightness = _brightness[entry.key];
+      if (brightness != null) brightnessBySquare[square] = brightness;
+    }
+    _floatingBoardKey.currentState?.updateOpticalPosition(
+      occupiedSquares: occupiedSquares,
+      brightnessBySquare: brightnessBySquare,
+      allSquaresMapped: _allBoardSquaresMapped,
+    );
+  }
+
+  void _toggleFloatingBoard() {
+    final current = _floatingBoardEntry;
+    if (current != null) {
+      current.remove();
+      _floatingBoardEntry = null;
+      if (mounted) setState(() {});
+      return;
+    }
+    final overlay = Overlay.of(context);
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => ElectronicBoardFloatingBoard(
+        key: _floatingBoardKey,
+        onClose: () {
+          if (_floatingBoardEntry != entry) return;
+          entry.remove();
+          _floatingBoardEntry = null;
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+    _floatingBoardEntry = entry;
+    overlay.insert(entry);
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateFloatingBoard());
   }
 
   void _setThreshold(String id, double value) {
@@ -548,7 +633,10 @@ class _ElectronicBoardCalibrationPanelState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 const Icon(
                   Icons.videocam_outlined,
@@ -573,8 +661,49 @@ class _ElectronicBoardCalibrationPanelState
                     _cameraRequested ? 'Выключить камеру' : 'Камера',
                   ),
                 ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: () {
+                    setState(() {
+                      _calibrationLayerEnabled = !_calibrationLayerEnabled;
+                      if (_calibrationLayerEnabled) _gridEnabled = false;
+                    });
+                  },
+                  icon: Icon(
+                    _calibrationLayerEnabled
+                        ? Icons.layers_clear_outlined
+                        : Icons.layers_outlined,
+                    size: 18,
+                  ),
+                  label: const Text('Калибровочная подложка'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: () => setState(() => _gridEnabled = !_gridEnabled),
+                  icon: Icon(
+                    _gridEnabled ? Icons.grid_off_outlined : Icons.grid_on,
+                    size: 18,
+                  ),
+                  label: Text(
+                    _gridEnabled ? 'Отключить сетку' : 'Включить сетку',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: _toggleFloatingBoard,
+                  icon: Icon(
+                    _floatingBoardEntry == null
+                        ? Icons.grid_view_rounded
+                        : Icons.close_fullscreen,
+                    size: 18,
+                  ),
+                  label: Text(
+                    _floatingBoardEntry == null ? 'Доска' : 'Закрыть доску',
+                  ),
+                ),
                 const SizedBox(width: 12),
-                Expanded(
+                SizedBox(
+                  width: 190,
                   child: MakeChessLocalizedText(
                     _cameraStatus,
                     overflow: TextOverflow.ellipsis,
@@ -594,6 +723,8 @@ class _ElectronicBoardCalibrationPanelState
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            _calibrationToolbar(),
             const SizedBox(height: 10),
             LayoutBuilder(
               builder: (context, constraints) {
@@ -615,18 +746,28 @@ class _ElectronicBoardCalibrationPanelState
                       clipBehavior: Clip.hardEdge,
                       children: [
                         Positioned.fill(
-                          child: ElectronicBoardCameraView(
-                            active: _cameraRequested,
-                            onRunningChanged: _onCameraRunningChanged,
-                            onStatusChanged: _onCameraStatusChanged,
-                            onFailed: _onCameraFailed,
-                            onAspectRatioChanged: _onCameraAspectRatioChanged,
-                            scanRegions: _scanRegions(
-                              viewportWidth: viewportWidth,
-                              videoHeight: videoHeight,
+                          child: IgnorePointer(
+                            child: ElectronicBoardCameraView(
+                              active: _cameraRequested,
+                              onRunningChanged: _onCameraRunningChanged,
+                              onStatusChanged: _onCameraStatusChanged,
+                              onFailed: _onCameraFailed,
+                              onAspectRatioChanged: _onCameraAspectRatioChanged,
+                              scanRegions: _scanRegions(
+                                viewportWidth: viewportWidth,
+                                videoHeight: _calibrationLayerEnabled
+                                    ? viewportHeight
+                                    : videoHeight,
+                              ),
+                              onBrightnessFrame: _onBrightnessFrame,
+                              selectedRegionId: _selectedCellId,
+                              calibrationEnabled: _calibrationLayerEnabled,
+                              calibrationBackgroundColor:
+                                  _calibrationBackgroundColor,
+                              calibrationMarks: _calibrationMarks,
+                              calibrationReferenceWidth: viewportWidth,
+                              calibrationReferenceHeight: viewportHeight,
                             ),
-                            onBrightnessFrame: _onBrightnessFrame,
-                            selectedRegionId: _selectedCellId,
                           ),
                         ),
                         if (!_cameraRunning)
@@ -658,12 +799,25 @@ class _ElectronicBoardCalibrationPanelState
                               ),
                             ),
                           ),
+                        if (_calibrationLayerEnabled)
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              ignoring: _gridEnabled,
+                              child: _calibrationDrawingLayer(
+                                viewportWidth,
+                                viewportHeight,
+                              ),
+                            ),
+                          ),
                         Positioned(
                           left: _left,
                           top: _top,
                           width: gridWidth,
                           height: gridHeight,
-                          child: _grid(_cellWidth, _cellHeight),
+                          child: IgnorePointer(
+                            ignoring: !_gridEnabled,
+                            child: _grid(_cellWidth, _cellHeight),
+                          ),
                         ),
                       ],
                     ),
@@ -694,6 +848,226 @@ class _ElectronicBoardCalibrationPanelState
         ),
       );
 
+  Widget _calibrationToolbar() {
+    final enabled = _calibrationLayerEnabled && !_gridEnabled;
+    const colors = <int>[
+      0xFF050708,
+      0xFF303030,
+      0xFFFFFFFF,
+      0xFFFFF176,
+      0xFFFF9800,
+      0xFFF44336,
+      0xFF4FC3F7,
+      0xFF00E676,
+    ];
+    return Opacity(
+      opacity: enabled ? 1 : .52,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            _calibrationLayerEnabled
+                ? (_gridEnabled
+                    ? 'Подложка: тестирование сеткой'
+                    : 'Подложка: режим рисования')
+                : 'Подложка выключена',
+            style: AppTextStyles.caption,
+          ),
+          ChoiceChip(
+            selected: _calibrationTool == ElectronicBoardCalibrationTool.fill,
+            onSelected: enabled
+                ? (_) => setState(() =>
+                    _calibrationTool = ElectronicBoardCalibrationTool.fill)
+                : null,
+            avatar: const Icon(Icons.format_color_fill, size: 17),
+            label: const Text('Заливка'),
+          ),
+          ChoiceChip(
+            selected:
+                _calibrationTool == ElectronicBoardCalibrationTool.point,
+            onSelected: enabled
+                ? (_) => setState(() =>
+                    _calibrationTool = ElectronicBoardCalibrationTool.point)
+                : null,
+            avatar: const Icon(Icons.circle, size: 14),
+            label: const Text('Точка'),
+          ),
+          ChoiceChip(
+            selected: _calibrationTool == ElectronicBoardCalibrationTool.line,
+            onSelected: enabled
+                ? (_) => setState(() =>
+                    _calibrationTool = ElectronicBoardCalibrationTool.line)
+                : null,
+            avatar: const Icon(Icons.horizontal_rule, size: 17),
+            label: const Text('Линия'),
+          ),
+          const Text('Цвет:', style: TextStyle(fontSize: 12)),
+          for (final color in colors)
+            InkWell(
+              onTap: enabled
+                  ? () => setState(() => _calibrationDrawColor = color)
+                  : null,
+              borderRadius: BorderRadius.circular(20),
+              child: Container(
+                width: 25,
+                height: 25,
+                decoration: BoxDecoration(
+                  color: Color(color),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: _calibrationDrawColor == color
+                        ? AppColors.accent
+                        : Colors.white38,
+                    width: _calibrationDrawColor == color ? 3 : 1,
+                  ),
+                ),
+              ),
+            ),
+          SizedBox(
+            width: 210,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 76,
+                  child: Text(
+                    _calibrationTool == ElectronicBoardCalibrationTool.line
+                        ? 'Ширина'
+                        : 'Размер',
+                    style: AppTextStyles.caption,
+                  ),
+                ),
+                Expanded(
+                  child: Slider(
+                    min: 1,
+                    max: 100,
+                    value: (_calibrationTool ==
+                                ElectronicBoardCalibrationTool.line
+                            ? _calibrationLineWidth
+                            : _calibrationPointSize)
+                        .clamp(1, 100)
+                        .toDouble(),
+                    onChanged: !enabled ||
+                            _calibrationTool ==
+                                ElectronicBoardCalibrationTool.fill
+                        ? null
+                        : (value) => setState(() {
+                              if (_calibrationTool ==
+                                  ElectronicBoardCalibrationTool.line) {
+                                _calibrationLineWidth = value;
+                              } else {
+                                _calibrationPointSize = value;
+                              }
+                            }),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Отменить последний элемент',
+            onPressed: enabled && _calibrationMarks.isNotEmpty
+                ? () {
+                    setState(() => _calibrationMarks.removeLast());
+                    _scheduleSave();
+                  }
+                : null,
+            icon: const Icon(Icons.undo),
+          ),
+          IconButton(
+            tooltip: 'Очистить подложку',
+            onPressed: enabled && _calibrationMarks.isNotEmpty
+                ? () {
+                    setState(_calibrationMarks.clear);
+                    _scheduleSave();
+                  }
+                : null,
+            icon: const Icon(Icons.delete_sweep_outlined),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _calibrationDrawingLayer(double width, double height) =>
+      GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapUp: (details) {
+          final point = _normalizedCalibrationPoint(details.localPosition,
+              width: width, height: height);
+          setState(() {
+            if (_calibrationTool == ElectronicBoardCalibrationTool.fill) {
+              _calibrationBackgroundColor = _calibrationDrawColor;
+            } else if (_calibrationTool ==
+                ElectronicBoardCalibrationTool.point) {
+              _calibrationMarks.add(ElectronicBoardCalibrationMark(
+                tool: ElectronicBoardCalibrationTool.point,
+                colorValue: _calibrationDrawColor,
+                size: _calibrationPointSize,
+                points: <ElectronicBoardCalibrationPoint>[point],
+              ));
+            }
+          });
+          _scheduleSave();
+        },
+        onPanStart: _calibrationTool == ElectronicBoardCalibrationTool.line
+            ? (details) => setState(() {
+                  _activeLine = <ElectronicBoardCalibrationPoint>[
+                    _normalizedCalibrationPoint(details.localPosition,
+                        width: width, height: height),
+                  ];
+                })
+            : null,
+        onPanUpdate: _calibrationTool == ElectronicBoardCalibrationTool.line
+            ? (details) => setState(() {
+                  _activeLine?.add(_normalizedCalibrationPoint(
+                    details.localPosition,
+                    width: width,
+                    height: height,
+                  ));
+                })
+            : null,
+        onPanEnd: _calibrationTool == ElectronicBoardCalibrationTool.line
+            ? (_) {
+                final points = _activeLine;
+                setState(() {
+                  if (points != null && points.length > 1) {
+                    _calibrationMarks.add(ElectronicBoardCalibrationMark(
+                      tool: ElectronicBoardCalibrationTool.line,
+                      colorValue: _calibrationDrawColor,
+                      size: _calibrationLineWidth,
+                      points: List<ElectronicBoardCalibrationPoint>.from(
+                          points),
+                    ));
+                  }
+                  _activeLine = null;
+                });
+                _scheduleSave();
+              }
+            : null,
+        child: CustomPaint(
+          painter: _CalibrationLayerPainter(
+            backgroundColor: Color(_calibrationBackgroundColor),
+            marks: _calibrationMarks,
+            activeLine: _activeLine,
+            activeColor: Color(_calibrationDrawColor),
+            activeLineWidth: _calibrationLineWidth,
+          ),
+          child: const SizedBox.expand(),
+        ),
+      );
+
+  ElectronicBoardCalibrationPoint _normalizedCalibrationPoint(
+    Offset point, {
+    required double width,
+    required double height,
+  }) =>
+      ElectronicBoardCalibrationPoint(
+        (point.dx / width).clamp(0, 1).toDouble(),
+        (point.dy / height).clamp(0, 1).toDouble(),
+      );
+
   Widget _grid(double cellWidth, double cellHeight) => Column(
         children: [
           for (var row = 0; row < _rows; row++)
@@ -720,13 +1094,9 @@ class _ElectronicBoardCalibrationPanelState
         width: width,
         height: height,
         decoration: BoxDecoration(
-          color: selected
-              ? AppColors.accent.withOpacity(.14)
-              : occupied == null
-                  ? Colors.black.withOpacity(.08)
-                  : occupied
-                      ? Colors.redAccent.withOpacity(.18)
-                      : Colors.greenAccent.withOpacity(.12),
+          // The calibration grid is an overlay and must never tint the image
+          // that is being measured. Occupancy is shown by text/icons instead.
+          color: Colors.transparent,
           border: Border.all(
             color: selected ? AppColors.accent : const Color(0xFFFFE96A),
             width: selected ? 1.6 : 1.0,
@@ -1126,15 +1496,21 @@ class _ElectronicBoardCalibrationPanelState
                       : 'Локальных максимумов: ${details.peaks.length}',
                   style: AppTextStyles.caption,
                 ),
-                for (var index = 0;
-                    index < math.min(4, details.peaks.length);
-                    index++)
-                  Text(
-                    '${index + 1}. (${details.peaks[index].x}, '
-                    '${details.peaks[index].y})  '
-                    '${details.peaks[index].value.toStringAsFixed(1)} · '
-                    'окрестность ${details.peaks[index].neighborhoodAverage.toStringAsFixed(1)}',
-                    style: AppTextStyles.caption,
+                for (var index = 0; index < 4; index++)
+                  SizedBox(
+                    height: 17,
+                    child: index < details.peaks.length
+                        ? Text(
+                            '${index + 1}. (${details.peaks[index].x}, '
+                            '${details.peaks[index].y})  '
+                            '${details.peaks[index].value.toStringAsFixed(1)} · '
+                            'окрестность ${details.peaks[index].neighborhoodAverage.toStringAsFixed(1)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                            softWrap: false,
+                            style: AppTextStyles.caption,
+                          )
+                        : null,
                   ),
               ],
             ),
@@ -1475,6 +1851,77 @@ class _ElectronicBoardCalibrationPanelState
       ),
     );
   }
+}
+
+class _CalibrationLayerPainter extends CustomPainter {
+  const _CalibrationLayerPainter({
+    required this.backgroundColor,
+    required this.marks,
+    required this.activeLine,
+    required this.activeColor,
+    required this.activeLineWidth,
+  });
+
+  final Color backgroundColor;
+  final List<ElectronicBoardCalibrationMark> marks;
+  final List<ElectronicBoardCalibrationPoint>? activeLine;
+  final Color activeColor;
+  final double activeLineWidth;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = backgroundColor);
+    for (final mark in marks) {
+      _drawMark(canvas, size, mark);
+    }
+    final preview = activeLine;
+    if (preview != null && preview.isNotEmpty) {
+      _drawLine(canvas, size, preview, activeColor, activeLineWidth);
+    }
+  }
+
+  void _drawMark(
+      Canvas canvas, Size size, ElectronicBoardCalibrationMark mark) {
+    if (mark.points.isEmpty) return;
+    final color = Color(mark.colorValue);
+    if (mark.tool == ElectronicBoardCalibrationTool.point) {
+      final point = mark.points.first;
+      canvas.drawCircle(
+        Offset(point.x * size.width, point.y * size.height),
+        mark.size / 2,
+        Paint()..color = color,
+      );
+    } else if (mark.tool == ElectronicBoardCalibrationTool.line) {
+      _drawLine(canvas, size, mark.points, color, mark.size);
+    }
+  }
+
+  void _drawLine(
+    Canvas canvas,
+    Size size,
+    List<ElectronicBoardCalibrationPoint> points,
+    Color color,
+    double width,
+  ) {
+    if (points.isEmpty) return;
+    final path = Path()
+      ..moveTo(points.first.x * size.width, points.first.y * size.height);
+    for (final point in points.skip(1)) {
+      path.lineTo(point.x * size.width, point.y * size.height);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..strokeWidth = width
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CalibrationLayerPainter oldDelegate) => true;
 }
 
 class _BrightnessRadiusPainter extends CustomPainter {

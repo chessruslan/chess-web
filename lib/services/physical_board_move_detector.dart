@@ -101,6 +101,7 @@ class PhysicalBoardMoveDetector {
     }
     return PhysicalMoveDetectionResult(
       status: PhysicalMoveDetectionStatus.illegalPosition,
+      candidates: candidates,
       differentSquares: current.symmetricDifference(occupiedSquares),
     );
   }

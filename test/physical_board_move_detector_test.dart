@@ -35,4 +35,15 @@ void main() {
     expect(result.move?.from, 'e1');
     expect(result.move?.to, 'g1');
   });
+
+  test('keeps ambiguous capture candidates for optical disambiguation', () {
+    const fen = '4k3/8/8/3p1p2/4N3/8/8/4K3 w - - 0 1';
+    final occupied = PhysicalBoardMoveDetector.occupancyFromFen(fen)
+      ..remove('e4');
+
+    final result = detector.detect(fen: fen, occupiedSquares: occupied);
+
+    expect(result.status, PhysicalMoveDetectionStatus.illegalPosition);
+    expect(result.candidates.map((move) => move.to).toSet(), {'d6', 'f6'});
+  });
 }

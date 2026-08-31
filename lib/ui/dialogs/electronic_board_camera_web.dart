@@ -19,6 +19,11 @@ class ElectronicBoardCameraView extends StatefulWidget {
     this.scanRegions = const <ElectronicBoardScanRegion>[],
     this.onBrightnessFrame,
     this.selectedRegionId,
+    this.calibrationEnabled = false,
+    this.calibrationBackgroundColor = 0xFF050708,
+    this.calibrationMarks = const <ElectronicBoardCalibrationMark>[],
+    this.calibrationReferenceWidth = 1,
+    this.calibrationReferenceHeight = 1,
   });
 
   final bool active;
@@ -29,6 +34,11 @@ class ElectronicBoardCameraView extends StatefulWidget {
   final List<ElectronicBoardScanRegion> scanRegions;
   final ValueChanged<ElectronicBoardBrightnessFrame>? onBrightnessFrame;
   final String? selectedRegionId;
+  final bool calibrationEnabled;
+  final int calibrationBackgroundColor;
+  final List<ElectronicBoardCalibrationMark> calibrationMarks;
+  final double calibrationReferenceWidth;
+  final double calibrationReferenceHeight;
 
   @override
   State<ElectronicBoardCameraView> createState() =>
@@ -77,18 +87,28 @@ class _ElectronicBoardCameraViewState
 
     if (widget.active) {
       unawaited(_startCamera());
+    } else if (widget.calibrationEnabled) {
+      _startScanner();
     }
   }
 
   @override
   void didUpdateWidget(covariant ElectronicBoardCameraView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.active == widget.active) return;
-
-    if (widget.active) {
-      unawaited(_startCamera());
-    } else {
-      _stopCamera(reportStatus: true);
+    if (oldWidget.active != widget.active) {
+      if (widget.active) {
+        unawaited(_startCamera());
+      } else {
+        _stopCamera(reportStatus: true);
+      }
+    }
+    if (oldWidget.calibrationEnabled != widget.calibrationEnabled) {
+      if (widget.calibrationEnabled) {
+        _startScanner();
+      } else if (_stream == null) {
+        _scanTimer?.cancel();
+        _scanTimer = null;
+      }
     }
   }
 
@@ -162,6 +182,7 @@ class _ElectronicBoardCameraViewState
         widget.onStatusChanged('Камера выключена');
       }
     }
+    if (widget.calibrationEnabled) _startScanner();
   }
 
   @override
@@ -189,22 +210,39 @@ class _ElectronicBoardCameraViewState
   }
 
   void _scanBrightness() {
-    if (_stream == null || _video.videoWidth <= 0 || _video.videoHeight <= 0) {
-      return;
-    }
+    final hasCamera =
+        _stream != null && _video.videoWidth > 0 && _video.videoHeight > 0;
+    if (!hasCamera && !widget.calibrationEnabled) return;
     final callback = widget.onBrightnessFrame;
     final regions = widget.scanRegions;
     if (callback == null || regions.isEmpty) return;
 
     const targetWidth = 320;
-    final targetHeight =
-        (targetWidth * _video.videoHeight / _video.videoWidth).round();
+    final sourceWidth = hasCamera
+        ? _video.videoWidth.toDouble()
+        : math.max(1, widget.calibrationReferenceWidth);
+    final sourceHeight = hasCamera
+        ? _video.videoHeight.toDouble()
+        : math.max(1, widget.calibrationReferenceHeight);
+    final targetHeight = (targetWidth * sourceHeight / sourceWidth).round();
     if (targetHeight <= 0) return;
     _scanCanvas
       ..width = targetWidth
       ..height = targetHeight;
     final context = _scanCanvas.context2D;
-    context.drawImageScaled(_video, 0, 0, targetWidth, targetHeight);
+    if (hasCamera) {
+      context.drawImageScaled(_video, 0, 0, targetWidth, targetHeight);
+    } else {
+      context
+        ..fillStyle = '#050708'
+        ..fillRect(0, 0, targetWidth, targetHeight);
+    }
+    _drawCalibrationLayer(
+      context,
+      fullWidth: targetWidth.toDouble(),
+      fullHeight: targetHeight.toDouble(),
+      scale: targetWidth / math.max(1, widget.calibrationReferenceWidth),
+    );
 
     final values = <String, double>{};
     for (final region in regions) {
@@ -252,8 +290,14 @@ class _ElectronicBoardCameraViewState
   ElectronicBoardCellBrightness? _measureSelectedCell(
     ElectronicBoardScanRegion region,
   ) {
-    final videoWidth = _video.videoWidth;
-    final videoHeight = _video.videoHeight;
+    final hasCamera =
+        _stream != null && _video.videoWidth > 0 && _video.videoHeight > 0;
+    final videoWidth = hasCamera
+        ? _video.videoWidth
+        : math.max(1, widget.calibrationReferenceWidth).round();
+    final videoHeight = hasCamera
+        ? _video.videoHeight
+        : math.max(1, widget.calibrationReferenceHeight).round();
     final sourceLeft =
         (region.left.clamp(0.0, 1.0) * videoWidth).floor();
     final sourceTop = (region.top.clamp(0.0, 1.0) * videoHeight).floor();
@@ -271,16 +315,28 @@ class _ElectronicBoardCameraViewState
       ..width = width
       ..height = height;
     final context = _detailCanvas.context2D;
-    context.drawImageScaledFromSource(
-      _video,
-      sourceLeft,
-      sourceTop,
-      width,
-      height,
-      0,
-      0,
-      width,
-      height,
+    if (hasCamera) {
+      context.drawImageScaledFromSource(
+        _video,
+        sourceLeft,
+        sourceTop,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+      );
+    }
+    _drawCalibrationLayer(
+      context,
+      fullWidth: videoWidth.toDouble(),
+      fullHeight: videoHeight.toDouble(),
+      offsetX: -sourceLeft.toDouble(),
+      offsetY: -sourceTop.toDouble(),
+      scale: videoWidth / math.max(1, widget.calibrationReferenceWidth),
+      fillWidth: width.toDouble(),
+      fillHeight: height.toDouble(),
     );
     final pixels = context.getImageData(0, 0, width, height).data;
     if (pixels.isEmpty) return null;
@@ -504,6 +560,54 @@ class _ElectronicBoardCameraViewState
       heatmap: heatmap,
     );
   }
+
+  void _drawCalibrationLayer(
+    html.CanvasRenderingContext2D context, {
+    required double fullWidth,
+    required double fullHeight,
+    required double scale,
+    double offsetX = 0,
+    double offsetY = 0,
+    double? fillWidth,
+    double? fillHeight,
+  }) {
+    if (!widget.calibrationEnabled) return;
+    context
+      ..fillStyle = _cssColor(widget.calibrationBackgroundColor)
+      ..fillRect(0, 0, fillWidth ?? fullWidth, fillHeight ?? fullHeight);
+    for (final mark in widget.calibrationMarks) {
+      if (mark.points.isEmpty ||
+          mark.tool == ElectronicBoardCalibrationTool.fill) continue;
+      context
+        ..fillStyle = _cssColor(mark.colorValue)
+        ..strokeStyle = _cssColor(mark.colorValue)
+        ..lineWidth = math.max(1, mark.size * scale)
+        ..lineCap = 'round'
+        ..lineJoin = 'round';
+      double x(ElectronicBoardCalibrationPoint point) =>
+          point.x * fullWidth + offsetX;
+      double y(ElectronicBoardCalibrationPoint point) =>
+          point.y * fullHeight + offsetY;
+      if (mark.tool == ElectronicBoardCalibrationTool.point) {
+        final point = mark.points.first;
+        context
+          ..beginPath()
+          ..arc(x(point), y(point), mark.size * scale / 2, 0, math.pi * 2)
+          ..fill();
+      } else {
+        context
+          ..beginPath()
+          ..moveTo(x(mark.points.first), y(mark.points.first));
+        for (final point in mark.points.skip(1)) {
+          context.lineTo(x(point), y(point));
+        }
+        context.stroke();
+      }
+    }
+  }
+
+  String _cssColor(int value) =>
+      '#${(value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
 
   @override
   Widget build(BuildContext context) {
