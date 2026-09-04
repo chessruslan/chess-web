@@ -6,6 +6,7 @@ import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -41,6 +42,7 @@ class TournamentTableEditorDialog extends StatefulWidget {
     this.initialStart,
     this.initialEnd,
     this.initialAge,
+    this.initialRated = false,
     this.initialParticipantsData,
     this.initialResults,
     this.organizerMode = false,
@@ -53,6 +55,7 @@ class TournamentTableEditorDialog extends StatefulWidget {
     this.templateSchema,
     this.templateValues = const <String, String>{},
     this.lockTournamentType = false,
+    this.creatingNewTournament = false,
   });
 
   final String tournamentId;
@@ -72,6 +75,7 @@ class TournamentTableEditorDialog extends StatefulWidget {
   final String? initialStart;
   final String? initialEnd;
   final String? initialAge;
+  final bool initialRated;
   final List<Map<String, dynamic>>? initialParticipantsData;
   final Map<String, String>? initialResults;
   final bool organizerMode;
@@ -85,6 +89,7 @@ class TournamentTableEditorDialog extends StatefulWidget {
   final TournamentTemplateSchema? templateSchema;
   final Map<String, String> templateValues;
   final bool lockTournamentType;
+  final bool creatingNewTournament;
 
   @override
   State<TournamentTableEditorDialog> createState() =>
@@ -110,6 +115,7 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
   String? initialStart,
   String? initialEnd,
   String? initialAge,
+  bool initialRated = false,
   List<Map<String, dynamic>>? initialParticipantsData,
   Map<String, String>? initialResults,
   bool organizerMode = false,
@@ -123,6 +129,7 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
   TournamentTemplateSchema? templateSchema,
   Map<String, String> templateValues = const <String, String>{},
   bool lockTournamentType = false,
+  bool creatingNewTournament = false,
 }) {
   return showDialog<TournamentTableEditorResult>(
     context: context,
@@ -145,6 +152,7 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
       initialStart: initialStart,
       initialEnd: initialEnd,
       initialAge: initialAge,
+      initialRated: initialRated,
       initialParticipantsData: initialParticipantsData,
       initialResults: initialResults,
       organizerMode: organizerMode,
@@ -157,6 +165,7 @@ Future<TournamentTableEditorResult?> showTournamentTableEditor({
       templateSchema: templateSchema,
       templateValues: templateValues,
       lockTournamentType: lockTournamentType,
+      creatingNewTournament: creatingNewTournament,
     ),
   );
 }
@@ -169,14 +178,24 @@ class _EditableParticipant {
     this.school = '',
     this.flag = '🏳️',
     this.avatarUrl = '',
+    this.source = 'makechess',
+    this.externalProfile = '',
+    this.age,
+    this.birthYear,
+    this.title = '',
   });
 
-  final String id;
+  String id;
   String name;
   int rating;
   String school;
   String flag;
   String avatarUrl;
+  String source;
+  String externalProfile;
+  int? age;
+  int? birthYear;
+  String title;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
@@ -185,6 +204,11 @@ class _EditableParticipant {
         'school': school,
         'flag': flag,
         'avatarUrl': avatarUrl,
+        'source': source,
+        'externalProfile': externalProfile,
+        if (age != null) 'age': age,
+        if (birthYear != null) 'birthYear': birthYear,
+        'title': title,
       };
 
   factory _EditableParticipant.fromJson(Map<String, dynamic> json) {
@@ -195,6 +219,11 @@ class _EditableParticipant {
       school: '${json['school'] ?? ''}',
       flag: '${json['flag'] ?? '🏳️'}',
       avatarUrl: '${json['avatarUrl'] ?? ''}',
+      source: '${json['source'] ?? 'makechess'}',
+      externalProfile: '${json['externalProfile'] ?? ''}',
+      age: (json['age'] as num?)?.toInt(),
+      birthYear: (json['birthYear'] as num?)?.toInt(),
+      title: '${json['title'] ?? json['chessTitle'] ?? ''}',
     );
   }
 }
@@ -224,17 +253,48 @@ class _TournamentTableEditorDialogState
   final TextEditingController _incrementCtl = TextEditingController();
   final TextEditingController _roundsCtl = TextEditingController();
   final TextEditingController _ageCtl = TextEditingController();
+  final TextEditingController _minRatingCtl = TextEditingController();
+  final TextEditingController _maxRatingCtl = TextEditingController();
+  final TextEditingController _minAgeCtl = TextEditingController();
+  final TextEditingController _maxAgeCtl = TextEditingController();
+  final TextEditingController _birthYearFromCtl = TextEditingController();
+  final TextEditingController _birthYearToCtl = TextEditingController();
+  final Set<String> _allowedTitles = <String>{};
+  static const List<String> _chessTitles = <String>[
+    'Без звания',
+    '3 разряд',
+    '2 разряд',
+    '1 разряд',
+    'КМС',
+    'МС',
+    'ЖМ',
+    'ММ',
+    'ЖГМ',
+    'ГМ',
+  ];
 
   String _type = 'Круговая система';
   String _status = 'Шаблон';
   final List<_EditableParticipant> _participants = <_EditableParticipant>[];
   final Map<String, String> _results = <String, String>{};
+  final List<String> _customColumns = <String>[];
+  final Map<String, String> _customColumnValues = <String, String>{};
   final Map<String, String> _templateValues = <String, String>{};
   List<Map<String, dynamic>> _pairings = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _pairingSchedule = <Map<String, dynamic>>[];
   String _logoDataUrl = '';
+  bool _rated = false;
+  bool _offlineMode = false;
   TournamentPairingSettings _pairingSettings =
       const TournamentPairingSettings();
+  bool _testMode = false;
+  bool _pairingControlOpen = false;
+  int _testRound = 0;
+  String? _testOriginalStatus;
+  List<_EditableParticipant>? _testOriginalParticipants;
+  Map<String, String>? _testOriginalResults;
+  List<Map<String, dynamic>>? _testOriginalPairings;
+  List<Map<String, dynamic>>? _testOriginalSchedule;
 
   @override
   void initState() {
@@ -270,6 +330,15 @@ class _TournamentTableEditorDialogState
     _incrementCtl.text = '${widget.initialIncrement}';
     _roundsCtl.text = '${widget.initialRounds}';
     _ageCtl.text = widget.initialAge ?? 'Открытая категория';
+    _minRatingCtl.clear();
+    _maxRatingCtl.clear();
+    _minAgeCtl.clear();
+    _maxAgeCtl.clear();
+    _birthYearFromCtl.clear();
+    _birthYearToCtl.clear();
+    _allowedTitles.clear();
+    _rated = widget.initialRated;
+    _offlineMode = false;
     _type =
         widget.initialType.isEmpty ? 'Круговая система' : widget.initialType;
     _status = widget.initialStatus.isEmpty ? 'Шаблон' : widget.initialStatus;
@@ -314,6 +383,11 @@ class _TournamentTableEditorDialogState
           );
     if (selected == null || !mounted) return;
     final participant = _EditableParticipant.fromJson(selected);
+    final restrictionError = _participantRestrictionError(participant);
+    if (restrictionError != null) {
+      await _showParticipantRestrictionWarning(restrictionError);
+      return;
+    }
     if (_participants.any((item) => item.id == participant.id)) return;
     setState(() {
       final emptyIndex = _participants.indexWhere(_isEmptySlot);
@@ -343,6 +417,116 @@ class _TournamentTableEditorDialogState
 
   int get _registeredParticipantCount =>
       _participants.where((participant) => !_isEmptySlot(participant)).length;
+
+  String? _participantRestrictionError(_EditableParticipant participant) {
+    final minRating = int.tryParse(_minRatingCtl.text.trim());
+    final maxRating = int.tryParse(_maxRatingCtl.text.trim());
+    final minAge = int.tryParse(_minAgeCtl.text.trim());
+    final maxAge = int.tryParse(_maxAgeCtl.text.trim());
+    final birthYearFrom = int.tryParse(_birthYearFromCtl.text.trim());
+    final birthYearTo = int.tryParse(_birthYearToCtl.text.trim());
+    final errors = <String>[];
+
+    if (minRating != null && participant.rating < minRating) {
+      errors.add(
+        '• Рейтинг: у участника ${participant.rating}, требуется не ниже $minRating',
+      );
+    }
+    if (maxRating != null && participant.rating > maxRating) {
+      errors.add(
+        '• Рейтинг: у участника ${participant.rating}, требуется не выше $maxRating',
+      );
+    }
+
+    if (minAge != null || maxAge != null) {
+      final age = participant.age;
+      if (age == null) {
+        final requirement = minAge != null && maxAge != null
+            ? '$minAge–$maxAge лет'
+            : minAge != null
+                ? 'не меньше $minAge лет'
+                : 'не больше $maxAge лет';
+        errors.add(
+          '• Возраст: у участника не указан. Требование турнира: $requirement',
+        );
+      } else {
+        if (minAge != null && age < minAge) {
+          errors.add(
+            '• Возраст: у участника $age, требуется не меньше $minAge лет',
+          );
+        }
+        if (maxAge != null && age > maxAge) {
+          errors.add(
+            '• Возраст: у участника $age, требуется не больше $maxAge лет',
+          );
+        }
+      }
+    }
+
+    if (birthYearFrom != null || birthYearTo != null) {
+      final birthYear = participant.birthYear;
+      if (birthYear == null) {
+        final requirement = birthYearFrom != null && birthYearTo != null
+            ? '$birthYearFrom–$birthYearTo'
+            : birthYearFrom != null
+                ? 'не раньше $birthYearFrom'
+                : 'не позже $birthYearTo';
+        errors.add(
+          '• Год рождения: у участника не указан. Требование турнира: $requirement',
+        );
+      } else {
+        if (birthYearFrom != null && birthYear < birthYearFrom) {
+          errors.add(
+            '• Год рождения: у участника $birthYear, требуется не раньше $birthYearFrom',
+          );
+        }
+        if (birthYearTo != null && birthYear > birthYearTo) {
+          errors.add(
+            '• Год рождения: у участника $birthYear, требуется не позже $birthYearTo',
+          );
+        }
+      }
+    }
+
+    final allowedTitles =
+        _allowedTitles.map((value) => value.toLowerCase()).toSet();
+    final participantTitle = participant.title.trim();
+    if (allowedTitles.isNotEmpty &&
+        !allowedTitles.contains(participantTitle.toLowerCase())) {
+      final actualTitle =
+          participantTitle.isEmpty ? 'не указано' : participantTitle;
+      errors.add(
+        '• Шахматное звание: у участника $actualTitle. '
+        'Допускаются: ${_allowedTitles.join(', ')}',
+      );
+    }
+
+    if (errors.isEmpty) return null;
+    return 'Не выполнены следующие условия участия:\n\n${errors.join('\n')}';
+  }
+
+  Future<void> _showParticipantRestrictionWarning(String reason) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel2,
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.amberAccent),
+            SizedBox(width: 10),
+            MakeChessLocalizedText('Участник не подходит'),
+          ],
+        ),
+        content: MakeChessLocalizedText(reason),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const MakeChessLocalizedText('Понятно'),
+          ),
+        ],
+      ),
+    );
+  }
 
   void _ensureParticipantSlots() {
     final requested = widget.templateSchema?.rowCount ??
@@ -380,8 +564,7 @@ class _TournamentTableEditorDialogState
         if (decoded is Map) local = Map<String, dynamic>.from(decoded);
       }
       Map<String, dynamic>? map = local;
-      final userId =
-          (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
+      final userId = TournamentStorageService.instance.currentUserId;
       if (userId.isNotEmpty) {
         final migrationKey =
             'makechess_tournament_table_db_migrated_${userId}_${widget.tournamentId}';
@@ -409,8 +592,39 @@ class _TournamentTableEditorDialogState
         _incrementCtl.text = '${map['increment'] ?? _incrementCtl.text}';
         _roundsCtl.text = '${map['rounds'] ?? _roundsCtl.text}';
         _ageCtl.text = '${map['age'] ?? _ageCtl.text}';
+        _minRatingCtl.text = '${map['minRating'] ?? ''}';
+        _maxRatingCtl.text = '${map['maxRating'] ?? ''}';
+        _minAgeCtl.text = '${map['minAge'] ?? ''}';
+        _maxAgeCtl.text = '${map['maxAge'] ?? ''}';
+        _birthYearFromCtl.text = '${map['birthYearFrom'] ?? ''}';
+        _birthYearToCtl.text = '${map['birthYearTo'] ?? ''}';
+        final savedTitles = map['allowedTitles'];
+        _allowedTitles
+          ..clear()
+          ..addAll(savedTitles is List
+              ? savedTitles.map((value) => '$value')
+              : '$savedTitles'
+                  .split(RegExp(r'[,;]'))
+                  .map((value) => value.trim())
+                  .where((value) => value.isNotEmpty));
         _type = '${map['type'] ?? _type}';
         _status = '${map['status'] ?? _status}';
+        _rated = map['rated'] == true;
+        _offlineMode = '${map['playMode'] ?? 'online'}' == 'offline';
+        final customColumns = map['customColumns'];
+        if (customColumns is List) {
+          _customColumns
+            ..clear()
+            ..addAll(customColumns.map((item) => '$item'));
+        }
+        final customValues = map['customColumnValues'];
+        if (customValues is Map) {
+          _customColumnValues
+            ..clear()
+            ..addAll(customValues.map(
+              (key, value) => MapEntry('$key', '$value'),
+            ));
+        }
         final savedTemplateValues = map['templateValues'];
         if (savedTemplateValues is Map) {
           _templateValues
@@ -471,6 +685,10 @@ class _TournamentTableEditorDialogState
   }
 
   Future<void> _save() async {
+    if (_testMode) {
+      _message('Тестовые данные не сохраняются в настоящий турнир');
+      return;
+    }
     if (widget.previewMode) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -481,6 +699,11 @@ class _TournamentTableEditorDialogState
       );
       return;
     }
+    final exactMaxParticipants = (widget.templateSchema?.rowCount ??
+            widget.maxParticipants ??
+            _participants.length)
+        .clamp(2, 128)
+        .toInt();
     final data = <String, dynamic>{
       'name': _nameCtl.text.trim(),
       'judge': _judgeCtl.text.trim(),
@@ -492,9 +715,20 @@ class _TournamentTableEditorDialogState
       'increment': _incrementCtl.text.trim(),
       'rounds': _roundsCtl.text.trim(),
       'age': _ageCtl.text.trim(),
+      'minRating': _minRatingCtl.text.trim(),
+      'maxRating': _maxRatingCtl.text.trim(),
+      'minAge': _minAgeCtl.text.trim(),
+      'maxAge': _maxAgeCtl.text.trim(),
+      'birthYearFrom': _birthYearFromCtl.text.trim(),
+      'birthYearTo': _birthYearToCtl.text.trim(),
+      'allowedTitles': _allowedTitles.toList(growable: false),
       'type': _type,
       'status': _status,
-      'maxParticipants': widget.maxParticipants ?? _participants.length,
+      'rated': _rated,
+      'playMode': _offlineMode ? 'offline' : 'online',
+      'customColumns': _customColumns,
+      'customColumnValues': _customColumnValues,
+      'maxParticipants': exactMaxParticipants,
       'logo': _logoDataUrl,
       'participants': _participants
           .where((participant) => !_isEmptySlot(participant))
@@ -512,6 +746,39 @@ class _TournamentTableEditorDialogState
     await prefs.setString(_storageKey, jsonEncode(data));
     await TournamentStorageService.instance
         .saveTournamentTable(widget.tournamentId, data);
+    if (widget.organizerMode) {
+      await TournamentStorageService.instance.updateOwnedTournamentFields(
+        widget.tournamentId,
+        <String, dynamic>{
+          'playMode': _offlineMode ? 'offline' : 'online',
+          'minRating': _minRatingCtl.text.trim(),
+          'maxRating': _maxRatingCtl.text.trim(),
+          'minAge': _minAgeCtl.text.trim(),
+          'maxAge': _maxAgeCtl.text.trim(),
+          'birthYearFrom': _birthYearFromCtl.text.trim(),
+          'birthYearTo': _birthYearToCtl.text.trim(),
+          'allowedTitles': _allowedTitles.toList(growable: false),
+          'name': _nameCtl.text.trim(),
+          'maxParticipants': exactMaxParticipants,
+          'participationFilterEnabled': _minRatingCtl.text.trim().isNotEmpty ||
+              _maxRatingCtl.text.trim().isNotEmpty ||
+              _minAgeCtl.text.trim().isNotEmpty ||
+              _maxAgeCtl.text.trim().isNotEmpty ||
+              _birthYearFromCtl.text.trim().isNotEmpty ||
+              _birthYearToCtl.text.trim().isNotEmpty ||
+              _allowedTitles.isNotEmpty,
+          'participantIds': _participants
+              .where((participant) => !_isEmptySlot(participant))
+              .map((participant) => participant.id)
+              .toList(growable: false),
+          'participantNames': <String, String>{
+            for (final participant
+                in _participants.where((item) => !_isEmptySlot(item)))
+              participant.id: participant.name,
+          },
+        },
+      );
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -525,11 +792,285 @@ class _TournamentTableEditorDialogState
     Navigator.pop(context, result);
   }
 
+  Future<void> _openTestSetup() async {
+    final countController = TextEditingController(
+      text: '${math.min(widget.maxParticipants ?? 8, 8)}',
+    );
+    final count = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _panel2,
+        title: const MakeChessLocalizedText('Количество участников'),
+        content: TextField(
+          controller: countController,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: _decoration('Количество участников'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const MakeChessLocalizedText('Отмена'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(
+              ctx,
+              int.tryParse(countController.text.trim()),
+            ),
+            icon: const Icon(Icons.science_outlined),
+            label: const MakeChessLocalizedText('Начать тест'),
+          ),
+        ],
+      ),
+    );
+    countController.dispose();
+    if (count == null || count < 2 || count > 128 || !mounted) {
+      if (count != null) _message('Введите число участников от 2 до 128');
+      return;
+    }
+    _enterTestMode(count);
+  }
+
+  void _enterTestMode(int count) {
+    _testOriginalStatus = _status;
+    _testOriginalParticipants = _participants
+        .map((person) => _EditableParticipant.fromJson(person.toJson()))
+        .toList(growable: false);
+    _testOriginalResults = Map<String, String>.from(_results);
+    _testOriginalPairings = _pairings
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+    _testOriginalSchedule = _pairingSchedule
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+
+    const firstNames = <String>[
+      'Александр',
+      'Михаил',
+      'София',
+      'Анна',
+      'Дмитрий',
+      'Мария',
+      'Артём',
+      'Елена',
+      'Максим',
+      'Виктория',
+      'Иван',
+      'Полина',
+    ];
+    const lastNames = <String>[
+      'Иванов',
+      'Петров',
+      'Смирнов',
+      'Орлов',
+      'Волков',
+      'Соколов',
+      'Морозов',
+      'Лебедев',
+      'Козлов',
+      'Новиков',
+      'Попов',
+      'Фёдоров',
+    ];
+    final random = math.Random();
+    final minRating = int.tryParse(_minRatingCtl.text.trim()) ?? 1000;
+    final maxRating = math.max(
+      minRating,
+      int.tryParse(_maxRatingCtl.text.trim()) ?? 2400,
+    );
+    final minAge = int.tryParse(_minAgeCtl.text.trim()) ?? 7;
+    final maxAge = math.max(
+      minAge,
+      int.tryParse(_maxAgeCtl.text.trim()) ?? 70,
+    );
+    final currentYear = DateTime.now().year;
+    final minBirth = int.tryParse(_birthYearFromCtl.text.trim());
+    final maxBirth = int.tryParse(_birthYearToCtl.text.trim());
+    final titles =
+        _allowedTitles.isEmpty ? _chessTitles : _allowedTitles.toList();
+    final generated = <_EditableParticipant>[];
+    for (var index = 0; index < count; index++) {
+      var age = minAge + random.nextInt(maxAge - minAge + 1);
+      int birthYear;
+      if (minBirth != null || maxBirth != null) {
+        final from = minBirth ?? (maxBirth! - 70);
+        final to = math.max(from, maxBirth ?? currentYear - minAge);
+        birthYear = from + random.nextInt(to - from + 1);
+        age = currentYear - birthYear;
+      } else {
+        birthYear = currentYear - age;
+      }
+      generated.add(_EditableParticipant(
+        id: 'test_${index + 1}',
+        name:
+            '${firstNames[random.nextInt(firstNames.length)]} ${lastNames[random.nextInt(lastNames.length)]}',
+        rating: minRating + random.nextInt(maxRating - minRating + 1),
+        school: 'Тестовый клуб ${index % 4 + 1}',
+        source: 'test',
+        age: age,
+        birthYear: birthYear,
+        title: titles[random.nextInt(titles.length)],
+      ));
+    }
+    setState(() {
+      _testMode = true;
+      _testRound = 0;
+      _status = 'Готов к запуску';
+      _participants
+        ..clear()
+        ..addAll(generated);
+      _results.clear();
+      _pairings = <Map<String, dynamic>>[];
+      _pairingSchedule = <Map<String, dynamic>>[];
+      _showPreview = true;
+    });
+  }
+
+  void _exitTestMode() {
+    setState(() {
+      _testMode = false;
+      _testRound = 0;
+      _status = _testOriginalStatus ?? _status;
+      _participants
+        ..clear()
+        ..addAll(_testOriginalParticipants ?? const <_EditableParticipant>[]);
+      _results
+        ..clear()
+        ..addAll(_testOriginalResults ?? const <String, String>{});
+      _pairings = _testOriginalPairings ?? <Map<String, dynamic>>[];
+      _pairingSchedule = _testOriginalSchedule ?? <Map<String, dynamic>>[];
+    });
+  }
+
+  void _startTestTournament() {
+    setState(() => _status = 'Турнир идёт');
+    _message('Тестовый турнир начат. Выполните жеребьёвку первого тура.');
+  }
+
+  void _generateTestRoundPairings() {
+    if (_status != 'Турнир идёт') {
+      _message('Сначала нажмите «Начать турнир»');
+      return;
+    }
+    final totalRounds = int.tryParse(_roundsCtl.text.trim()) ?? 1;
+    if (_testRound >= totalRounds) {
+      _message('Все $totalRounds туров уже сыграны');
+      return;
+    }
+    if (_testRound > 0 && _pairings.any((item) => '${item['result']}' == '*')) {
+      _message('Сначала сформируйте результаты текущего тура');
+      return;
+    }
+    final nextRound = _testRound + 1;
+    final order = List<int>.generate(_participants.length, (index) => index)
+      ..sort((a, b) {
+        final points = _pointsFor(b).compareTo(_pointsFor(a));
+        return points != 0 ? points : math.Random().nextInt(3) - 1;
+      });
+    final pairings = <Map<String, dynamic>>[];
+    for (var index = 0; index < order.length; index += 2) {
+      final whiteIndex = order[index];
+      final blackIndex = index + 1 < order.length ? order[index + 1] : null;
+      pairings.add(<String, dynamic>{
+        'round': nextRound,
+        'board': pairings.length + 1,
+        'whiteId': _participants[whiteIndex].id,
+        'blackId': blackIndex == null ? null : _participants[blackIndex].id,
+        'result': blackIndex == null ? '1-0' : '*',
+        'status': blackIndex == null ? 'finished' : 'waiting',
+      });
+      if (blackIndex == null) {
+        _results[_resultKey(whiteIndex, nextRound - 1)] = '1';
+      }
+    }
+    setState(() {
+      _testRound = nextRound;
+      _pairings = pairings;
+      _pairingSchedule.addAll(pairings);
+    });
+    _message('Жеребьёвка $nextRound тура выполнена');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _openRoundPairings(nextRound);
+    });
+  }
+
+  void _generateTestRoundResults() {
+    if (_testRound == 0 || _pairings.isEmpty) {
+      _message('Сначала выполните жеребьёвку тура');
+      return;
+    }
+    final random = math.Random();
+    setState(() {
+      for (final pairing in _pairings) {
+        final whiteId = '${pairing['whiteId'] ?? ''}';
+        final blackId = '${pairing['blackId'] ?? ''}';
+        if (blackId.isEmpty) continue;
+        final whiteIndex =
+            _participants.indexWhere((person) => person.id == whiteId);
+        final blackIndex =
+            _participants.indexWhere((person) => person.id == blackId);
+        if (whiteIndex < 0 || blackIndex < 0) continue;
+        final outcome = random.nextInt(3);
+        final whiteResult = outcome == 0
+            ? '1'
+            : outcome == 1
+                ? '½'
+                : '0';
+        final blackResult = outcome == 0
+            ? '0'
+            : outcome == 1
+                ? '½'
+                : '1';
+        _results[_resultKey(whiteIndex, _testRound - 1)] = whiteResult;
+        _results[_resultKey(blackIndex, _testRound - 1)] = blackResult;
+        pairing['result'] = outcome == 0
+            ? '1-0'
+            : outcome == 1
+                ? '1/2-1/2'
+                : '0-1';
+        pairing['status'] = 'finished';
+      }
+    });
+    _message('Случайные результаты $_testRound тура сформированы');
+  }
+
+  Future<void> _finishTestTournament() async {
+    if (_testRound == 0) {
+      _message('В турнире ещё не сыграно ни одного тура');
+      return;
+    }
+    if (_pairings.any((item) => '${item['result']}' == '*')) {
+      _message('Сначала сформируйте результаты текущего тура');
+      return;
+    }
+    final order = List<int>.generate(_participants.length, (index) => index)
+      ..sort((a, b) => _pointsFor(b).compareTo(_pointsFor(a)));
+    final winner = _participants[order.first];
+    setState(() => _status = 'Завершён');
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _panel2,
+        title: const MakeChessLocalizedText('Тестовый турнир завершён'),
+        content: MakeChessLocalizedText(
+          'Победитель: ${winner.name}\nРезультат: ${_scoreText(_pointsFor(order.first))} очков',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const MakeChessLocalizedText('Готово'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openPairingControl() async {
     if (widget.previewMode && !widget.organizerMode) {
       _message('Управление жеребьёвкой доступно организатору турнира');
       return;
     }
+    _pairingControlOpen = true;
     final result = await showTournamentPairingControlDialog(
       context: context,
       initialSettings: _pairingSettings,
@@ -539,11 +1080,23 @@ class _TournamentTableEditorDialogState
       },
       onAction: _handlePairingAction,
     );
+    _pairingControlOpen = false;
     if (result == null || !mounted) return;
     setState(() => _pairingSettings = result.settings);
     await _save();
     if (!mounted) return;
     _message('Режим жеребьёвки сохранён: ${result.settings.mode.label}');
+  }
+
+  Future<void> _openPairingSettings() async {
+    final settings = await showTournamentPairingSettingsDialog(
+      context: context,
+      initialSettings: _pairingSettings,
+    );
+    if (settings == null || !mounted) return;
+    setState(() => _pairingSettings = settings);
+    await _save();
+    if (mounted) _message('Настройки жеребьёвки сохранены');
   }
 
   Future<void> _handlePairingAction(
@@ -564,11 +1117,232 @@ class _TournamentTableEditorDialogState
       case TournamentPairingAction.nextRound:
         _message('Запрошен переход к следующему туру');
       case TournamentPairingAction.editManually:
-        _message('Открыт ручной режим составления пар');
+        await _openPairingVariants(manual: true);
+      case TournamentPairingAction.showVariants:
+        await _openPairingVariants(manual: false);
     }
   }
 
+  List<List<_EditableParticipant?>> _pairingVariants() {
+    final players = _participants
+        .where((player) => !_isEmptySlot(player) && player.id.trim().isNotEmpty)
+        .toList(growable: false);
+    if (players.length < 2) return const [];
+    final random = math.Random();
+    final weakest = players.toList()
+      ..sort((a, b) {
+        final ai = _participants.indexOf(a);
+        final bi = _participants.indexOf(b);
+        final points = _pointsFor(ai).compareTo(_pointsFor(bi));
+        if (points != 0) return points;
+        final buchholz = _buchholzFor(ai).compareTo(_buchholzFor(bi));
+        if (buchholz != 0) return buchholz;
+        return a.rating.compareTo(b.rating);
+      });
+    final bye = players.length.isOdd ? weakest.first : null;
+    final active = players.where((player) => player != bye).toList();
+    final previousPairs = <String>{};
+    final colorBalance = <String, int>{};
+    for (final pairing in _pairingSchedule) {
+      final white = '${pairing['whiteId'] ?? ''}';
+      final black = '${pairing['blackId'] ?? ''}';
+      if (white.isNotEmpty && black.isNotEmpty) {
+        final ids = <String>[white, black]..sort();
+        previousPairs.add(ids.join('|'));
+        colorBalance[white] = (colorBalance[white] ?? 0) + 1;
+        colorBalance[black] = (colorBalance[black] ?? 0) - 1;
+      }
+    }
+
+    double quality(List<_EditableParticipant> order) {
+      var result = 0.0;
+      for (var index = 0; index < order.length; index += 2) {
+        final a = order[index];
+        final b = order[index + 1];
+        final ai = _participants.indexOf(a);
+        final bi = _participants.indexOf(b);
+        if (_pairingSettings.pairByCurrentScore) {
+          result += (_pointsFor(ai) - _pointsFor(bi)).abs() * 100000;
+        }
+        if (_pairingSettings.useRating) {
+          result += (a.rating - b.rating).abs() * 10;
+        }
+        if (a.age != null && b.age != null) {
+          result += (a.age! - b.age!).abs() * 100;
+        }
+        result += (_buchholzFor(ai) - _buchholzFor(bi)).abs() * 1000;
+        result += (_bergerFor(ai) - _bergerFor(bi)).abs() * 1000;
+        if (_pairingSettings.balanceColors) {
+          result +=
+              ((colorBalance[a.id] ?? 0) - (colorBalance[b.id] ?? 0)).abs() *
+                  500;
+        }
+        final ids = <String>[a.id, b.id]..sort();
+        final key = ids.join('|');
+        if (_pairingSettings.avoidRematches && previousPairs.contains(key)) {
+          result += 10000000;
+        }
+      }
+      return result;
+    }
+
+    final candidates =
+        <({double score, double tie, List<_EditableParticipant?> order})>[];
+    final keys = <String>{};
+    for (var attempt = 0; attempt < 240; attempt++) {
+      final order = active.toList();
+      if (attempt == 0) {
+        order.sort((a, b) {
+          final points = _pointsFor(_participants.indexOf(b))
+              .compareTo(_pointsFor(_participants.indexOf(a)));
+          if (points != 0) return points;
+          return b.rating.compareTo(a.rating);
+        });
+      } else {
+        order.shuffle(random);
+      }
+      final key = order.map((player) => player.id).join('|');
+      if (!keys.add(key)) continue;
+      candidates.add((
+        score: quality(order),
+        tie: random.nextDouble(),
+        order: <_EditableParticipant?>[
+          ...order,
+          if (bye != null) bye,
+          if (bye != null) null,
+        ],
+      ));
+    }
+    candidates.sort((a, b) {
+      final score = a.score.compareTo(b.score);
+      return score != 0 ? score : a.tie.compareTo(b.tie);
+    });
+    return candidates.take(5).map((candidate) => candidate.order).toList();
+  }
+
+  Future<void> _applyPairingOrder(
+    List<_EditableParticipant?> order, {
+    int? replaceRound,
+    bool reopen = true,
+  }) async {
+    final existingRounds = _pairingSchedule
+        .map((pairing) => (pairing['round'] as num?)?.toInt() ?? 0)
+        .where((round) => round > 0);
+    final round = replaceRound ??
+        (existingRounds.isEmpty ? 1 : existingRounds.reduce(math.max) + 1);
+    final generated = <Map<String, dynamic>>[];
+    final colorBalance = <String, int>{};
+    for (final pairing in _pairingSchedule) {
+      final white = '${pairing['whiteId'] ?? ''}';
+      final black = '${pairing['blackId'] ?? ''}';
+      if (white.isNotEmpty && black.isNotEmpty) {
+        colorBalance[white] = (colorBalance[white] ?? 0) + 1;
+        colorBalance[black] = (colorBalance[black] ?? 0) - 1;
+      }
+    }
+    for (var index = 0; index < order.length; index += 2) {
+      var first = order[index];
+      var second = index + 1 < order.length ? order[index + 1] : null;
+      if (first == null) continue;
+      if (second != null &&
+          _pairingSettings.balanceColors &&
+          (colorBalance[first.id] ?? 0) > (colorBalance[second.id] ?? 0)) {
+        final swap = first;
+        first = second;
+        second = swap;
+      }
+      final gameCount = second != null &&
+              _pairingSettings.repeatTiming ==
+                  TournamentRepeatTiming.consecutive
+          ? _pairingSettings.gamesPerOpponent
+          : 1;
+      for (var game = 0; game < gameCount; game++) {
+        final reverse = game.isOdd;
+        final white = reverse && second != null ? second : first;
+        final black = reverse && second != null ? first : second;
+        generated.add(<String, dynamic>{
+          'cycle': 1,
+          'round': round,
+          'gameInMatch': game + 1,
+          'board': index ~/ 2 + 1,
+          'whiteId': white.id,
+          'blackId': black?.id,
+          'result': black == null ? '1-0' : '*',
+          'resultReason': black == null ? 'bye' : '',
+          'status': black == null ? 'finished' : 'waiting',
+        });
+      }
+    }
+    setState(() {
+      _pairings = generated;
+      _pairingSchedule = <Map<String, dynamic>>[
+        ..._pairingSchedule.where(
+            (pairing) => ((pairing['round'] as num?)?.toInt() ?? 0) != round),
+        ...generated,
+      ];
+    });
+    await _save();
+    if (mounted && reopen) await _openRoundPairings(round);
+  }
+
   Future<void> _generateAutomaticPairings() async {
+    if (_pairings.any((pairing) => '${pairing['result'] ?? '*'}' == '*')) {
+      _message(
+        'Новая жеребьёвка невозможна: сначала завершите все партии текущего тура',
+      );
+      return;
+    }
+    final variants = _pairingVariants();
+    if (variants.isEmpty) {
+      _message('Для жеребьёвки нужны минимум два участника');
+      return;
+    }
+    await _applyPairingOrder(variants.first);
+  }
+
+  Future<void> _openPairingVariants({required bool manual}) async {
+    final variants = _pairingVariants();
+    if (manual && _pairings.isNotEmpty) {
+      final byId = <String, _EditableParticipant>{
+        for (final player in _participants) player.id: player,
+      };
+      final current = <_EditableParticipant?>[];
+      for (final pairing in _pairings.where(
+          (pairing) => ((pairing['gameInMatch'] as num?)?.toInt() ?? 1) == 1)) {
+        final white = byId['${pairing['whiteId'] ?? ''}'];
+        if (white == null) continue;
+        current
+          ..add(white)
+          ..add(byId['${pairing['blackId'] ?? ''}']);
+      }
+      if (current.length >= 2) {
+        variants.insert(0, current);
+        if (variants.length > 5) variants.removeLast();
+      }
+    }
+    if (variants.isEmpty) {
+      _message('Для жеребьёвки нужны минимум два участника');
+      return;
+    }
+    final selected = await showDialog<List<_EditableParticipant?>>(
+      context: context,
+      builder: (dialogContext) => _PairingVariantsDialog(
+        variants: variants,
+        manual: manual,
+      ),
+    );
+    if (selected != null && mounted) {
+      final currentRound = _pairings.isEmpty
+          ? null
+          : (_pairings.first['round'] as num?)?.toInt();
+      await _applyPairingOrder(
+        selected,
+        replaceRound: manual ? currentRound : null,
+      );
+    }
+  }
+
+  Future<void> _generateLegacyAutomaticPairings() async {
     final players = _participants
         .where((participant) =>
             !_isEmptySlot(participant) && participant.id.trim().isNotEmpty)
@@ -686,6 +1460,7 @@ class _TournamentTableEditorDialogState
       'Расписание создано: ${_pairingSettings.cycles} кругов, '
       '${_pairingSettings.gamesPerOpponent} партий с соперником',
     );
+    await _openRoundPairings(1);
   }
 
   String _resultKey(int row, int column) => '$row:$column';
@@ -703,10 +1478,210 @@ class _TournamentTableEditorDialogState
     for (var column = 0; column < _resultColumnCount; column++) {
       if (!_isSwissTournament && row == column) continue;
       final value = _results[_resultKey(row, column)];
-      if (value == '1') result += 1;
-      if (value == '½') result += 0.5;
+      if (value == '1') result += _pairingSettings.scoringSystem.winPoints;
+      if (value == '½') result += _pairingSettings.scoringSystem.drawPoints;
     }
     return result;
+  }
+
+  double _pointsBeforeRound(int row, int round) {
+    if (row < 0 || row >= _participants.length || round <= 1) return 0;
+    if (_isSwissTournament) {
+      var points = 0.0;
+      for (var column = 0;
+          column < round - 1 && column < _resultColumnCount;
+          column++) {
+        final value = _results[_resultKey(row, column)];
+        if (value == '1') {
+          points += _pairingSettings.scoringSystem.winPoints;
+        } else if (value == '½') {
+          points += _pairingSettings.scoringSystem.drawPoints;
+        }
+      }
+      return points;
+    }
+    final participantId = _participants[row].id;
+    final source = _pairingSchedule.isNotEmpty ? _pairingSchedule : _pairings;
+    var points = 0.0;
+    for (final pairing in source) {
+      final pairingRound = (pairing['round'] as num?)?.toInt() ?? 1;
+      if (pairingRound >= round) continue;
+      final whiteId = '${pairing['whiteId'] ?? ''}';
+      final blackId = '${pairing['blackId'] ?? ''}';
+      final isWhite = whiteId == participantId;
+      final isBlack = blackId == participantId;
+      if (!isWhite && !isBlack) continue;
+      final result = '${pairing['result'] ?? '*'}'
+          .trim()
+          .replaceAll(' ', '')
+          .replaceAll('½', '1/2');
+      if (result == '1/2-1/2') {
+        points += _pairingSettings.scoringSystem.drawPoints;
+      } else if ((isWhite && result == '1-0') || (isBlack && result == '0-1')) {
+        points += _pairingSettings.scoringSystem.winPoints;
+      }
+    }
+    return points;
+  }
+
+  Map<String, dynamic>? _swissPairingFor(int row, int roundColumn) {
+    if (!_isSwissTournament || row < 0 || row >= _participants.length) {
+      return null;
+    }
+    final participantId = _participants[row].id;
+    final round = roundColumn + 1;
+    final source = _pairingSchedule.isNotEmpty ? _pairingSchedule : _pairings;
+    for (final pairing in source) {
+      final pairingRound = (pairing['round'] as num?)?.toInt() ?? 1;
+      if (pairingRound != round) continue;
+      if ('${pairing['whiteId'] ?? ''}' == participantId ||
+          '${pairing['blackId'] ?? ''}' == participantId) {
+        return pairing;
+      }
+    }
+    return null;
+  }
+
+  String _swissCellText(int row, int column, String result) {
+    final pairing = _swissPairingFor(row, column);
+    if (pairing == null) return '—\n—\n$result';
+    final participantId = _participants[row].id;
+    final isWhite = '${pairing['whiteId'] ?? ''}' == participantId;
+    final opponentId = '${pairing[isWhite ? 'blackId' : 'whiteId'] ?? ''}';
+    if (opponentId.isEmpty) return '—\nБ\n$result';
+    final opponentIndex =
+        _participants.indexWhere((participant) => participant.id == opponentId);
+    return '${opponentIndex < 0 ? '—' : opponentIndex + 1}\n${isWhite ? 'Б' : 'Ч'}\n$result';
+  }
+
+  void _setSwissPairingResult(int row, int column, String? value) {
+    final pairing = _swissPairingFor(row, column);
+    if (pairing == null) return;
+    final participantId = _participants[row].id;
+    final isWhite = '${pairing['whiteId'] ?? ''}' == participantId;
+    final gameResult = value == null
+        ? '*'
+        : value == '½'
+            ? '1/2-1/2'
+            : (value == '1') == isWhite
+                ? '1-0'
+                : '0-1';
+    pairing['result'] = gameResult;
+    final opponentId = '${pairing[isWhite ? 'blackId' : 'whiteId'] ?? ''}';
+    final opponentRow =
+        _participants.indexWhere((participant) => participant.id == opponentId);
+    if (opponentRow >= 0) {
+      final opponentKey = _resultKey(opponentRow, column);
+      if (value == null) {
+        _results.remove(opponentKey);
+      } else {
+        _results[opponentKey] = value == '1'
+            ? '0'
+            : value == '0'
+                ? '1'
+                : '½';
+      }
+    }
+  }
+
+  Future<bool> _confirmPairingCorrection() async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const MakeChessLocalizedText('Изменение жеребьёвки'),
+            content: const MakeChessLocalizedText(
+              'Вы уверены, что хотите поменять результат жеребьёвки?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const MakeChessLocalizedText('Нет'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const MakeChessLocalizedText('Да'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _editSwissOpponent(int row, int column) async {
+    final pairing = _swissPairingFor(row, column);
+    if (pairing == null || !await _confirmPairingCorrection() || !mounted) {
+      return;
+    }
+    final participant = _participants[row];
+    final isWhite = '${pairing['whiteId'] ?? ''}' == participant.id;
+    final selected = await showDialog<_EditableParticipant>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const MakeChessLocalizedText('Выберите нового соперника'),
+        children: [
+          for (var index = 0; index < _participants.length; index++)
+            if (_participants[index].id != participant.id &&
+                !_isEmptySlot(_participants[index]))
+              SimpleDialogOption(
+                onPressed: () =>
+                    Navigator.pop(dialogContext, _participants[index]),
+                child: MakeChessLocalizedText(
+                  '${index + 1}. ${_participants[index].name}',
+                ),
+              ),
+        ],
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      pairing[isWhite ? 'blackId' : 'whiteId'] = selected.id;
+      pairing['result'] = '*';
+      _results.remove(_resultKey(row, column));
+    });
+    await _save();
+  }
+
+  Future<void> _editSwissColor(int row, int column) async {
+    final pairing = _swissPairingFor(row, column);
+    if (pairing == null || !await _confirmPairingCorrection() || !mounted) {
+      return;
+    }
+    setState(() {
+      final white = pairing['whiteId'];
+      pairing['whiteId'] = pairing['blackId'];
+      pairing['blackId'] = white;
+      pairing['result'] = '*';
+      _results.remove(_resultKey(row, column));
+    });
+    await _save();
+  }
+
+  Future<void> _editSwissResult(int row, int column) async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const MakeChessLocalizedText('Результат игры'),
+        children: [
+          for (final value in const <String>['0', '½', '1', '—'])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, value),
+              child: MakeChessLocalizedText(value),
+            ),
+        ],
+      ),
+    );
+    if (selected == null || !mounted) return;
+    final value = selected == '—' ? null : selected;
+    setState(() {
+      final key = _resultKey(row, column);
+      if (value == null) {
+        _results.remove(key);
+      } else {
+        _results[key] = value;
+      }
+      _setSwissPairingResult(row, column, value);
+    });
+    await _save();
   }
 
   double _buchholzFor(int row) {
@@ -838,16 +1813,161 @@ class _TournamentTableEditorDialogState
     );
   }
 
-  void _addParticipant() {
-    setState(() {
-      _participants.add(
-        _EditableParticipant(
-          id: 'manual_${DateTime.now().microsecondsSinceEpoch}',
-          name: 'Новый участник',
-          rating: 1200,
+  Future<void> _openAddPlayer() async {
+    if (!_offlineMode) {
+      await _openParticipantPicker();
+      return;
+    }
+    final source = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _panel2,
+        title: const MakeChessLocalizedText('Добавить игрока'),
+        content: const MakeChessLocalizedText(
+          'Выберите, откуда добавить участника офлайн-турнира.',
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const MakeChessLocalizedText('Отмена'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'makechess'),
+            icon: const Icon(Icons.public),
+            label: const MakeChessLocalizedText('Из MakeChess'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'manual'),
+            icon: const Icon(Icons.edit_note),
+            label: const MakeChessLocalizedText('Ввести вручную'),
+          ),
+        ],
+      ),
+    );
+    if (source == 'makechess') {
+      await _openParticipantPicker();
+    } else if (source == 'manual') {
+      await _addOfflineParticipantManually();
+    }
+  }
+
+  Future<void> _addOfflineParticipantManually() async {
+    final name = TextEditingController();
+    final rating = TextEditingController(text: '1200');
+    final school = TextEditingController();
+    final externalProfile = TextEditingController();
+    final age = TextEditingController();
+    final birthYear = TextEditingController();
+    final title = TextEditingController();
+    String source = 'guest';
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: _panel2,
+          title: const MakeChessLocalizedText('Новый офлайн-игрок'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: source,
+                    decoration: _decoration('Источник игрока'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'guest',
+                        child: MakeChessLocalizedText(
+                            'Незарегистрированный игрок'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'external',
+                        child: MakeChessLocalizedText(
+                            'Игрок с другого шахматного сайта'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => source = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(name, 'Имя и фамилия'),
+                  _dialogField(rating, 'Рейтинг', numeric: true),
+                  _dialogField(school, 'Школа / клуб'),
+                  _dialogField(age, 'Возраст', numeric: true),
+                  _dialogField(birthYear, 'Год рождения', numeric: true),
+                  _participantTitleDropdown(title),
+                  _dialogField(
+                    externalProfile,
+                    source == 'external'
+                        ? 'Сайт, логин или ссылка на профиль'
+                        : 'Контакт или примечание (необязательно)',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const MakeChessLocalizedText('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (name.text.trim().isEmpty) return;
+                Navigator.pop(ctx, true);
+              },
+              child: const MakeChessLocalizedText('Добавить игрока'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (accepted == true && mounted) {
+      final participant = _EditableParticipant(
+        id: '${source}_${DateTime.now().microsecondsSinceEpoch}',
+        name: name.text.trim(),
+        rating: int.tryParse(rating.text.trim()) ?? 1200,
+        school: school.text.trim(),
+        source: source,
+        externalProfile: externalProfile.text.trim(),
+        age: int.tryParse(age.text.trim()),
+        birthYear: int.tryParse(birthYear.text.trim()),
+        title: title.text.trim(),
       );
-    });
+      final restrictionError = _participantRestrictionError(participant);
+      if (restrictionError != null) {
+        await _showParticipantRestrictionWarning(restrictionError);
+        name.dispose();
+        rating.dispose();
+        school.dispose();
+        externalProfile.dispose();
+        age.dispose();
+        birthYear.dispose();
+        title.dispose();
+        return;
+      }
+      setState(() {
+        final emptyIndex = _participants.indexWhere(_isEmptySlot);
+        if (emptyIndex >= 0) {
+          _participants[emptyIndex] = participant;
+        } else {
+          _participants.add(participant);
+        }
+        _ensureParticipantSlots();
+      });
+      await _save();
+    }
+    name.dispose();
+    rating.dispose();
+    school.dispose();
+    externalProfile.dispose();
+    age.dispose();
+    birthYear.dispose();
+    title.dispose();
   }
 
   void _removeParticipant(int index) {
@@ -864,6 +1984,23 @@ class _TournamentTableEditorDialogState
     final school = TextEditingController(text: person.school);
     final flag = TextEditingController(text: person.flag);
     final avatar = TextEditingController(text: person.avatarUrl);
+    final age = TextEditingController(text: person.age?.toString() ?? '');
+    final birthYear =
+        TextEditingController(text: person.birthYear?.toString() ?? '');
+    final title = TextEditingController(text: person.title);
+    _EditableParticipant candidateFromFields() => _EditableParticipant(
+          id: person.id,
+          name: name.text.trim().isEmpty ? 'Участник' : name.text.trim(),
+          rating: int.tryParse(rating.text.trim()) ?? 1200,
+          school: school.text.trim(),
+          flag: flag.text.trim().isEmpty ? '🏳️' : flag.text.trim(),
+          avatarUrl: avatar.text.trim(),
+          source: _isEmptySlot(person) ? 'guest' : person.source,
+          externalProfile: person.externalProfile,
+          age: int.tryParse(age.text.trim()),
+          birthYear: int.tryParse(birthYear.text.trim()),
+          title: title.text.trim(),
+        );
     final accepted = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -878,6 +2015,9 @@ class _TournamentTableEditorDialogState
                 _dialogField(name, 'Имя участника'),
                 _dialogField(rating, 'Рейтинг', numeric: true),
                 _dialogField(school, 'Школа / клуб'),
+                _dialogField(age, 'Возраст', numeric: true),
+                _dialogField(birthYear, 'Год рождения', numeric: true),
+                _participantTitleDropdown(title),
                 _dialogField(flag, 'Флаг: символ или эмодзи'),
                 _dialogField(avatar, 'Ссылка на фотографию'),
               ],
@@ -890,26 +2030,59 @@ class _TournamentTableEditorDialogState
             child: const MakeChessLocalizedText('Отмена'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () async {
+              final restrictionError =
+                  _participantRestrictionError(candidateFromFields());
+              if (restrictionError != null) {
+                await _showParticipantRestrictionWarning(restrictionError);
+                return;
+              }
+              if (ctx.mounted) Navigator.pop(ctx, true);
+            },
             child: const MakeChessLocalizedText('Применить'),
           ),
         ],
       ),
     );
     if (accepted == true) {
+      final candidate = candidateFromFields();
+      final restrictionError = _participantRestrictionError(candidate);
+      if (restrictionError != null) {
+        await _showParticipantRestrictionWarning(restrictionError);
+        name.dispose();
+        rating.dispose();
+        school.dispose();
+        flag.dispose();
+        avatar.dispose();
+        age.dispose();
+        birthYear.dispose();
+        title.dispose();
+        return;
+      }
       setState(() {
+        if (_isEmptySlot(person)) {
+          person.id = 'manual_${DateTime.now().microsecondsSinceEpoch}';
+          person.source = 'guest';
+        }
         person.name = name.text.trim().isEmpty ? 'Участник' : name.text.trim();
         person.rating = int.tryParse(rating.text.trim()) ?? 1200;
         person.school = school.text.trim();
         person.flag = flag.text.trim().isEmpty ? '🏳️' : flag.text.trim();
         person.avatarUrl = avatar.text.trim();
+        person.age = candidate.age;
+        person.birthYear = candidate.birthYear;
+        person.title = candidate.title;
       });
+      await _save();
     }
     name.dispose();
     rating.dispose();
     school.dispose();
     flag.dispose();
     avatar.dispose();
+    age.dispose();
+    birthYear.dispose();
+    title.dispose();
   }
 
   Widget _dialogField(
@@ -924,6 +2097,33 @@ class _TournamentTableEditorDialogState
         keyboardType: numeric ? TextInputType.number : TextInputType.text,
         style: const TextStyle(color: Colors.white),
         decoration: _decoration(label),
+      ),
+    );
+  }
+
+  Widget _participantTitleDropdown(TextEditingController controller) {
+    final current =
+        controller.text.trim().isEmpty ? 'Без звания' : controller.text.trim();
+    final titles = <String>[
+      ..._chessTitles,
+      if (!_chessTitles.contains(current)) current,
+    ];
+    controller.text = current;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<String>(
+        initialValue: current,
+        dropdownColor: _panel2,
+        isExpanded: true,
+        style: const TextStyle(color: Colors.white),
+        decoration: _decoration('Шахматное звание'),
+        items: titles
+            .map((value) => DropdownMenuItem<String>(
+                  value: value,
+                  child: MakeChessLocalizedText(value),
+                ))
+            .toList(growable: false),
+        onChanged: (value) => controller.text = value ?? 'Без звания',
       ),
     );
   }
@@ -950,6 +2150,7 @@ class _TournamentTableEditorDialogState
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    final publicationMode = _showPreview && !widget.previewMode;
     return Dialog(
       insetPadding: const EdgeInsets.all(12),
       backgroundColor: Colors.transparent,
@@ -959,7 +2160,10 @@ class _TournamentTableEditorDialogState
         decoration: BoxDecoration(
           color: _background,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: _gold.withOpacity(0.6)),
+          border: Border.all(
+            color: _testMode ? Colors.redAccent : _gold.withOpacity(0.6),
+            width: _testMode ? 4 : 1,
+          ),
           boxShadow: const [
             BoxShadow(color: Colors.black87, blurRadius: 32, spreadRadius: 4),
           ],
@@ -985,13 +2189,23 @@ class _TournamentTableEditorDialogState
                                   _buildTemplateFieldsSummary(),
                                 ],
                                 const SizedBox(height: 14),
+                                _buildTableConstructor(),
+                                const SizedBox(height: 10),
                                 _buildTable(),
-                                const SizedBox(height: 14),
-                                _buildActions(),
                               ],
                             ),
                     ),
                   ),
+                  if (!publicationMode)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF0A1520),
+                        border: Border(top: BorderSide(color: _line)),
+                      ),
+                      child: _buildActions(),
+                    ),
                 ],
               ),
       ),
@@ -1026,6 +2240,34 @@ class _TournamentTableEditorDialogState
             ),
           ),
           const Spacer(),
+          if (_testMode) ...[
+            const MakeChessLocalizedText(
+              'РЕЖИМ ТЕСТА',
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+              ),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton.icon(
+              onPressed: _exitTestMode,
+              icon: const Icon(Icons.exit_to_app),
+              label: const MakeChessLocalizedText('Выход из теста'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.redAccent,
+                side: const BorderSide(color: Colors.redAccent),
+              ),
+            ),
+          ] else if (widget.organizerMode && !widget.previewMode) ...[
+            FilledButton.icon(
+              onPressed: _openTestSetup,
+              icon: const Icon(Icons.science_outlined),
+              label: const MakeChessLocalizedText('Тест'),
+            ),
+          ],
+          const SizedBox(width: 12),
           MakeChessLocalizedText(
             widget.previewMode
                 ? 'Публикационный вид: красивый финальный дизайн'
@@ -1102,6 +2344,62 @@ class _TournamentTableEditorDialogState
                   ],
                 ),
                 const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _background,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _line),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.sports_esports_outlined, color: _gold),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            MakeChessLocalizedText(
+                              'Режим проведения',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            MakeChessLocalizedText(
+                              'Онлайн через MakeChess или игра за реальной доской',
+                              style: TextStyle(color: Colors.white54),
+                            ),
+                          ],
+                        ),
+                      ),
+                      SegmentedButton<bool>(
+                        segments: const [
+                          ButtonSegment(
+                            value: false,
+                            icon: Icon(Icons.language),
+                            label: MakeChessLocalizedText('Онлайн'),
+                          ),
+                          ButtonSegment(
+                            value: true,
+                            icon: Icon(Icons.table_restaurant_outlined),
+                            label: MakeChessLocalizedText('Офлайн'),
+                          ),
+                        ],
+                        selected: <bool>{_offlineMode},
+                        onSelectionChanged: widget.previewMode
+                            ? null
+                            : (selection) {
+                                setState(
+                                  () => _offlineMode = selection.first,
+                                );
+                                _save();
+                              },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(child: _field(_judgeCtl, 'Судья')),
@@ -1122,6 +2420,73 @@ class _TournamentTableEditorDialogState
                     const SizedBox(width: 12),
                     Expanded(child: _field(_organizerCtl, 'Организатор')),
                   ],
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _background,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _line),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.rule, color: _gold),
+                          SizedBox(width: 8),
+                          MakeChessLocalizedText(
+                            'Ограничения участия',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _field(_minRatingCtl, 'Рейтинг от',
+                                numeric: true),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _field(_maxRatingCtl, 'Рейтинг до',
+                                numeric: true),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child:
+                                _field(_minAgeCtl, 'Возраст от', numeric: true),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child:
+                                _field(_maxAgeCtl, 'Возраст до', numeric: true),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _field(_birthYearFromCtl, 'Год рождения от',
+                                numeric: true),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _field(_birthYearToCtl, 'Год рождения до',
+                                numeric: true),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      _titleRestrictionsField(),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -1149,6 +2514,76 @@ class _TournamentTableEditorDialogState
                     const SizedBox(width: 12),
                     Expanded(child: _field(_ageCtl, 'Возрастная категория')),
                   ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<TournamentScoringSystem>(
+                        value: _pairingSettings.scoringSystem,
+                        decoration: _decoration('Система начисления очков'),
+                        items: TournamentScoringSystem.values
+                            .map((system) => DropdownMenuItem(
+                                  value: system,
+                                  child: MakeChessLocalizedText(system.label),
+                                ))
+                            .toList(growable: false),
+                        onChanged: widget.previewMode
+                            ? null
+                            : (system) {
+                                if (system == null) return;
+                                setState(() => _pairingSettings =
+                                        _pairingSettings.copyWith(
+                                      scoringSystem: system,
+                                    ));
+                              },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _background,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _line),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.trending_up, color: _gold),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const MakeChessLocalizedText(
+                              'Рейтинговый турнир',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            MakeChessLocalizedText(
+                              _rated
+                                  ? 'Результаты учитываются в рейтинге'
+                                  : 'Без расчёта рейтинга',
+                              style: const TextStyle(color: Colors.white54),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        value: _rated,
+                        onChanged: widget.previewMode
+                            ? null
+                            : (value) => setState(() => _rated = value),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1271,25 +2706,28 @@ class _TournamentTableEditorDialogState
                     children: [
                       SizedBox(
                         height: 42,
-                        child: Row(
-                          children: [
-                            for (final column in schema.columns.take(6))
-                              Expanded(
-                                child: Container(
-                                  alignment: Alignment.center,
-                                  decoration: const BoxDecoration(
-                                    border:
-                                        Border(right: BorderSide(color: _line)),
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (final column in schema.columns.take(6))
+                                Expanded(
+                                  child: Container(
+                                    alignment: Alignment.center,
+                                    decoration: const BoxDecoration(
+                                      border: Border(
+                                          right: BorderSide(color: _line)),
+                                    ),
+                                    child: Text(column.label,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            color: _gold,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700)),
                                   ),
-                                  child: Text(column.label,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          color: _gold,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w700)),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                       const Expanded(
@@ -1308,7 +2746,8 @@ class _TournamentTableEditorDialogState
                   fallbackIndex: schema.fields.length + 5 + index,
                   width: 165,
                   child: OutlinedButton(
-                    onPressed: widget.previewMode
+                    onPressed: widget.previewMode ||
+                            !schema.buttons[index].enabled
                         ? null
                         : () =>
                             _runTemplateAction(schema.buttons[index].action),
@@ -1338,7 +2777,7 @@ class _TournamentTableEditorDialogState
         setState(() => _showPreview = false);
         return;
       case TournamentTemplateAction.save:
-        _saveAndClose(TournamentTableEditorResult.saved);
+        _save();
         return;
       case TournamentTemplateAction.callTournament:
         widget.onCallTournament?.call();
@@ -1359,19 +2798,31 @@ class _TournamentTableEditorDialogState
         }
         return;
       case TournamentTemplateAction.createPairing:
-        _openPairingControl();
+        if (_testMode) {
+          _generateTestRoundPairings();
+        } else {
+          _openPairingControl();
+        }
         return;
       case TournamentTemplateAction.enterResult:
         _message('Выберите результат в ячейке таблицы');
         return;
       case TournamentTemplateAction.startTournament:
-        widget.onStartTournament?.call();
+        if (_testMode) {
+          _startTestTournament();
+        } else {
+          widget.onStartTournament?.call();
+        }
         return;
       case TournamentTemplateAction.pauseTournament:
         widget.onPauseTournament?.call();
         return;
       case TournamentTemplateAction.finishTournament:
-        widget.onFinishTournament?.call();
+        if (_testMode) {
+          _finishTestTournament();
+        } else {
+          widget.onFinishTournament?.call();
+        }
         return;
       case TournamentTemplateAction.startRound:
         widget.onStartTournament?.call();
@@ -1421,121 +2872,149 @@ class _TournamentTableEditorDialogState
             const SizedBox(height: 14),
             _buildTemplateFieldsSummary(),
           ],
+          if (_hasParticipationRestrictions) ...[
+            const SizedBox(height: 14),
+            _buildParticipationRestrictionsSummary(),
+          ],
           const SizedBox(height: 20),
           if (_pairings.isNotEmpty) ...[
             _buildPairingsSummary(),
             const SizedBox(height: 14),
           ],
-          _buildPublicationTable(),
-          if (widget.organizerMode &&
-              widget.templateSchema?.expandableRows == true) ...[
+          if (_pairedRounds.isNotEmpty) ...[
+            _buildRoundPairingButtons(),
             const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _openParticipantPicker,
-                icon: const Icon(Icons.add_circle_outline),
-                label: const Text('Добавить игрока'),
-              ),
+          ],
+          _buildPublicationTable(),
+          if (widget.organizerMode || widget.onParticipate != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                if (widget.organizerMode)
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: widget.previewMode ? null : _openAddPlayer,
+                      icon: const Icon(Icons.person_add_alt),
+                      label: const MakeChessLocalizedText('Добавить игрока'),
+                    ),
+                  ),
+                if (widget.organizerMode) const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: widget.onParticipate,
+                    icon: const Icon(Icons.how_to_reg),
+                    label: const MakeChessLocalizedText(
+                      'Записаться на турнир',
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
           const SizedBox(height: 20),
-          Row(
-            children: [
-              if (!widget.previewMode) ...[
-                OutlinedButton.icon(
-                  onPressed: () => setState(() => _showPreview = false),
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const MakeChessLocalizedText('Редактировать данные'),
-                ),
-                const SizedBox(width: 10),
-                OutlinedButton.icon(
-                  onPressed: _save,
-                  icon: const Icon(Icons.save_outlined),
-                  label: const MakeChessLocalizedText('Сохранить'),
-                ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
                 if (!widget.previewMode) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => setState(() => _showPreview = false),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const MakeChessLocalizedText('Редактировать данные'),
+                  ),
                   const SizedBox(width: 10),
                   OutlinedButton.icon(
-                    onPressed: widget.onCallTournament,
-                    icon: const Icon(Icons.notifications_active_outlined),
-                    label: const MakeChessLocalizedText('Вызвать на турнир'),
+                    onPressed: _save,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const MakeChessLocalizedText('Сохранить'),
                   ),
+                  if (!widget.previewMode) ...[
+                    const SizedBox(width: 10),
+                    OutlinedButton.icon(
+                      onPressed: widget.onCallTournament,
+                      icon: const Icon(Icons.notifications_active_outlined),
+                      label: const MakeChessLocalizedText('Вызвать на турнир'),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF167C4D),
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: _testMode
+                          ? _startTestTournament
+                          : widget.onStartTournament,
+                      icon: const Icon(Icons.play_arrow),
+                      label: const MakeChessLocalizedText('Начать турнир'),
+                    ),
+                    const SizedBox(width: 10),
+                    OutlinedButton.icon(
+                      onPressed: widget.onPauseTournament,
+                      icon: const Icon(Icons.pause),
+                      label: const MakeChessLocalizedText('Приостановить'),
+                    ),
+                    const SizedBox(width: 10),
+                    OutlinedButton.icon(
+                      onPressed: _testMode
+                          ? _finishTestTournament
+                          : widget.onFinishTournament,
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const MakeChessLocalizedText('Закончить'),
+                    ),
+                  ],
+                ],
+                const SizedBox(width: 10),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF0B4F82),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 15,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: const BorderSide(
+                          color: Color(0xFF28A9FF), width: 1.5),
+                    ),
+                    elevation: 10,
+                    shadowColor: const Color(0xFF28A9FF),
+                  ),
+                  onPressed: _testMode
+                      ? _generateTestRoundPairings
+                      : _openPairingControl,
+                  icon: const Icon(Icons.casino, size: 22),
+                  label: const MakeChessLocalizedText(
+                    'ЖЕРЕБЬЁВКА',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+                if (_testMode) ...[
                   const SizedBox(width: 10),
                   FilledButton.icon(
+                    onPressed: _generateTestRoundResults,
                     style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF167C4D),
+                      backgroundColor: const Color(0xFF9B1C1C),
                       foregroundColor: Colors.white,
                     ),
-                    onPressed: widget.onStartTournament,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const MakeChessLocalizedText('Начать турнир'),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: widget.onPauseTournament,
-                    icon: const Icon(Icons.pause),
-                    label: const MakeChessLocalizedText('Приостановить'),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: widget.onFinishTournament,
-                    icon: const Icon(Icons.stop_circle_outlined),
-                    label: const MakeChessLocalizedText('Закончить'),
+                    icon: const Icon(Icons.casino_outlined),
+                    label: const MakeChessLocalizedText(
+                      'Результат тестового тура',
+                    ),
                   ),
                 ],
-              ],
-              if (widget.onParticipate != null) ...[
-                FilledButton.icon(
-                  onPressed: widget.onParticipate,
-                  icon: const Icon(Icons.person_add_alt_1),
-                  label: const MakeChessLocalizedText('Участвовать в турнире'),
-                ),
                 const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: () => _message('Печать будет подключена отдельно'),
+                  icon: const Icon(Icons.print_outlined),
+                  label: const MakeChessLocalizedText('Печать'),
+                ),
               ],
-              const Spacer(),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF0B4F82),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 15,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    side:
-                        const BorderSide(color: Color(0xFF28A9FF), width: 1.5),
-                  ),
-                  elevation: 10,
-                  shadowColor: const Color(0xFF28A9FF),
-                ),
-                onPressed: _openPairingControl,
-                icon: const Icon(Icons.casino, size: 22),
-                label: const MakeChessLocalizedText(
-                  'ЖЕРЕБЬЁВКА',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              if (widget.organizerMode && !widget.previewMode) ...[
-                FilledButton.icon(
-                  onPressed: _openParticipantPicker,
-                  icon: const Icon(Icons.person_add_alt_1),
-                  label: const MakeChessLocalizedText('Добавить участника'),
-                ),
-                const SizedBox(width: 10),
-              ],
-              OutlinedButton.icon(
-                onPressed: () => _message('Печать будет подключена отдельно'),
-                icon: const Icon(Icons.print_outlined),
-                label: const MakeChessLocalizedText('Печать'),
-              ),
-            ],
+            ),
           ),
         ],
       ),
@@ -1599,10 +3078,10 @@ class _TournamentTableEditorDialogState
                     ),
                     _publicationLine(
                       Icons.place,
-                      'Место проведения',
-                      _venueCtl.text.trim().isEmpty
-                          ? 'Не указано'
-                          : _venueCtl.text.trim(),
+                      'Режим проведения',
+                      _offlineMode
+                          ? 'Офлайн • ${_venueCtl.text.trim().isEmpty ? 'Реальная доска' : _venueCtl.text.trim()}'
+                          : 'Онлайн • MakeChess',
                     ),
                     _publicationLine(
                       Icons.calendar_month,
@@ -1695,6 +3174,52 @@ class _TournamentTableEditorDialogState
         const SizedBox(width: 28),
         information,
       ],
+    );
+  }
+
+  bool get _hasParticipationRestrictions =>
+      _minRatingCtl.text.trim().isNotEmpty ||
+      _maxRatingCtl.text.trim().isNotEmpty ||
+      _minAgeCtl.text.trim().isNotEmpty ||
+      _maxAgeCtl.text.trim().isNotEmpty ||
+      _birthYearFromCtl.text.trim().isNotEmpty ||
+      _birthYearToCtl.text.trim().isNotEmpty ||
+      _allowedTitles.isNotEmpty;
+
+  Widget _buildParticipationRestrictionsSummary() {
+    String range(String from, String to) {
+      if (from.isEmpty && to.isEmpty) return 'без ограничений';
+      if (from.isEmpty) return 'до $to';
+      if (to.isEmpty) return 'от $from';
+      return '$from–$to';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D1F30),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF31506A)),
+      ),
+      child: Wrap(
+        spacing: 24,
+        runSpacing: 8,
+        children: [
+          Text(
+            'Рейтинг: ${range(_minRatingCtl.text.trim(), _maxRatingCtl.text.trim())}',
+          ),
+          Text(
+            'Возраст: ${range(_minAgeCtl.text.trim(), _maxAgeCtl.text.trim())}',
+          ),
+          Text(
+            'Год рождения: ${range(_birthYearFromCtl.text.trim(), _birthYearToCtl.text.trim())}',
+          ),
+          Text(
+            'Звания: ${_allowedTitles.isEmpty ? 'без ограничений' : _allowedTitles.join(', ')}',
+          ),
+        ],
+      ),
     );
   }
 
@@ -1843,7 +3368,8 @@ class _TournamentTableEditorDialogState
   Widget _buildPublicationTable() {
     final count = _participants.length;
     final resultColumnCount = _resultColumnCount;
-    final matrixWidth = resultColumnCount * 48.0;
+    final resultCellWidth = _isSwissTournament ? 66.0 : 48.0;
+    final matrixWidth = resultColumnCount * resultCellWidth;
     final totalWidth =
         50 + 210 + 78 + 170 + 72 + matrixWidth + 72 + 76 * 3 + 64;
     return Container(
@@ -1873,7 +3399,8 @@ class _TournamentTableEditorDialogState
                     _prettyHead('Готов', 72),
                     _prettyHead('Школа / клуб', 170),
                     for (var i = 0; i < resultColumnCount; i++)
-                      _prettyHead('${i + 1}', 48),
+                      _prettyHead('${i + 1}', resultCellWidth,
+                          onTap: () => _openRoundPairings(i + 1)),
                     _prettyHead('Очки', 72),
                     _prettyHead('Бухг.', 76),
                     _prettyHead('Бергер', 76),
@@ -1898,6 +3425,465 @@ class _TournamentTableEditorDialogState
       }
     }
     return id;
+  }
+
+  _EditableParticipant? _pairingParticipant(String? id) {
+    final normalized = (id ?? '').trim();
+    if (normalized.isEmpty) return null;
+    for (final participant in _participants) {
+      if (participant.id == normalized) return participant;
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _pairingsForRound(int round) {
+    final source = _pairingSchedule.isNotEmpty ? _pairingSchedule : _pairings;
+    return source
+        .where((pairing) =>
+            ((pairing['round'] as num?)?.toInt() ?? 1) == round &&
+            ((pairing['gameInMatch'] as num?)?.toInt() ?? 1) == 1)
+        .map((pairing) => Map<String, dynamic>.from(pairing))
+        .toList(growable: false)
+      ..sort((a, b) => ((a['board'] as num?)?.toInt() ?? 0)
+          .compareTo((b['board'] as num?)?.toInt() ?? 0));
+  }
+
+  String _roundPairingsText(
+    int round,
+    List<Map<String, dynamic>> pairings, {
+    required bool detailed,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln(_nameCtl.text.trim())
+      ..writeln('${MakeChessLocalization.phrase('Тур')} $round')
+      ..writeln(
+          '$_type • ${_minutesCtl.text.trim()}+${_incrementCtl.text.trim()} • $_status')
+      ..writeln();
+    for (final pairing in pairings) {
+      final white = _pairingParticipant('${pairing['whiteId'] ?? ''}');
+      final black = _pairingParticipant('${pairing['blackId'] ?? ''}');
+      String player(_EditableParticipant? person) {
+        if (person == null) return MakeChessLocalization.phrase('Свободен');
+        final index = _participants.indexOf(person);
+        final details = detailed
+            ? ' • ${MakeChessLocalization.phrase('Рейтинг')}: ${person.rating}'
+                ' • ${MakeChessLocalization.phrase('Звание')}: ${person.title.isEmpty ? '—' : person.title}'
+                ' • ${MakeChessLocalization.phrase('Возраст')}: ${person.age?.toString() ?? '—'}'
+            : '';
+        return '${person.name}$details • ${MakeChessLocalization.phrase('Очки')}: ${_scoreText(_pointsBeforeRound(index, round))}';
+      }
+
+      final result = '${pairing['result'] ?? '*'}';
+      buffer.writeln(
+          '${MakeChessLocalization.phrase('Стол')} ${pairing['board'] ?? '—'}: ${player(white)} — ${player(black)}${result == '*' ? '' : '  $result'}');
+    }
+    return buffer.toString();
+  }
+
+  Future<void> _openRoundPairings(int round) async {
+    final pairings = _pairingsForRound(round);
+    if (pairings.isEmpty) {
+      _message('Для этого тура жеребьёвка ещё не проведена');
+      return;
+    }
+    var detailed = false;
+    var collapsed = false;
+    final finishedRound = pairings.every(
+      (pairing) => '${pairing['result'] ?? '*'}' != '*',
+    );
+    var mode = 'view';
+    var selectedVariant = 0;
+    var variants = <List<_EditableParticipant?>>[];
+    var displayed = <_EditableParticipant?>[
+      for (final pairing in pairings) ...[
+        _pairingParticipant('${pairing['whiteId'] ?? ''}'),
+        _pairingParticipant('${pairing['blackId'] ?? ''}'),
+      ],
+    ];
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Widget playerCard(
+              _EditableParticipant? person, bool white, int slot) {
+            final index = person == null ? -1 : _participants.indexOf(person);
+            final card = Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: white
+                    ? Colors.white.withOpacity(.06)
+                    : Colors.black.withOpacity(.22),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  MakeChessLocalizedText(
+                    person?.name ?? 'Свободен',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  MakeChessLocalizedText(
+                    '${MakeChessLocalization.phrase('Очки')}: ${index < 0 ? '—' : _scoreText(_pointsBeforeRound(index, round))}',
+                    style: const TextStyle(color: Colors.cyanAccent),
+                  ),
+                  if (detailed && person != null) ...[
+                    const SizedBox(height: 4),
+                    MakeChessLocalizedText(
+                      '${MakeChessLocalization.phrase('Рейтинг')}: ${person.rating} • '
+                      '${MakeChessLocalization.phrase('Звание')}: ${person.title.isEmpty ? '—' : person.title} • '
+                      '${MakeChessLocalization.phrase('Возраст')}: ${person.age?.toString() ?? '—'}',
+                      style:
+                          const TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+            );
+            return Expanded(
+              child: mode == 'edit' && person != null
+                  ? DragTarget<int>(
+                      onAcceptWithDetails: (details) {
+                        setDialogState(() {
+                          final moved = displayed[details.data];
+                          displayed[details.data] = displayed[slot];
+                          displayed[slot] = moved;
+                        });
+                      },
+                      builder: (_, __, ___) => Draggable<int>(
+                        data: slot,
+                        feedback: Material(
+                          color: Colors.transparent,
+                          child: SizedBox(width: 350, child: card),
+                        ),
+                        childWhenDragging: Opacity(opacity: .35, child: card),
+                        child: card,
+                      ),
+                    )
+                  : card,
+            );
+          }
+
+          return Dialog(
+            backgroundColor: _panel,
+            insetPadding: const EdgeInsets.all(24),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: const BorderSide(color: _blue),
+            ),
+            child: SizedBox(
+              width: 1120,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.only(left: 16, right: 4),
+                    height: 58,
+                    decoration: const BoxDecoration(
+                      color: _panel2,
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(14)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.shuffle, color: Colors.cyanAccent),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: MakeChessLocalizedText(
+                            '${MakeChessLocalization.phrase('Жеребьёвка')} • ${MakeChessLocalization.phrase('Тур')} $round',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () =>
+                              setDialogState(() => detailed = !detailed),
+                          icon: Icon(detailed
+                              ? Icons.visibility_off
+                              : Icons.info_outline),
+                          label: const MakeChessLocalizedText('Подробно'),
+                        ),
+                        IconButton(
+                          tooltip: MakeChessLocalization.phrase(
+                              collapsed ? 'Развернуть' : 'Свернуть'),
+                          onPressed: () =>
+                              setDialogState(() => collapsed = !collapsed),
+                          icon: Icon(
+                              collapsed ? Icons.expand_more : Icons.minimize,
+                              color: Colors.white70),
+                        ),
+                        IconButton(
+                          tooltip: MakeChessLocalization.phrase('Закрыть'),
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!collapsed) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: MakeChessLocalizedText(
+                          '${_nameCtl.text.trim()} • $_type • '
+                          '${_minutesCtl.text.trim()}+${_incrementCtl.text.trim()} • '
+                          '${MakeChessLocalization.phrase('Участники')}: $_registeredParticipantCount • $_status',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ),
+                    ),
+                    if (mode == 'variants')
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                        child: Row(
+                          children: [
+                            for (var index = 0;
+                                index < variants.length;
+                                index++) ...[
+                              ChoiceChip(
+                                selected: selectedVariant == index,
+                                label: MakeChessLocalizedText(index == 0
+                                    ? '1 • лучший'
+                                    : '${index + 1} • хуже или равный'),
+                                onSelected: (_) => setDialogState(() {
+                                  selectedVariant = index;
+                                  displayed = variants[index].toList();
+                                }),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                          ],
+                        ),
+                      ),
+                    if (mode == 'edit')
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 0, 16, 10),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: MakeChessLocalizedText(
+                            'Перетащите игрока на другого, чтобы поменять их местами',
+                            style: TextStyle(color: Colors.white60),
+                          ),
+                        ),
+                      ),
+                    if (finishedRound)
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(82, 0, 40, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Center(
+                                child: MakeChessLocalizedText(
+                                  'Белые',
+                                  style: TextStyle(
+                                    color: Color(0xFFFFFF66),
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            SizedBox(width: 150),
+                            Expanded(
+                              child: Center(
+                                child: MakeChessLocalizedText(
+                                  'Чёрные',
+                                  style: TextStyle(
+                                    color: Color(0xFFFFFF66),
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        itemCount: displayed.length ~/ 2,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (_, index) {
+                          final pairing = index < pairings.length
+                              ? pairings[index]
+                              : const <String, dynamic>{};
+                          final result = '${pairing['result'] ?? '*'}';
+                          return Row(
+                            children: [
+                              SizedBox(
+                                width: 66,
+                                child: MakeChessLocalizedText(
+                                  '${MakeChessLocalization.phrase('Стол')} ${pairing['board'] ?? index + 1}',
+                                  style: const TextStyle(color: Colors.white54),
+                                ),
+                              ),
+                              playerCard(displayed[index * 2], true, index * 2),
+                              SizedBox(
+                                width: finishedRound ? 150 : 42,
+                                child: Center(
+                                  child: MakeChessLocalizedText(
+                                    result == '*'
+                                        ? '—'
+                                        : result == '1/2-1/2'
+                                            ? '½ - ½'
+                                            : result.replaceAll('-', ' - '),
+                                    style: TextStyle(
+                                      color: finishedRound
+                                          ? const Color(0xFFFFFF66)
+                                          : Colors.white54,
+                                      fontSize: finishedRound ? 26 : 16,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              playerCard(displayed[index * 2 + 1], false,
+                                  index * 2 + 1),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (!finishedRound &&
+                              widget.organizerMode &&
+                              !widget.previewMode) ...[
+                            OutlinedButton.icon(
+                              onPressed: () => setDialogState(() {
+                                mode = 'edit';
+                                displayed = <_EditableParticipant?>[
+                                  for (final pairing in pairings) ...[
+                                    _pairingParticipant(
+                                        '${pairing['whiteId'] ?? ''}'),
+                                    _pairingParticipant(
+                                        '${pairing['blackId'] ?? ''}'),
+                                  ],
+                                ];
+                              }),
+                              icon: const Icon(Icons.edit_note),
+                              label: const MakeChessLocalizedText(
+                                'Настройка жеребьёвки',
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: () => setDialogState(() {
+                                variants = _pairingVariants();
+                                selectedVariant = 0;
+                                mode = 'variants';
+                                if (variants.isNotEmpty) {
+                                  displayed = variants.first.toList();
+                                }
+                              }),
+                              icon: const Icon(Icons.view_carousel_outlined),
+                              label: const MakeChessLocalizedText(
+                                'Варианты жеребьёвки',
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          OutlinedButton.icon(
+                            onPressed: html.window.print,
+                            icon: const Icon(Icons.print_outlined),
+                            label: const MakeChessLocalizedText('Печать'),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(
+                                  text: _roundPairingsText(round, pairings,
+                                      detailed: detailed)));
+                              _message('Жеребьёвка скопирована');
+                            },
+                            icon: const Icon(Icons.copy_outlined),
+                            label: const MakeChessLocalizedText('Копировать'),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            onPressed: () {
+                              final text = _roundPairingsText(round, pairings,
+                                  detailed: detailed);
+                              final blob = html.Blob(
+                                  <String>[text], 'text/plain;charset=utf-8');
+                              final url =
+                                  html.Url.createObjectUrlFromBlob(blob);
+                              html.AnchorElement(href: url)
+                                ..download = 'pairings_round_$round.txt'
+                                ..click();
+                              html.Url.revokeObjectUrl(url);
+                            },
+                            icon: const Icon(Icons.save_alt),
+                            label: const MakeChessLocalizedText('Сохранить'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (!finishedRound)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF16834F),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            onPressed: () async {
+                              if (mode != 'view') {
+                                await _applyPairingOrder(
+                                  displayed,
+                                  replaceRound: round,
+                                  reopen: false,
+                                );
+                              }
+                              await _save();
+                              if (!mounted) return;
+                              final navigator = Navigator.of(dialogContext);
+                              final closePairingControl = _pairingControlOpen;
+                              navigator.pop();
+                              if (closePairingControl && navigator.canPop()) {
+                                navigator.pop();
+                              }
+                            },
+                            icon: const Icon(Icons.check_circle_outline,
+                                size: 25),
+                            label: const MakeChessLocalizedText(
+                              'Принять жеребьёвку',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildPairingsSummary() {
@@ -1956,19 +3942,72 @@ class _TournamentTableEditorDialogState
     );
   }
 
-  Widget _prettyHead(String text, double width) {
-    return Container(
-      width: width,
-      alignment: Alignment.center,
-      decoration: const BoxDecoration(
-        border: Border(right: BorderSide(color: _line)),
+  List<int> get _pairedRounds {
+    final source = _pairingSchedule.isNotEmpty ? _pairingSchedule : _pairings;
+    final rounds = source
+        .map((pairing) => (pairing['round'] as num?)?.toInt() ?? 1)
+        .where((round) => round > 0)
+        .toSet()
+        .toList();
+    rounds.sort();
+    return rounds;
+  }
+
+  Widget _buildRoundPairingButtons() {
+    final rounds = _pairedRounds;
+    final configuredRounds = int.tryParse(_roundsCtl.text.trim()) ?? 0;
+    final totalRounds = math.max(
+      configuredRounds,
+      rounds.isEmpty ? 1 : rounds.last,
+    );
+    return SizedBox(
+      width: double.infinity,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(right: 10),
+              child: MakeChessLocalizedText(
+                'Игровые пары:',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            for (final round in rounds) ...[
+              OutlinedButton.icon(
+                onPressed: () => _openRoundPairings(round),
+                icon: const Icon(Icons.groups_2_outlined, size: 18),
+                label: MakeChessLocalizedText('$round/$totalRounds'),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ],
+        ),
       ),
-      child: MakeChessLocalizedText(
-        text,
-        style: const TextStyle(
-          color: Colors.white70,
-          fontWeight: FontWeight.w700,
-          fontSize: 11,
+    );
+  }
+
+  Widget _prettyHead(String text, double width, {VoidCallback? onTap}) {
+    return SizedBox(
+      width: width,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            border: Border(right: BorderSide(color: _line)),
+          ),
+          child: MakeChessLocalizedText(
+            text,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontWeight: FontWeight.w700,
+              fontSize: 11,
+            ),
+          ),
         ),
       ),
     );
@@ -1997,24 +4036,38 @@ class _TournamentTableEditorDialogState
           ),
           _prettyCell(
             210,
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                children: [
-                  _avatar(person),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: MakeChessLocalizedText(
-                      person.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
+            InkWell(
+              onTap: widget.organizerMode && _offlineMode
+                  ? () => _editParticipant(row)
+                  : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    _avatar(person),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: MakeChessLocalizedText(
+                        person.name.trim().isEmpty
+                            ? (_offlineMode
+                                ? 'Нажмите, чтобы записать игрока'
+                                : '—')
+                            : person.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: person.name.trim().isEmpty
+                              ? Colors.cyanAccent
+                              : Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: person.name.trim().isEmpty ? 11 : 14,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                    if (widget.organizerMode && _offlineMode)
+                      const Icon(Icons.edit_outlined,
+                          size: 16, color: Colors.white38),
+                  ],
+                ),
               ),
             ),
           ),
@@ -2097,14 +4150,51 @@ class _TournamentTableEditorDialogState
       );
     }
     final value = _results[_resultKey(row, column)] ?? '—';
+    if (_isSwissTournament) {
+      final pairing = _swissPairingFor(row, column);
+      final participantId = _participants[row].id;
+      final isWhite = '${pairing?['whiteId'] ?? ''}' == participantId;
+      final opponentId = '${pairing?[isWhite ? 'blackId' : 'whiteId'] ?? ''}';
+      final opponentIndex = _participants
+          .indexWhere((participant) => participant.id == opponentId);
+      Widget field(String text, VoidCallback onTap) => Expanded(
+            child: InkWell(
+              onTap: widget.organizerMode && !widget.previewMode ? onTap : null,
+              child: Center(
+                child: MakeChessLocalizedText(
+                  text,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ),
+          );
+      return _prettyCell(
+        66,
+        Column(
+          children: [
+            field(opponentIndex < 0 ? '—' : '${opponentIndex + 1}',
+                () => _editSwissOpponent(row, column)),
+            field(pairing == null ? '—' : (isWhite ? 'Б' : 'Ч'),
+                () => _editSwissColor(row, column)),
+            field(value, () => _editSwissResult(row, column)),
+          ],
+        ),
+      );
+    }
     return _prettyCell(
       48,
       MakeChessLocalizedText(
         value,
+        textAlign: TextAlign.center,
         style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w700,
-          fontSize: 15,
+          fontSize: 13,
+          height: 1.15,
         ),
       ),
     );
@@ -2122,6 +4212,56 @@ class _TournamentTableEditorDialogState
       child: DefaultTextStyle(
         style: const TextStyle(color: Colors.white70, fontSize: 13),
         child: child,
+      ),
+    );
+  }
+
+  Widget _titleRestrictionsField() {
+    final label = _allowedTitles.isEmpty
+        ? 'Без ограничений — может играть любой'
+        : _allowedTitles.join(', ');
+    return PopupMenuButton<String>(
+      tooltip: 'Выбрать допустимые звания',
+      onSelected: (value) {
+        setState(() {
+          if (value == '__any__') {
+            _allowedTitles.clear();
+          } else if (_allowedTitles.contains(value)) {
+            _allowedTitles.remove(value);
+          } else {
+            _allowedTitles.add(value);
+          }
+        });
+      },
+      itemBuilder: (context) => <PopupMenuEntry<String>>[
+        CheckedPopupMenuItem<String>(
+          value: '__any__',
+          checked: _allowedTitles.isEmpty,
+          child: const MakeChessLocalizedText(
+              'Без ограничений — может играть любой'),
+        ),
+        const PopupMenuDivider(),
+        for (final title in _chessTitles)
+          CheckedPopupMenuItem<String>(
+            value: title,
+            checked: _allowedTitles.contains(title),
+            child: MakeChessLocalizedText(title),
+          ),
+      ],
+      child: InputDecorator(
+        decoration: _decoration('Допустимые шахматные звания'),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down, color: Colors.white70),
+          ],
+        ),
       ),
     );
   }
@@ -2197,65 +4337,172 @@ class _TournamentTableEditorDialogState
         ),
       );
 
-  Widget _buildTable() {
-    final count = _participants.length;
-    final resultColumnCount = _resultColumnCount;
-    final matrixWidth = resultColumnCount * 54.0;
+  Widget _buildTableConstructor() {
     return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: _panel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _blue.withOpacity(0.45)),
+        color: _panel2,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _line),
       ),
-      child: Column(
+      child: Row(
         children: [
-          Scrollbar(
-            thumbVisibility: true,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: 84 + 260 + 92 + 230 + matrixWidth + 92 + 105 * 3 + 82,
-                child: Column(
-                  children: [
-                    _tableHeader(resultColumnCount),
-                    for (var row = 0; row < count; row++) _participantRow(row),
-                  ],
-                ),
-              ),
+          const Icon(Icons.view_column_outlined, color: _gold),
+          const SizedBox(width: 10),
+          const MakeChessLocalizedText(
+            'Столбцы турнирной таблицы',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          InkWell(
-            onTap: _addParticipant,
-            borderRadius: const BorderRadius.vertical(
-              bottom: Radius.circular(12),
-            ),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-              decoration: const BoxDecoration(
-                border: Border(top: BorderSide(color: _line)),
-              ),
-              child: const Row(
+          const SizedBox(width: 14),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
                 children: [
-                  Icon(Icons.add_circle_outline, color: _gold),
-                  SizedBox(width: 9),
-                  MakeChessLocalizedText(
-                    'Добавить участника',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                  for (var index = 0;
+                      index < _customColumns.length;
+                      index++) ...[
+                    InputChip(
+                      label: Text(_customColumns[index]),
+                      onPressed: widget.previewMode
+                          ? null
+                          : () => _editCustomColumn(index),
+                      onDeleted: widget.previewMode
+                          ? null
+                          : () => _removeCustomColumn(index),
                     ),
-                  ),
-                  SizedBox(width: 8),
-                  MakeChessLocalizedText(
-                    'ручной ввод',
-                    style: TextStyle(color: Colors.white38),
-                  ),
+                    const SizedBox(width: 8),
+                  ],
                 ],
               ),
             ),
           ),
+          const SizedBox(width: 10),
+          OutlinedButton.icon(
+            onPressed: widget.previewMode ? null : _addCustomColumn,
+            icon: const Icon(Icons.add),
+            label: const MakeChessLocalizedText('Добавить столбец'),
+          ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _addCustomColumn() async {
+    final name = await _askCustomColumnName('Новый столбец');
+    if (name == null) return;
+    setState(() => _customColumns.add(name));
+  }
+
+  Future<void> _editCustomColumn(int index) async {
+    final name = await _askCustomColumnName(_customColumns[index]);
+    if (name == null || !mounted) return;
+    setState(() => _customColumns[index] = name);
+  }
+
+  void _removeCustomColumn(int index) {
+    setState(() {
+      _customColumns.removeAt(index);
+      _customColumnValues.removeWhere((key, _) => key.startsWith('$index:'));
+    });
+  }
+
+  Future<String?> _askCustomColumnName(String initialValue) async {
+    final controller = TextEditingController(
+      text: initialValue == 'Новый столбец' ? '' : initialValue,
+    );
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel2,
+        title: const MakeChessLocalizedText('Название нового столбца'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: 'Название столбца',
+            hintText: 'Например: Команда',
+          ),
+          onSubmitted: (value) {
+            final name = value.trim();
+            if (name.isNotEmpty) Navigator.pop(dialogContext, name);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const MakeChessLocalizedText('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final name = controller.text.trim();
+              if (name.isNotEmpty) Navigator.pop(dialogContext, name);
+            },
+            child: const MakeChessLocalizedText('Добавить'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Widget _buildTable() {
+    final count = _participants.length;
+    final resultColumnCount = _resultColumnCount;
+    final resultCellWidth = _isSwissTournament ? 72.0 : 54.0;
+    final matrixWidth = resultColumnCount * resultCellWidth;
+    final customWidth = _customColumns.length * 140.0;
+    final tableHeight = math.min(520.0, 54.0 + count * 66.0 + 54.0);
+    return SizedBox(
+      height: tableHeight,
+      child: Container(
+        decoration: BoxDecoration(
+          color: _panel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _blue.withOpacity(0.45)),
+        ),
+        child: Column(
+          children: [
+            Expanded(
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: 84 +
+                        260 +
+                        92 +
+                        230 +
+                        customWidth +
+                        matrixWidth +
+                        92 +
+                        105 * 3 +
+                        82,
+                    child: Column(
+                      children: [
+                        _tableHeader(resultColumnCount),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: EdgeInsets.zero,
+                            itemCount: count,
+                            itemExtent: 66,
+                            itemBuilder: (_, row) => _participantRow(row),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2274,6 +4521,7 @@ class _TournamentTableEditorDialogState
           _head('Участник', 260),
           _head('Рейтинг', 92),
           _head('Школа / клуб', 230),
+          for (final name in _customColumns) _head(name, 140),
           for (var i = 0; i < count; i++) _head('${i + 1}', 54),
           _head('Очки', 92),
           _head('Бухг.', 105),
@@ -2393,6 +4641,8 @@ class _TournamentTableEditorDialogState
               onChanged: (value) => person.school = value,
             ),
           ),
+          for (var column = 0; column < _customColumns.length; column++)
+            _customColumnCell(row, column),
           for (var column = 0; column < _resultColumnCount; column++)
             _resultCell(row, column),
           _cell(
@@ -2498,6 +4748,20 @@ class _TournamentTableEditorDialogState
     );
   }
 
+  Widget _customColumnCell(int row, int column) {
+    final key = '$column:$row';
+    return _cell(
+      140,
+      TextFormField(
+        key: ValueKey('custom-column-$column-$row'),
+        initialValue: _customColumnValues[key] ?? '',
+        style: const TextStyle(color: Colors.white),
+        decoration: _tableInputDecoration(hint: _customColumns[column]),
+        onChanged: (value) => _customColumnValues[key] = value,
+      ),
+    );
+  }
+
   Widget _resultCell(int row, int column) {
     if (!_isSwissTournament && row == column) {
       return _cell(
@@ -2512,16 +4776,36 @@ class _TournamentTableEditorDialogState
     final key = _resultKey(row, column);
     final value = _results[key];
     return _cell(
-      54,
+      _isSwissTournament ? 72 : 54,
       DropdownButtonHideUnderline(
         child: DropdownButton<String?>(
           value: value,
           isDense: true,
           dropdownColor: _panel2,
-          hint: const MakeChessLocalizedText('—',
-              style: TextStyle(color: Colors.white30)),
+          hint: MakeChessLocalizedText(
+            _isSwissTournament ? _swissCellText(row, column, '—') : '—',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white30, fontSize: 11),
+          ),
           icon: const Icon(Icons.arrow_drop_down,
               color: Colors.white38, size: 18),
+          selectedItemBuilder: _isSwissTournament
+              ? (_) => <Widget>[
+                    for (final result in const <String?>[null, '1', '½', '0'])
+                      Center(
+                        child: MakeChessLocalizedText(
+                          _swissCellText(row, column, result ?? '—'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            height: 1.05,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                  ]
+              : null,
           items: const [
             DropdownMenuItem<String?>(
                 value: null, child: MakeChessLocalizedText('—')),
@@ -2546,6 +4830,9 @@ class _TournamentTableEditorDialogState
                           ? '1'
                           : '½';
                 }
+              }
+              if (_isSwissTournament) {
+                _setSwissPairingResult(row, column, next);
               }
             });
           },
@@ -2576,19 +4863,51 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _buildActions() {
-    final buttons = widget.templateSchema?.buttons ??
-        TournamentTemplateSchema.defaults.buttons;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (var index = 0; index < buttons.length; index++) ...[
-            _templateActionButton(buttons[index]),
-            if (index != buttons.length - 1) const SizedBox(width: 10),
-          ],
-        ],
-      ),
+    final buttons = (widget.templateSchema?.buttons ??
+            TournamentTemplateSchema.defaults.buttons)
+        .where((button) =>
+            button.action != TournamentTemplateAction.addParticipant &&
+            button.action != TournamentTemplateAction.participate)
+        .toList(growable: false);
+    return Row(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (var index = 0; index < buttons.length; index++) ...[
+                  _templateActionButton(buttons[index]),
+                  if (index != buttons.length - 1) const SizedBox(width: 10),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF80601C),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+          ),
+          onPressed: widget.creatingNewTournament
+              ? () => _saveAndClose(TournamentTableEditorResult.saved)
+              : _returnToTournament,
+          icon: Icon(
+              widget.creatingNewTournament ? Icons.add_task : Icons.arrow_back),
+          label: Text(widget.creatingNewTournament
+              ? 'Сохранить новый турнир'
+              : 'Вернуться к турниру'),
+        ),
+      ],
     );
+  }
+
+  Future<void> _returnToTournament() async {
+    await _save();
+    if (!mounted) return;
+    setState(() => _showPreview = true);
   }
 
   Widget _templateActionButton(TournamentTemplateButton button) {
@@ -2622,14 +4941,34 @@ class _TournamentTableEditorDialogState
         foregroundColor:
             prominent || pairing ? Colors.white : const Color(0xFF183347),
       ),
-      onPressed: () => _runTemplateAction(button.action),
+      onPressed: _templateActionAvailable(button)
+          ? () => _runTemplateAction(button.action)
+          : null,
       icon: Icon(icon),
       label: Text(
-        pairing ? button.label.toUpperCase() : button.label,
+        pairing ? 'Настройка жеребьёвки' : button.label,
         style:
             TextStyle(fontWeight: pairing ? FontWeight.w800 : FontWeight.w500),
       ),
     );
+  }
+
+  bool _templateActionAvailable(TournamentTemplateButton button) {
+    if (!button.enabled || widget.previewMode) return false;
+    return switch (button.action) {
+      TournamentTemplateAction.callTournament =>
+        widget.onCallTournament != null,
+      TournamentTemplateAction.startTournament ||
+      TournamentTemplateAction.startRound =>
+        widget.onStartTournament != null,
+      TournamentTemplateAction.pauseTournament =>
+        widget.onPauseTournament != null,
+      TournamentTemplateAction.finishTournament ||
+      TournamentTemplateAction.finishRound =>
+        widget.onFinishTournament != null,
+      TournamentTemplateAction.participate => widget.onParticipate != null,
+      _ => true,
+    };
   }
 
   void _message(String text) {
@@ -2650,7 +4989,163 @@ class _TournamentTableEditorDialogState
     _incrementCtl.dispose();
     _roundsCtl.dispose();
     _ageCtl.dispose();
+    _minRatingCtl.dispose();
+    _maxRatingCtl.dispose();
+    _minAgeCtl.dispose();
+    _maxAgeCtl.dispose();
+    _birthYearFromCtl.dispose();
+    _birthYearToCtl.dispose();
     super.dispose();
+  }
+}
+
+class _PairingVariantsDialog extends StatefulWidget {
+  const _PairingVariantsDialog({
+    required this.variants,
+    required this.manual,
+  });
+
+  final List<List<_EditableParticipant?>> variants;
+  final bool manual;
+
+  @override
+  State<_PairingVariantsDialog> createState() => _PairingVariantsDialogState();
+}
+
+class _PairingVariantsDialogState extends State<_PairingVariantsDialog> {
+  late final List<List<_EditableParticipant?>> _variants = widget.variants
+      .map((variant) => variant.toList())
+      .toList(growable: false);
+  int _selected = 0;
+
+  void _swap(int from, int to) {
+    if (!widget.manual || from == to) return;
+    setState(() {
+      final value = _variants[_selected][from];
+      _variants[_selected][from] = _variants[_selected][to];
+      _variants[_selected][to] = value;
+    });
+  }
+
+  Widget _player(int index) {
+    final player = _variants[_selected][index];
+    final card = Container(
+      height: 54,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color:
+            player == null ? const Color(0xFF342719) : const Color(0xFF13293A),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        children: [
+          Icon(player == null ? Icons.hourglass_empty : Icons.person,
+              color:
+                  player == null ? Colors.amberAccent : Colors.lightBlueAccent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: MakeChessLocalizedText(
+              player == null
+                  ? 'Свободный тур • автопобеда'
+                  : '${player.name} • ${player.rating}${player.age == null ? '' : ' • ${player.age} лет'}',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (widget.manual && player != null)
+            const Icon(Icons.drag_indicator, color: Colors.white38),
+        ],
+      ),
+    );
+    if (!widget.manual || player == null) return card;
+    return DragTarget<int>(
+      onAcceptWithDetails: (details) => _swap(details.data, index),
+      builder: (_, __, ___) => Draggable<int>(
+        data: index,
+        feedback: Material(
+          color: Colors.transparent,
+          child: SizedBox(width: 300, child: card),
+        ),
+        childWhenDragging: Opacity(opacity: .35, child: card),
+        child: card,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _variants[_selected];
+    return AlertDialog(
+      backgroundColor: const Color(0xFF0C1824),
+      title: MakeChessLocalizedText(
+          widget.manual ? 'Ручная жеребьёвка' : 'Варианты жеребьёвки'),
+      content: SizedBox(
+        width: 850,
+        height: 560,
+        child: Column(
+          children: [
+            DefaultTabController(
+              length: _variants.length,
+              child: TabBar(
+                onTap: (index) => setState(() => _selected = index),
+                tabs: [
+                  for (var index = 0; index < _variants.length; index++)
+                    Tab(
+                      text: index == 0
+                          ? '1 • лучший'
+                          : '${index + 1} • хуже или равный',
+                    ),
+                ],
+              ),
+            ),
+            if (widget.manual)
+              const Padding(
+                padding: EdgeInsets.all(10),
+                child: MakeChessLocalizedText(
+                  'Перетащите игрока на другого игрока, чтобы поменять их местами',
+                  style: TextStyle(color: Colors.white60),
+                ),
+              ),
+            Expanded(
+              child: ListView.separated(
+                itemCount: current.length ~/ 2,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, board) {
+                  final first = board * 2;
+                  return Row(
+                    children: [
+                      SizedBox(
+                        width: 70,
+                        child: MakeChessLocalizedText('Стол ${board + 1}'),
+                      ),
+                      Expanded(child: _player(first)),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child:
+                            Text('—', style: TextStyle(color: Colors.white54)),
+                      ),
+                      Expanded(child: _player(first + 1)),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const MakeChessLocalizedText('Отмена'),
+        ),
+        if (widget.manual)
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, _variants[_selected]),
+            icon: const Icon(Icons.check),
+            label: const MakeChessLocalizedText('Применить вариант'),
+          ),
+      ],
+    );
   }
 }
 

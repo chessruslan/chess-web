@@ -1,6 +1,7 @@
 // MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // MAKECHESS_STUDENT_TOURNAMENTS_LOCALIZED_V3_2_20260807
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 
 import '../../localization/makechess_localization.dart';
 
@@ -337,31 +338,40 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
     final senderName = widget.studentName.trim().isEmpty
         ? MakeChessLocalization.phrase('Организатор')
         : widget.studentName.trim();
-    for (final recipientId in participantIds) {
-      await MakeChessMessageRealtimeService.instance.send(
-        MakeChessMessage(
-          id: 'tournament_call_${DateTime.now().microsecondsSinceEpoch}_$recipientId',
-          recipientId: recipientId,
-          senderId: clientUser,
-          senderName: senderName,
-          category: 'tournament_call',
-          title: 'Скоро начнётся турнир «${tournament['name'] ?? 'Турнир'}»',
-          body:
-              'Турнир начнётся через $minutes мин. Откройте игровую платформу и приготовьтесь к игре.',
-          createdAt: DateTime.now(),
-          tournamentId: '${tournament['id'] ?? ''}',
-        ),
-      );
+    var networkNotificationsSent = true;
+    try {
+      for (final recipientId in participantIds) {
+        await MakeChessMessageRealtimeService.instance.send(
+          MakeChessMessage(
+            id: 'tournament_call_${DateTime.now().microsecondsSinceEpoch}_$recipientId',
+            recipientId: recipientId,
+            senderId: clientUser,
+            senderName: senderName,
+            category: 'tournament_call',
+            title: 'Скоро начнётся турнир «${tournament['name'] ?? 'Турнир'}»',
+            body:
+                'Турнир начнётся через $minutes мин. Откройте игровую платформу и приготовьтесь к игре.',
+            createdAt: DateTime.now(),
+            tournamentId: '${tournament['id'] ?? ''}',
+          ),
+        );
+      }
+    } catch (_) {
+      networkNotificationsSent = false;
     }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-          content: MakeChessLocalizedText(
-        MakeChessLocalization.phrase(
-          'Уведомление отправлено: начало через {minutes} мин.',
-          params: <String, Object?>{'minutes': minutes},
+        content: MakeChessLocalizedText(
+          networkNotificationsSent
+              ? MakeChessLocalization.phrase(
+                  'Уведомление отправлено: начало через {minutes} мин.',
+                  params: <String, Object?>{'minutes': minutes},
+                )
+              : 'Время начала сохранено локально. База MakeChess недоступна, '
+                  'поэтому сетевые уведомления участникам не отправлены.',
         ),
-      )),
+      ),
     );
     await _load();
   }
@@ -410,12 +420,135 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: MakeChessLocalizedText(
-          MakeChessLocalization.phrase(
-              'Турнир начат. Игровые доски активируются.'),
+          TournamentStorageService.instance.cloudAvailable
+              ? MakeChessLocalization.phrase(
+                  'Турнир начат. Игровые доски активируются.')
+              : 'Турнир начат локально. Результаты и таблица сохраняются на '
+                  'этом компьютере; сетевые игровые доски станут доступны '
+                  'после восстановления соединения.',
         ),
       ),
     );
     await _load();
+  }
+
+  Future<void> _startTournamentWithFirstRound(
+    Map<String, dynamic> tournament,
+  ) async {
+    final participantIds = tournament['participantIds'] is List
+        ? (tournament['participantIds'] as List).map((e) => '$e').toList()
+        : <String>[];
+    if (participantIds.length < 2) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: MakeChessLocalizedText(
+              'Для начала турнира нужны минимум два участника'),
+        ));
+      }
+      return;
+    }
+
+    final tournamentId = '${tournament['id'] ?? ''}';
+    final existing = await TournamentStorageService.instance
+        .loadTournamentTable(tournamentId);
+    final savedParticipants = existing?['participants'] is List
+        ? (existing!['participants'] as List)
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .toList(growable: false)
+        : <Map<String, dynamic>>[];
+    final ratings = <String, int>{
+      for (final participant in savedParticipants)
+        '${participant['id'] ?? ''}':
+            (participant['rating'] as num?)?.toInt() ?? 1200,
+    };
+    final ordered = participantIds.toList();
+    final swiss = '${tournament['format'] ?? ''}' == 'swiss';
+    if (swiss) {
+      ordered.sort(
+        (a, b) => (ratings[b] ?? 1200).compareTo(ratings[a] ?? 1200),
+      );
+      final split = (ordered.length + 1) ~/ 2;
+      final top = ordered.sublist(0, split);
+      final bottom = ordered.sublist(split);
+      ordered
+        ..clear()
+        ..addAll(<String>[
+          for (var index = 0; index < top.length; index++) ...[
+            top[index],
+            if (index < bottom.length) bottom[index],
+          ],
+        ]);
+    } else {
+      ordered.shuffle(math.Random());
+    }
+    final pairings = <Map<String, dynamic>>[];
+    for (var index = 0; index < ordered.length; index += 2) {
+      final blackId = index + 1 < ordered.length ? ordered[index + 1] : null;
+      pairings.add(<String, dynamic>{
+        'cycle': 1,
+        'round': 1,
+        'gameInMatch': 1,
+        'board': pairings.length + 1,
+        'whiteId': ordered[index],
+        'blackId': blackId,
+        'result': blackId == null ? '1-0' : '*',
+        'resultReason': blackId == null ? 'bye' : '',
+        'status': blackId == null ? 'finished' : 'waiting',
+      });
+    }
+    await TournamentStorageService.instance.updateOwnedTournamentFields(
+      tournamentId,
+      <String, dynamic>{
+        'pairings': pairings,
+        'pairingSchedule': pairings,
+        'currentRound': 1,
+        'status': 'running',
+        'startedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
+
+    final participantNames = tournament['participantNames'] is Map
+        ? Map<String, dynamic>.from(tournament['participantNames'] as Map)
+        : <String, dynamic>{};
+    final table = <String, dynamic>{
+      ...?existing,
+      'name': '${tournament['name'] ?? 'Турнир'}',
+      'type': '${tournament['format'] ?? ''}',
+      'status': 'running',
+      'minutes': tournament['minutes'] ?? 5,
+      'increment': tournament['increment'] ?? 0,
+      'rounds': tournament['rounds'] ?? 1,
+      'maxParticipants': tournament['maxParticipants'] ?? participantIds.length,
+      'participants': participantIds
+          .map((id) => savedParticipants.firstWhere(
+                (participant) => '${participant['id'] ?? ''}' == id,
+                orElse: () => <String, dynamic>{
+                  'id': id,
+                  'name': '${participantNames[id] ?? id}',
+                  'rating': 1200,
+                  'school': '',
+                  'flag': '',
+                  'avatarUrl': '',
+                },
+              ))
+          .toList(growable: false),
+      'results': existing?['results'] ?? <String, String>{},
+      'pairings': pairings,
+      'pairingSchedule': pairings,
+    };
+    await TournamentStorageService.instance.saveTournamentTable(
+      tournamentId,
+      table,
+    );
+    await TournamentStorageService.instance.startTournamentGames(tournamentId);
+    await _load();
+    if (!mounted) return;
+    final refreshed = _tournaments.firstWhere(
+      (item) => '${item['id'] ?? ''}' == tournamentId && _isOwner(item),
+      orElse: () => <String, dynamic>{...tournament, ...table},
+    );
+    await _openTournament(refreshed);
   }
 
   Future<void> _setTournamentStatus(
@@ -622,6 +755,9 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
       message = MakeChessLocalization.phrase('Турнир не найден');
     } else if (result == 'not_authenticated') {
       message = 'Сначала войдите в аккаунт.';
+    } else if (result == 'cloud_unavailable') {
+      message = 'База MakeChess недоступна. Для удалённой заявки нужен интернет. '
+          'Локальный турнир при этом можно продолжать без сети.';
     } else {
       message = MakeChessLocalization.phrase(
         'Заявка на участие отправлена организатору',
@@ -1154,6 +1290,17 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
                                           'Принять участие',
                                         ),
                                       ),
+                                    ),
+                                  ],
+                                  if (owned &&
+                                      '${t['status'] ?? ''}' != 'running') ...[
+                                    const SizedBox(width: 8),
+                                    FilledButton.icon(
+                                      onPressed: () =>
+                                          _startTournamentWithFirstRound(t),
+                                      icon: const Icon(Icons.play_arrow),
+                                      label: const MakeChessLocalizedText(
+                                          'Начать турнир'),
                                     ),
                                   ],
                                 ],

@@ -562,7 +562,8 @@ class MakeChessLocalization {
       "포지션을 로컬 Stockfish로 보냈습니다.",
       "Đã gửi thế cờ tới Stockfish cục bộ.",
     ],
-    "Локальный Stockfish недоступен. Запустите локальный модуль и разрешите Chrome доступ к локальной сети.": <String>[
+    "Локальный Stockfish недоступен. Запустите локальный модуль и разрешите Chrome доступ к локальной сети.":
+        <String>[
       "Локальный Stockfish недоступен. Запустите локальный модуль и разрешите Chrome доступ к локальной сети.",
       "Local Stockfish is unavailable. Start the local module and allow Chrome access to the local network.",
       "Lokaler Stockfish ist nicht verfügbar. Starten Sie das lokale Modul und erlauben Sie Chrome den Zugriff auf das lokale Netzwerk.",
@@ -588,7 +589,8 @@ class MakeChessLocalization {
       "로컬 Stockfish",
       "Stockfish cục bộ",
     ],
-    "Локальный Stockfish не запущен. Сначала установите локальный модуль MakeChess.": <String>[
+    "Локальный Stockfish не запущен. Сначала установите локальный модуль MakeChess.":
+        <String>[
       "Локальный Stockfish не запущен. Сначала установите локальный модуль MakeChess.",
       "Local Stockfish could not be started. Install the MakeChess local module first.",
       "Lokaler Stockfish konnte nicht gestartet werden. Installieren Sie zuerst das lokale MakeChess-Modul.",
@@ -3378,7 +3380,8 @@ class MakeChessLocalization {
       "디지털 체스판",
       "Bàn cờ kỹ thuật số"
     ],
-    "Настройка соответствия световых каналов клеткам шахматной доски.": <String>[
+    "Настройка соответствия световых каналов клеткам шахматной доски.":
+        <String>[
       "Настройка соответствия световых каналов клеткам шахматной доски.",
       "Map light channels to chessboard squares.",
       "Lichtkanäle den Schachbrettfeldern zuordnen.",
@@ -3392,66 +3395,267 @@ class MakeChessLocalization {
       "Ánh xạ các kênh ánh sáng với các ô cờ."
     ],
     "Количество строк": <String>[
-      "Количество строк", "Rows", "Zeilen", "Lignes", "Filas", "عدد الصفوف", "行数", "पंक्तियाँ", "行数", "행 수", "Số hàng"
+      "Количество строк",
+      "Rows",
+      "Zeilen",
+      "Lignes",
+      "Filas",
+      "عدد الصفوف",
+      "行数",
+      "पंक्तियाँ",
+      "行数",
+      "행 수",
+      "Số hàng"
     ],
     "Количество столбцов": <String>[
-      "Количество столбцов", "Columns", "Spalten", "Colonnes", "Columnas", "عدد الأعمدة", "列数", "स्तंभ", "列数", "열 수", "Số cột"
+      "Количество столбцов",
+      "Columns",
+      "Spalten",
+      "Colonnes",
+      "Columnas",
+      "عدد الأعمدة",
+      "列数",
+      "स्तंभ",
+      "列数",
+      "열 수",
+      "Số cột"
     ],
     "Смещение по горизонтали": <String>[
-      "Смещение по горизонтали", "Horizontal offset", "Horizontaler Versatz", "Décalage horizontal", "Desplazamiento horizontal", "الإزاحة الأفقية", "水平偏移", "क्षैतिज ऑफ़सेट", "水平オフセット", "가로 오프셋", "Độ lệch ngang"
+      "Смещение по горизонтали",
+      "Horizontal offset",
+      "Horizontaler Versatz",
+      "Décalage horizontal",
+      "Desplazamiento horizontal",
+      "الإزاحة الأفقية",
+      "水平偏移",
+      "क्षैतिज ऑफ़सेट",
+      "水平オフセット",
+      "가로 오프셋",
+      "Độ lệch ngang"
     ],
     "Смещение по вертикали": <String>[
-      "Смещение по вертикали", "Vertical offset", "Vertikaler Versatz", "Décalage vertical", "Desplazamiento vertical", "الإزاحة الرأسية", "垂直偏移", "ऊर्ध्वाधर ऑफ़सेट", "垂直オフセット", "세로 오프셋", "Độ lệch dọc"
+      "Смещение по вертикали",
+      "Vertical offset",
+      "Vertikaler Versatz",
+      "Décalage vertical",
+      "Desplazamiento vertical",
+      "الإزاحة الرأسية",
+      "垂直偏移",
+      "ऊर्ध्वाधर ऑफ़सेट",
+      "垂直オフセット",
+      "세로 오프셋",
+      "Độ lệch dọc"
     ],
     "Применить сетку": <String>[
-      "Применить сетку", "Apply grid", "Raster anwenden", "Appliquer la grille", "Aplicar cuadrícula", "تطبيق الشبكة", "应用网格", "ग्रिड लागू करें", "グリッドを適用", "그리드 적용", "Áp dụng lưới"
+      "Применить сетку",
+      "Apply grid",
+      "Raster anwenden",
+      "Appliquer la grille",
+      "Aplicar cuadrícula",
+      "تطبيق الشبكة",
+      "应用网格",
+      "ग्रिड लागू करें",
+      "グリッドを適用",
+      "그리드 적용",
+      "Áp dụng lưới"
     ],
     "Изображение камеры": <String>[
-      "Изображение камеры", "Camera image", "Kamerabild", "Image de la caméra", "Imagen de la cámara", "صورة الكاميرا", "摄像头图像", "कैमरा छवि", "カメラ画像", "카메라 영상", "Hình ảnh camera"
+      "Изображение камеры",
+      "Camera image",
+      "Kamerabild",
+      "Image de la caméra",
+      "Imagen de la cámara",
+      "صورة الكاميرا",
+      "摄像头图像",
+      "कैमरा छवि",
+      "カメラ画像",
+      "카메라 영상",
+      "Hình ảnh camera"
     ],
     "Камера": <String>[
-      "Камера", "Camera", "Kamera", "Caméra", "Cámara", "الكاميرا", "摄像头", "कैमरा", "カメラ", "카메라", "Camera"
+      "Камера",
+      "Camera",
+      "Kamera",
+      "Caméra",
+      "Cámara",
+      "الكاميرا",
+      "摄像头",
+      "कैमरा",
+      "カメラ",
+      "카메라",
+      "Camera"
     ],
     "Выключить камеру": <String>[
-      "Выключить камеру", "Turn camera off", "Kamera ausschalten", "Désactiver la caméra", "Apagar cámara", "إيقاف الكاميرا", "关闭摄像头", "कैमरा बंद करें", "カメラをオフ", "카메라 끄기", "Tắt camera"
+      "Выключить камеру",
+      "Turn camera off",
+      "Kamera ausschalten",
+      "Désactiver la caméra",
+      "Apagar cámara",
+      "إيقاف الكاميرا",
+      "关闭摄像头",
+      "कैमरा बंद करें",
+      "カメラをオフ",
+      "카메라 끄기",
+      "Tắt camera"
     ],
     "Камера выключена": <String>[
-      "Камера выключена", "Camera is off", "Kamera ist aus", "Caméra désactivée", "Cámara apagada", "الكاميرا متوقفة", "摄像头已关闭", "कैमरा बंद है", "カメラはオフです", "카메라가 꺼져 있습니다", "Camera đang tắt"
+      "Камера выключена",
+      "Camera is off",
+      "Kamera ist aus",
+      "Caméra désactivée",
+      "Cámara apagada",
+      "الكاميرا متوقفة",
+      "摄像头已关闭",
+      "कैमरा बंद है",
+      "カメラはオフです",
+      "카메라가 꺼져 있습니다",
+      "Camera đang tắt"
     ],
     "Запрашиваем доступ к камере...": <String>[
-      "Запрашиваем доступ к камере...", "Requesting camera access...", "Kamerazugriff wird angefordert...", "Demande d’accès à la caméra...", "Solicitando acceso a la cámara...", "جارٍ طلب الوصول إلى الكاميرا...", "正在请求摄像头权限…", "कैमरा अनुमति का अनुरोध किया जा रहा है...", "カメラへのアクセスを要求しています…", "카메라 접근 권한을 요청하는 중...", "Đang yêu cầu quyền truy cập camera..."
+      "Запрашиваем доступ к камере...",
+      "Requesting camera access...",
+      "Kamerazugriff wird angefordert...",
+      "Demande d’accès à la caméra...",
+      "Solicitando acceso a la cámara...",
+      "جارٍ طلب الوصول إلى الكاميرا...",
+      "正在请求摄像头权限…",
+      "कैमरा अनुमति का अनुरोध किया जा रहा है...",
+      "カメラへのアクセスを要求しています…",
+      "카메라 접근 권한을 요청하는 중...",
+      "Đang yêu cầu quyền truy cập camera..."
     ],
     "Камера подключена": <String>[
-      "Камера подключена", "Camera connected", "Kamera verbunden", "Caméra connectée", "Cámara conectada", "تم توصيل الكاميرا", "摄像头已连接", "कैमरा जुड़ा है", "カメラ接続済み", "카메라 연결됨", "Camera đã kết nối"
+      "Камера подключена",
+      "Camera connected",
+      "Kamera verbunden",
+      "Caméra connectée",
+      "Cámara conectada",
+      "تم توصيل الكاميرا",
+      "摄像头已连接",
+      "कैमरा जुड़ा है",
+      "カメラ接続済み",
+      "카메라 연결됨",
+      "Camera đã kết nối"
     ],
     "Не удалось открыть камеру": <String>[
-      "Не удалось открыть камеру", "Could not open camera", "Kamera konnte nicht geöffnet werden", "Impossible d’ouvrir la caméra", "No se pudo abrir la cámara", "تعذر فتح الكاميرا", "无法打开摄像头", "कैमरा नहीं खुल सका", "カメラを開けませんでした", "카메라를 열 수 없습니다", "Không thể mở camera"
+      "Не удалось открыть камеру",
+      "Could not open camera",
+      "Kamera konnte nicht geöffnet werden",
+      "Impossible d’ouvrir la caméra",
+      "No se pudo abrir la cámara",
+      "تعذر فتح الكاميرا",
+      "无法打开摄像头",
+      "कैमरा नहीं खुल सका",
+      "カメラを開けませんでした",
+      "카메라를 열 수 없습니다",
+      "Không thể mở camera"
     ],
     "Камера доступна в веб-версии сайта.": <String>[
-      "Камера доступна в веб-версии сайта.", "Camera is available in the web version of the site.", "Die Kamera ist in der Webversion der Website verfügbar.", "La caméra est disponible dans la version Web du site.", "La cámara está disponible en la versión web del sitio.", "الكاميرا متاحة في إصدار الويب من الموقع.", "摄像头可在网站的网页版中使用。", "कैमरा साइट के वेब संस्करण में उपलब्ध है।", "カメラはサイトのWeb版で利用できます。", "카메라는 사이트 웹 버전에서 사용할 수 있습니다.", "Camera có sẵn trong phiên bản web của trang web."
+      "Камера доступна в веб-версии сайта.",
+      "Camera is available in the web version of the site.",
+      "Die Kamera ist in der Webversion der Website verfügbar.",
+      "La caméra est disponible dans la version Web du site.",
+      "La cámara está disponible en la versión web del sitio.",
+      "الكاميرا متاحة في إصدار الويب من الموقع.",
+      "摄像头可在网站的网页版中使用。",
+      "कैमरा साइट के वेब संस्करण में उपलब्ध है।",
+      "カメラはサイトのWeb版で利用できます。",
+      "카메라는 사이트 웹 버전에서 사용할 수 있습니다.",
+      "Camera có sẵn trong phiên bản web của trang web."
     ],
     "Ширина ячейки": <String>[
-      "Ширина ячейки", "Cell width", "Zellenbreite", "Largeur de cellule", "Ancho de celda", "عرض الخلية", "单元格宽度", "सेल की चौड़ाई", "セル幅", "셀 너비", "Chiều rộng ô"
+      "Ширина ячейки",
+      "Cell width",
+      "Zellenbreite",
+      "Largeur de cellule",
+      "Ancho de celda",
+      "عرض الخلية",
+      "单元格宽度",
+      "सेल की चौड़ाई",
+      "セル幅",
+      "셀 너비",
+      "Chiều rộng ô"
     ],
     "Высота ячейки": <String>[
-      "Высота ячейки", "Cell height", "Zellenhöhe", "Hauteur de cellule", "Alto de celda", "ارتفاع الخلية", "单元格高度", "सेल की ऊँचाई", "セル高さ", "셀 높이", "Chiều cao ô"
+      "Высота ячейки",
+      "Cell height",
+      "Zellenhöhe",
+      "Hauteur de cellule",
+      "Alto de celda",
+      "ارتفاع الخلية",
+      "单元格高度",
+      "सेल की ऊँचाई",
+      "セル高さ",
+      "셀 높이",
+      "Chiều cao ô"
     ],
     "Размер сетки": <String>[
-      "Размер сетки", "Grid size", "Rastergröße", "Taille de la grille", "Tamaño de cuadrícula", "حجم الشبكة", "网格尺寸", "ग्रिड आकार", "グリッドサイズ", "그리드 크기", "Kích thước lưới"
+      "Размер сетки",
+      "Grid size",
+      "Rastergröße",
+      "Taille de la grille",
+      "Tamaño de cuadrícula",
+      "حجم الشبكة",
+      "网格尺寸",
+      "ग्रिड आकार",
+      "グリッドサイズ",
+      "그리드 크기",
+      "Kích thước lưới"
     ],
     "Камера будет подключена на следующем этапе.": <String>[
-      "Камера будет подключена на следующем этапе.", "The camera will be connected at the next stage.", "Die Kamera wird im nächsten Schritt angeschlossen.", "La caméra sera connectée à l’étape suivante.", "La cámara se conectará en la siguiente etapa.", "سيتم توصيل الكاميرا في المرحلة التالية.", "摄像头将在下一阶段连接。", "कैमरा अगले चरण में जोड़ा जाएगा।", "カメラは次の段階で接続します。", "카메라는 다음 단계에서 연결됩니다.", "Camera sẽ được kết nối ở bước tiếp theo."
+      "Камера будет подключена на следующем этапе.",
+      "The camera will be connected at the next stage.",
+      "Die Kamera wird im nächsten Schritt angeschlossen.",
+      "La caméra sera connectée à l’étape suivante.",
+      "La cámara se conectará en la siguiente etapa.",
+      "سيتم توصيل الكاميرا في المرحلة التالية.",
+      "摄像头将在下一阶段连接。",
+      "कैमरा अगले चरण में जोड़ा जाएगा।",
+      "カメラは次の段階で接続します。",
+      "카메라는 다음 단계에서 연결됩니다.",
+      "Camera sẽ được kết nối ở bước tiếp theo."
     ],
     "Сопоставления ячеек": <String>[
-      "Сопоставления ячеек", "Cell mappings", "Zellenzuordnungen", "Correspondances des cellules", "Asignaciones de celdas", "مطابقة الخلايا", "单元格映射", "सेल मैपिंग", "セル対応", "셀 매핑", "Ánh xạ ô"
+      "Сопоставления ячеек",
+      "Cell mappings",
+      "Zellenzuordnungen",
+      "Correspondances des cellules",
+      "Asignaciones de celdas",
+      "مطابقة الخلايا",
+      "单元格映射",
+      "सेल मैपिंग",
+      "セル対応",
+      "셀 매핑",
+      "Ánh xạ ô"
     ],
     "Назначено": <String>[
-      "Назначено", "Assigned", "Zugeordnet", "Assigné", "Asignado", "تم التعيين", "已分配", "निर्धारित", "割り当て済み", "할당됨", "Đã gán"
+      "Назначено",
+      "Assigned",
+      "Zugeordnet",
+      "Assigné",
+      "Asignado",
+      "تم التعيين",
+      "已分配",
+      "निर्धारित",
+      "割り当て済み",
+      "할당됨",
+      "Đã gán"
     ],
     "Очистить сопоставления": <String>[
-      "Очистить сопоставления", "Clear mappings", "Zuordnungen löschen", "Effacer les correspondances", "Borrar asignaciones", "مسح المطابقات", "清除映射", "मैपिंग साफ़ करें", "対応をクリア", "매핑 지우기", "Xóa ánh xạ"
+      "Очистить сопоставления",
+      "Clear mappings",
+      "Zuordnungen löschen",
+      "Effacer les correspondances",
+      "Borrar asignaciones",
+      "مسح المطابقات",
+      "清除映射",
+      "मैपिंग साफ़ करें",
+      "対応をクリア",
+      "매핑 지우기",
+      "Xóa ánh xạ"
     ],
-    "Кликните по ячейке сетки и укажите адрес шахматной клетки A1–H8. Пустые ячейки игнорируются.": <String>[
+    "Кликните по ячейке сетки и укажите адрес шахматной клетки A1–H8. Пустые ячейки игнорируются.":
+        <String>[
       "Кликните по ячейке сетки и укажите адрес шахматной клетки A1–H8. Пустые ячейки игнорируются.",
       "Click a grid cell and enter the chess square address A1–H8. Empty cells are ignored.",
       "Klicken Sie auf eine Rasterzelle und geben Sie das Schachfeld A1–H8 ein. Leere Zellen werden ignoriert.",
@@ -3465,16 +3669,56 @@ class MakeChessLocalization {
       "Nhấp vào ô lưới và nhập địa chỉ ô cờ A1–H8. Các ô trống sẽ bị bỏ qua."
     ],
     "Адрес клетки": <String>[
-      "Адрес клетки", "Square address", "Feldadresse", "Adresse de la case", "Dirección de casilla", "عنوان المربع", "棋盘坐标", "खाने का पता", "マスの座標", "칸 주소", "Địa chỉ ô"
+      "Адрес клетки",
+      "Square address",
+      "Feldadresse",
+      "Adresse de la case",
+      "Dirección de casilla",
+      "عنوان المربع",
+      "棋盘坐标",
+      "खाने का पता",
+      "マスの座標",
+      "칸 주소",
+      "Địa chỉ ô"
     ],
     "Не назначено": <String>[
-      "Не назначено", "Unassigned", "Nicht zugeordnet", "Non assigné", "Sin asignar", "غير معيّن", "未分配", "निर्धारित नहीं", "未割り当て", "미할당", "Chưa gán"
+      "Не назначено",
+      "Unassigned",
+      "Nicht zugeordnet",
+      "Non assigné",
+      "Sin asignar",
+      "غير معيّن",
+      "未分配",
+      "निर्धारित नहीं",
+      "未割り当て",
+      "미할당",
+      "Chưa gán"
     ],
     "Ячейка сетки": <String>[
-      "Ячейка сетки", "Grid cell", "Rasterzelle", "Cellule de grille", "Celda de cuadrícula", "خلية الشبكة", "网格单元格", "ग्रिड सेल", "グリッドセル", "그리드 셀", "Ô lưới"
+      "Ячейка сетки",
+      "Grid cell",
+      "Rasterzelle",
+      "Cellule de grille",
+      "Celda de cuadrícula",
+      "خلية الشبكة",
+      "网格单元格",
+      "ग्रिड सेल",
+      "グリッドセル",
+      "그리드 셀",
+      "Ô lưới"
     ],
     "Раздел цифровой доски пока пуст.": <String>[
-      "Раздел цифровой доски пока пуст.", "The digital board section is empty for now.", "Der Bereich für das digitale Brett ist vorerst leer.", "La section de l’échiquier numérique est vide pour le moment.", "La sección del tablero digital está vacía por ahora.", "قسم الرقعة الرقمية فارغ حالياً.", "数字棋盘部分目前为空。", "डिजिटल बोर्ड अनुभाग अभी खाली है।", "デジタルチェス盤のセクションは現在空です。", "디지털 체스판 섹션은 현재 비어 있습니다.", "Mục bàn cờ kỹ thuật số hiện đang trống."
+      "Раздел цифровой доски пока пуст.",
+      "The digital board section is empty for now.",
+      "Der Bereich für das digitale Brett ist vorerst leer.",
+      "La section de l’échiquier numérique est vide pour le moment.",
+      "La sección del tablero digital está vacía por ahora.",
+      "قسم الرقعة الرقمية فارغ حالياً.",
+      "数字棋盘部分目前为空。",
+      "डिजिटल बोर्ड अनुभाग अभी खाली है।",
+      "デジタルチェス盤のセクションは現在空です。",
+      "디지털 체스판 섹션은 현재 비어 있습니다.",
+      "Mục bàn cờ kỹ thuật số hiện đang trống."
     ],
     "Турниры доступны после входа в аккаунт": <String>[
       "Турниры доступны после входа в аккаунт",
@@ -9093,7 +9337,8 @@ class MakeChessLocalization {
       "로컬 Stockfish: 끔",
       "Stockfish cục bộ: TẮT",
     ],
-    "Локальный Stockfish включён. Весь анализ сайта выполняется локально.": <String>[
+    "Локальный Stockfish включён. Весь анализ сайта выполняется локально.":
+        <String>[
       "Локальный Stockfish включён. Весь анализ сайта выполняется локально.",
       "Local Stockfish is ON. All site analysis now runs locally.",
       "Lokaler Stockfish ist EIN. Die gesamte Analyse der Website läuft jetzt lokal.",
@@ -9106,7 +9351,8 @@ class MakeChessLocalization {
       "로컬 Stockfish가 켜졌습니다. 이제 사이트의 모든 분석이 로컬에서 실행됩니다.",
       "Stockfish cục bộ đã BẬT. Toàn bộ phân tích của trang giờ được chạy cục bộ.",
     ],
-    "Локальный Stockfish выключен. Сайт использует сетевой Stockfish.": <String>[
+    "Локальный Stockfish выключен. Сайт использует сетевой Stockfish.":
+        <String>[
       "Локальный Stockfish выключен. Сайт использует сетевой Stockfish.",
       "Local Stockfish is OFF. The site is using the network Stockfish.",
       "Lokaler Stockfish ist AUS. Die Website verwendet wieder den Netzwerk-Stockfish.",
@@ -18513,7 +18759,8 @@ class MakeChessLocalization {
       languageCode ?? MakeChessLocalizationController.currentCode,
     );
 
-    String? value = _tournamentV7ExactPhrase(russian, code);
+    String? value = _recentTournamentPhrase(russian, code);
+    value ??= _tournamentV7ExactPhrase(russian, code);
     value ??= _v5ExactPhrase(russian, code);
     value ??= _tournamentV7DynamicPhrase(russian, code);
     value ??= _v5DynamicPhrase(russian, code);
@@ -18567,6 +18814,539 @@ class MakeChessLocalization {
     }
 
     return resolved;
+  }
+
+  // Tournament constructor, offline play and test-mode additions (2026-09).
+  // Order: EN, DE, FR, ES, AR, ZH, HI, JA, KO, VI.
+  static const List<String> _recentTournamentLanguageOrder = <String>[
+    'EN',
+    'DE',
+    'FR',
+    'ES',
+    'AR',
+    'ZH',
+    'HI',
+    'JA',
+    'KO',
+    'VI',
+  ];
+
+  static const Map<String, List<String>> _recentTournamentPhrases =
+      <String, List<String>>{
+    'Режим проведения': [
+      'Play mode',
+      'Spielmodus',
+      'Mode de jeu',
+      'Modo de juego',
+      'وضع اللعب',
+      '比赛模式',
+      'खेल मोड',
+      '対局モード',
+      '경기 방식',
+      'Chế độ thi đấu'
+    ],
+    'Онлайн': [
+      'Online',
+      'Online',
+      'En ligne',
+      'En línea',
+      'عبر الإنترنت',
+      '在线',
+      'ऑनलाइन',
+      'オンライン',
+      '온라인',
+      'Trực tuyến'
+    ],
+    'Офлайн': [
+      'Offline',
+      'Offline',
+      'Hors ligne',
+      'Presencial',
+      'حضوري',
+      '线下',
+      'ऑफ़लाइन',
+      'オフライン',
+      '오프라인',
+      'Ngoại tuyến'
+    ],
+    'Онлайн через MakeChess или игра за реальной доской': [
+      'Online via MakeChess or over a physical board',
+      'Online über MakeChess oder am echten Brett',
+      'En ligne via MakeChess ou sur un échiquier réel',
+      'En línea mediante MakeChess o en un tablero real',
+      'عبر MakeChess أو على رقعة حقيقية',
+      '通过 MakeChess 在线或在实体棋盘上比赛',
+      'MakeChess पर ऑनलाइन या असली बोर्ड पर',
+      'MakeChessオンラインまたは実物の盤で対局',
+      'MakeChess 온라인 또는 실제 보드 대국',
+      'Trực tuyến qua MakeChess hoặc chơi trên bàn cờ thật'
+    ],
+    'Ограничения участия': [
+      'Entry restrictions',
+      'Teilnahmebeschränkungen',
+      'Restrictions de participation',
+      'Restricciones de participación',
+      'قيود المشاركة',
+      '参赛限制',
+      'भागीदारी प्रतिबंध',
+      '参加条件',
+      '참가 제한',
+      'Giới hạn tham gia'
+    ],
+    'Рейтинг от': [
+      'Rating from',
+      'Wertung ab',
+      'Classement minimum',
+      'Elo desde',
+      'التصنيف من',
+      '最低等级分',
+      'न्यूनतम रेटिंग',
+      '最低レーティング',
+      '최소 레이팅',
+      'Elo từ'
+    ],
+    'Рейтинг до': [
+      'Rating to',
+      'Wertung bis',
+      'Classement maximum',
+      'Elo hasta',
+      'التصنيف إلى',
+      '最高等级分',
+      'अधिकतम रेटिंग',
+      '最高レーティング',
+      '최대 레이팅',
+      'Elo đến'
+    ],
+    'Возраст от': [
+      'Age from',
+      'Alter ab',
+      'Âge minimum',
+      'Edad desde',
+      'العمر من',
+      '最低年龄',
+      'न्यूनतम आयु',
+      '最低年齢',
+      '최소 나이',
+      'Tuổi từ'
+    ],
+    'Возраст до': [
+      'Age to',
+      'Alter bis',
+      'Âge maximum',
+      'Edad hasta',
+      'العمر إلى',
+      '最高年龄',
+      'अधिकतम आयु',
+      '最高年齢',
+      '최대 나이',
+      'Tuổi đến'
+    ],
+    'Год рождения от': [
+      'Birth year from',
+      'Geburtsjahr ab',
+      'Année de naissance min.',
+      'Año de nacimiento desde',
+      'سنة الميلاد من',
+      '出生年份从',
+      'जन्म वर्ष से',
+      '生年（開始）',
+      '출생 연도 시작',
+      'Năm sinh từ'
+    ],
+    'Год рождения до': [
+      'Birth year to',
+      'Geburtsjahr bis',
+      'Année de naissance max.',
+      'Año de nacimiento hasta',
+      'سنة الميلاد إلى',
+      '出生年份至',
+      'जन्म वर्ष तक',
+      '生年（終了）',
+      '출생 연도 끝',
+      'Năm sinh đến'
+    ],
+    'Допустимые шахматные звания': [
+      'Allowed chess titles',
+      'Zulässige Schachtitel',
+      'Titres d’échecs autorisés',
+      'Títulos de ajedrez permitidos',
+      'الألقاب الشطرنجية المسموحة',
+      '允许的国际象棋称号',
+      'अनुमत शतरंज उपाधियाँ',
+      '参加可能なチェスタイトル',
+      '허용 체스 타이틀',
+      'Danh hiệu cờ vua được phép'
+    ],
+    'Без ограничений — может играть любой': [
+      'No restrictions — anyone may play',
+      'Keine Einschränkungen — alle dürfen spielen',
+      'Sans restriction — tout le monde peut jouer',
+      'Sin restricciones — cualquiera puede jugar',
+      'دون قيود — يمكن للجميع اللعب',
+      '无限制—任何人均可参赛',
+      'कोई प्रतिबंध नहीं — कोई भी खेल सकता है',
+      '制限なし—誰でも参加可能',
+      '제한 없음 — 누구나 참가 가능',
+      'Không giới hạn — ai cũng có thể chơi'
+    ],
+    'Без звания': [
+      'No title',
+      'Ohne Titel',
+      'Sans titre',
+      'Sin título',
+      'دون لقب',
+      '无称号',
+      'बिना उपाधि',
+      'タイトルなし',
+      '타이틀 없음',
+      'Không danh hiệu'
+    ],
+    'Добавить игрока': [
+      'Add player',
+      'Spieler hinzufügen',
+      'Ajouter un joueur',
+      'Añadir jugador',
+      'إضافة لاعب',
+      '添加棋手',
+      'खिलाड़ी जोड़ें',
+      '選手を追加',
+      '선수 추가',
+      'Thêm kỳ thủ'
+    ],
+    'Создать турнир по шаблону': [
+      'Create tournament from template',
+      'Turnier aus Vorlage erstellen',
+      'Créer un tournoi depuis un modèle',
+      'Crear torneo desde una plantilla',
+      'إنشاء بطولة من قالب',
+      '从模板创建比赛',
+      'टेम्पलेट से टूर्नामेंट बनाएँ',
+      'テンプレートから大会を作成',
+      '템플릿으로 대회 만들기',
+      'Tạo giải đấu từ mẫu'
+    ],
+    'Создать турнир по конструктору': [
+      'Create tournament with constructor',
+      'Turnier mit dem Konstruktor erstellen',
+      'Créer un tournoi avec le configurateur',
+      'Crear torneo con el constructor',
+      'إنشاء بطولة باستخدام المُنشئ',
+      '使用构建器创建比赛',
+      'कंस्ट्रक्टर से टूर्नामेंट बनाएँ',
+      'コンストラクターで大会を作成',
+      '구성 도구로 대회 만들기',
+      'Tạo giải đấu bằng trình thiết kế'
+    ],
+    'Созданные турниры': [
+      'Created tournaments',
+      'Erstellte Turniere',
+      'Tournois créés',
+      'Torneos creados',
+      'البطولات المُنشأة',
+      '已创建的比赛',
+      'बनाए गए टूर्नामेंट',
+      '作成済みの大会',
+      '생성된 대회',
+      'Các giải đấu đã tạo'
+    ],
+    'Записаться на турнир': [
+      'Join tournament',
+      'Für Turnier anmelden',
+      'S’inscrire au tournoi',
+      'Inscribirse en el torneo',
+      'التسجيل في البطولة',
+      '报名参赛',
+      'टूर्नामेंट में शामिल हों',
+      '大会に申し込む',
+      '대회 참가 신청',
+      'Đăng ký giải đấu'
+    ],
+    'Ввести вручную': [
+      'Enter manually',
+      'Manuell eingeben',
+      'Saisir manuellement',
+      'Introducir manualmente',
+      'إدخال يدوي',
+      '手动输入',
+      'मैन्युअल रूप से दर्ज करें',
+      '手動入力',
+      '직접 입력',
+      'Nhập thủ công'
+    ],
+    'Новый офлайн-игрок': [
+      'New offline player',
+      'Neuer Offline-Spieler',
+      'Nouveau joueur hors ligne',
+      'Nuevo jugador presencial',
+      'لاعب حضوري جديد',
+      '新线下棋手',
+      'नया ऑफ़लाइन खिलाड़ी',
+      '新しいオフライン選手',
+      '새 오프라인 선수',
+      'Kỳ thủ ngoại tuyến mới'
+    ],
+    'Из MakeChess': [
+      'From MakeChess',
+      'Aus MakeChess',
+      'Depuis MakeChess',
+      'Desde MakeChess',
+      'من MakeChess',
+      '从 MakeChess',
+      'MakeChess से',
+      'MakeChessから',
+      'MakeChess에서',
+      'Từ MakeChess'
+    ],
+    'Незарегистрированный игрок': [
+      'Unregistered player',
+      'Nicht registrierter Spieler',
+      'Joueur non inscrit',
+      'Jugador no registrado',
+      'لاعب غير مسجل',
+      '未注册棋手',
+      'अपंजीकृत खिलाड़ी',
+      '未登録選手',
+      '미등록 선수',
+      'Kỳ thủ chưa đăng ký'
+    ],
+    'Игрок с другого шахматного сайта': [
+      'Player from another chess site',
+      'Spieler von einer anderen Schachseite',
+      'Joueur d’un autre site d’échecs',
+      'Jugador de otro sitio de ajedrez',
+      'لاعب من موقع شطرنج آخر',
+      '其他国际象棋网站的棋手',
+      'अन्य शतरंज साइट का खिलाड़ी',
+      '他のチェスサイトの選手',
+      '다른 체스 사이트 선수',
+      'Kỳ thủ từ trang cờ vua khác'
+    ],
+    'Шахматное звание': [
+      'Chess title',
+      'Schachtitel',
+      'Titre d’échecs',
+      'Título de ajedrez',
+      'لقب الشطرنج',
+      '国际象棋称号',
+      'शतरंज उपाधि',
+      'チェスタイトル',
+      '체스 타이틀',
+      'Danh hiệu cờ vua'
+    ],
+    'Год рождения': [
+      'Birth year',
+      'Geburtsjahr',
+      'Année de naissance',
+      'Año de nacimiento',
+      'سنة الميلاد',
+      '出生年份',
+      'जन्म वर्ष',
+      '生年',
+      '출생 연도',
+      'Năm sinh'
+    ],
+    'Система начисления очков': [
+      'Scoring system',
+      'Punktesystem',
+      'Système de points',
+      'Sistema de puntuación',
+      'نظام النقاط',
+      '计分制度',
+      'अंक प्रणाली',
+      '得点方式',
+      '점수 방식',
+      'Hệ thống tính điểm'
+    ],
+    'Поражение 0 • ничья ½ • победа 1': [
+      'Loss 0 • draw ½ • win 1',
+      'Niederlage 0 • Remis ½ • Sieg 1',
+      'Défaite 0 • nulle ½ • victoire 1',
+      'Derrota 0 • tablas ½ • victoria 1',
+      'خسارة 0 • تعادل ½ • فوز 1',
+      '负 0 • 和 ½ • 胜 1',
+      'हार 0 • ड्रॉ ½ • जीत 1',
+      '敗戦0・引分½・勝利1',
+      '패 0 • 무 ½ • 승 1',
+      'Thua 0 • hòa ½ • thắng 1'
+    ],
+    'Поражение 0 • ничья 1 • победа 2': [
+      'Loss 0 • draw 1 • win 2',
+      'Niederlage 0 • Remis 1 • Sieg 2',
+      'Défaite 0 • nulle 1 • victoire 2',
+      'Derrota 0 • tablas 1 • victoria 2',
+      'خسارة 0 • تعادل 1 • فوز 2',
+      '负 0 • 和 1 • 胜 2',
+      'हार 0 • ड्रॉ 1 • जीत 2',
+      '敗戦0・引分1・勝利2',
+      '패 0 • 무 1 • 승 2',
+      'Thua 0 • hòa 1 • thắng 2'
+    ],
+    'Тест': [
+      'Test',
+      'Test',
+      'Test',
+      'Prueba',
+      'اختبار',
+      '测试',
+      'परीक्षण',
+      'テスト',
+      '테스트',
+      'Kiểm tra'
+    ],
+    'РЕЖИМ ТЕСТА': [
+      'TEST MODE',
+      'TESTMODUS',
+      'MODE TEST',
+      'MODO DE PRUEBA',
+      'وضع الاختبار',
+      '测试模式',
+      'परीक्षण मोड',
+      'テストモード',
+      '테스트 모드',
+      'CHẾ ĐỘ KIỂM TRA'
+    ],
+    'Выход из теста': [
+      'Exit test',
+      'Test beenden',
+      'Quitter le test',
+      'Salir de la prueba',
+      'إنهاء الاختبار',
+      '退出测试',
+      'परीक्षण से बाहर निकलें',
+      'テスト終了',
+      '테스트 종료',
+      'Thoát kiểm tra'
+    ],
+    'Количество участников': [
+      'Number of participants',
+      'Teilnehmerzahl',
+      'Nombre de participants',
+      'Número de participantes',
+      'عدد المشاركين',
+      '参赛人数',
+      'प्रतिभागियों की संख्या',
+      '参加人数',
+      '참가자 수',
+      'Số người tham gia'
+    ],
+    'Начать тест': [
+      'Start test',
+      'Test starten',
+      'Démarrer le test',
+      'Iniciar prueba',
+      'بدء الاختبار',
+      '开始测试',
+      'परीक्षण शुरू करें',
+      'テスト開始',
+      '테스트 시작',
+      'Bắt đầu kiểm tra'
+    ],
+    'Результат тестового тура': [
+      'Test-round result',
+      'Ergebnis der Testrunde',
+      'Résultat de la ronde test',
+      'Resultado de la ronda de prueba',
+      'نتيجة الجولة التجريبية',
+      '测试轮结果',
+      'परीक्षण राउंड परिणाम',
+      'テストラウンド結果',
+      '테스트 라운드 결과',
+      'Kết quả vòng kiểm tra'
+    ],
+    'Тестовый турнир завершён': [
+      'Test tournament finished',
+      'Testturnier beendet',
+      'Tournoi test terminé',
+      'Torneo de prueba finalizado',
+      'انتهت البطولة التجريبية',
+      '测试赛已结束',
+      'परीक्षण टूर्नामेंट समाप्त',
+      'テスト大会終了',
+      '테스트 대회 종료',
+      'Giải đấu kiểm tra đã kết thúc'
+    ],
+    'Турнир идёт': [
+      'Tournament in progress',
+      'Turnier läuft',
+      'Tournoi en cours',
+      'Torneo en curso',
+      'البطولة جارية',
+      '比赛进行中',
+      'टूर्नामेंट जारी है',
+      '大会進行中',
+      '대회 진행 중',
+      'Giải đấu đang diễn ra'
+    ],
+    '3 разряд': [
+      '3rd category',
+      '3. Kategorie',
+      '3e catégorie',
+      '3.ª categoría',
+      'الفئة الثالثة',
+      '三级棋士',
+      'तीसरी श्रेणी',
+      '3級',
+      '3급',
+      'Hạng 3'
+    ],
+    '2 разряд': [
+      '2nd category',
+      '2. Kategorie',
+      '2e catégorie',
+      '2.ª categoría',
+      'الفئة الثانية',
+      '二级棋士',
+      'दूसरी श्रेणी',
+      '2級',
+      '2급',
+      'Hạng 2'
+    ],
+    '1 разряд': [
+      '1st category',
+      '1. Kategorie',
+      '1re catégorie',
+      '1.ª categoría',
+      'الفئة الأولى',
+      '一级棋士',
+      'प्रथम श्रेणी',
+      '1級',
+      '1급',
+      'Hạng 1'
+    ],
+    'Удалить турнир может только его создатель или администратор сайта': [
+      'Only the tournament creator or a site administrator can delete it',
+      'Nur der Turnierersteller oder ein Website-Administrator kann es löschen',
+      'Seul le créateur du tournoi ou un administrateur du site peut le supprimer',
+      'Solo el creador del torneo o un administrador del sitio puede eliminarlo',
+      'لا يمكن حذف البطولة إلا بواسطة منشئها أو مسؤول الموقع',
+      '只有赛事创建者或网站管理员可以删除该赛事',
+      'केवल टूर्नामेंट निर्माता या साइट व्यवस्थापक ही इसे हटा सकता है',
+      '大会を削除できるのは作成者またはサイト管理者だけです',
+      '토너먼트 생성자 또는 사이트 관리자만 삭제할 수 있습니다',
+      'Chỉ người tạo giải đấu hoặc quản trị viên trang web mới có thể xóa'
+    ],
+    'Не удалось удалить турнир: недостаточно прав': [
+      'Could not delete the tournament: insufficient permissions',
+      'Das Turnier konnte nicht gelöscht werden: unzureichende Berechtigungen',
+      'Impossible de supprimer le tournoi : autorisations insuffisantes',
+      'No se pudo eliminar el torneo: permisos insuficientes',
+      'تعذر حذف البطولة: الصلاحيات غير كافية',
+      '无法删除赛事：权限不足',
+      'टूर्नामेंट हटाया नहीं जा सका: अपर्याप्त अनुमति',
+      '大会を削除できませんでした：権限がありません',
+      '토너먼트를 삭제할 수 없습니다: 권한이 부족합니다',
+      'Không thể xóa giải đấu: không đủ quyền'
+    ],
+  };
+
+  static String? _recentTournamentPhrase(String source, String code) {
+    if (code == 'RU') return source;
+    final index = _recentTournamentLanguageOrder.indexOf(code);
+    if (index < 0) return null;
+    final translations = _recentTournamentPhrases[source];
+    return translations == null || index >= translations.length
+        ? null
+        : translations[index];
   }
 
   static String text(

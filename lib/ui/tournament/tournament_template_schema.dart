@@ -112,18 +112,21 @@ class TournamentTemplateColumn {
     required this.label,
     required this.kind,
     this.editable = false,
+    this.enabled = true,
   });
 
   final String id;
   final String label;
   final TournamentTemplateColumnKind kind;
   final bool editable;
+  final bool enabled;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
         'label': label,
         'kind': kind.name,
         'editable': editable,
+        'enabled': enabled,
       };
 
   factory TournamentTemplateColumn.fromJson(Map<String, dynamic> json) =>
@@ -135,6 +138,7 @@ class TournamentTemplateColumn {
           orElse: () => TournamentTemplateColumnKind.text,
         ),
         editable: json['editable'] == true,
+        enabled: json['enabled'] != false,
       );
 }
 
@@ -143,16 +147,19 @@ class TournamentTemplateButton {
     required this.id,
     required this.label,
     required this.action,
+    this.enabled = true,
   });
 
   final String id;
   final String label;
   final TournamentTemplateAction action;
+  final bool enabled;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
         'label': label,
         'action': action.name,
+        'enabled': enabled,
       };
 
   factory TournamentTemplateButton.fromJson(Map<String, dynamic> json) =>
@@ -163,6 +170,7 @@ class TournamentTemplateButton {
           (item) => item.name == '${json['action'] ?? ''}',
           orElse: () => TournamentTemplateAction.publish,
         ),
+        enabled: json['enabled'] != false,
       );
 }
 

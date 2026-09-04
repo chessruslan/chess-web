@@ -5,6 +5,29 @@ import '../../localization/makechess_localization.dart';
 
 enum TournamentPairingMode { automatic, semiAutomatic, manual }
 
+enum TournamentScoringSystem { classic, threePoint }
+
+enum TournamentRepeatTiming { consecutive, nextCycle }
+
+extension TournamentRepeatTimingLabel on TournamentRepeatTiming {
+  String get label => switch (this) {
+        TournamentRepeatTiming.consecutive => 'Играть партии сразу подряд',
+        TournamentRepeatTiming.nextCycle =>
+          'Повторная партия через полный круг',
+      };
+}
+
+extension TournamentScoringSystemLabel on TournamentScoringSystem {
+  String get label => switch (this) {
+        TournamentScoringSystem.classic => 'Поражение 0 • ничья ½ • победа 1',
+        TournamentScoringSystem.threePoint =>
+          'Поражение 0 • ничья 1 • победа 2',
+      };
+
+  double get winPoints => this == TournamentScoringSystem.classic ? 1 : 2;
+  double get drawPoints => this == TournamentScoringSystem.classic ? 0.5 : 1;
+}
+
 enum TournamentColorOrder {
   alternateEveryGame,
   reverseEveryCycle,
@@ -52,6 +75,9 @@ class TournamentPairingSettings {
     this.cycles = 1,
     this.gamesPerOpponent = 2,
     this.colorOrder = TournamentColorOrder.alternateEveryGame,
+    this.scoringSystem = TournamentScoringSystem.classic,
+    this.pairByCurrentScore = true,
+    this.repeatTiming = TournamentRepeatTiming.nextCycle,
   });
 
   final TournamentPairingMode mode;
@@ -65,6 +91,9 @@ class TournamentPairingSettings {
   final int cycles;
   final int gamesPerOpponent;
   final TournamentColorOrder colorOrder;
+  final TournamentScoringSystem scoringSystem;
+  final bool pairByCurrentScore;
+  final TournamentRepeatTiming repeatTiming;
 
   TournamentPairingSettings copyWith({
     TournamentPairingMode? mode,
@@ -78,6 +107,9 @@ class TournamentPairingSettings {
     int? cycles,
     int? gamesPerOpponent,
     TournamentColorOrder? colorOrder,
+    TournamentScoringSystem? scoringSystem,
+    bool? pairByCurrentScore,
+    TournamentRepeatTiming? repeatTiming,
   }) {
     return TournamentPairingSettings(
       mode: mode ?? this.mode,
@@ -93,6 +125,9 @@ class TournamentPairingSettings {
       cycles: cycles ?? this.cycles,
       gamesPerOpponent: gamesPerOpponent ?? this.gamesPerOpponent,
       colorOrder: colorOrder ?? this.colorOrder,
+      scoringSystem: scoringSystem ?? this.scoringSystem,
+      pairByCurrentScore: pairByCurrentScore ?? this.pairByCurrentScore,
+      repeatTiming: repeatTiming ?? this.repeatTiming,
     );
   }
 
@@ -108,6 +143,9 @@ class TournamentPairingSettings {
         'cycles': cycles,
         'gamesPerOpponent': gamesPerOpponent,
         'colorOrder': colorOrder.name,
+        'scoringSystem': scoringSystem.name,
+        'pairByCurrentScore': pairByCurrentScore,
+        'repeatTiming': repeatTiming.name,
       };
 
   factory TournamentPairingSettings.fromJson(Map<String, dynamic> json) {
@@ -120,6 +158,15 @@ class TournamentPairingSettings {
     final colorOrder = TournamentColorOrder.values.firstWhere(
       (value) => value.name == rawColorOrder,
       orElse: () => TournamentColorOrder.alternateEveryGame,
+    );
+    final rawScoringSystem = '${json['scoringSystem'] ?? ''}';
+    final scoringSystem = TournamentScoringSystem.values.firstWhere(
+      (value) => value.name == rawScoringSystem,
+      orElse: () => TournamentScoringSystem.classic,
+    );
+    final repeatTiming = TournamentRepeatTiming.values.firstWhere(
+      (value) => value.name == '${json['repeatTiming'] ?? ''}',
+      orElse: () => TournamentRepeatTiming.nextCycle,
     );
     return TournamentPairingSettings(
       mode: mode,
@@ -135,6 +182,9 @@ class TournamentPairingSettings {
       gamesPerOpponent:
           ((json['gamesPerOpponent'] as num?)?.toInt() ?? 2).clamp(1, 10),
       colorOrder: colorOrder,
+      scoringSystem: scoringSystem,
+      pairByCurrentScore: json['pairByCurrentScore'] != false,
+      repeatTiming: repeatTiming,
     );
   }
 }
@@ -146,6 +196,7 @@ enum TournamentPairingAction {
   finishRound,
   nextRound,
   editManually,
+  showVariants,
 }
 
 class TournamentPairingControlResult {
@@ -153,6 +204,18 @@ class TournamentPairingControlResult {
 
   final TournamentPairingSettings settings;
   final TournamentPairingAction action;
+}
+
+Future<TournamentPairingSettings?> showTournamentPairingSettingsDialog({
+  required BuildContext context,
+  required TournamentPairingSettings initialSettings,
+}) {
+  return showDialog<TournamentPairingSettings>(
+    context: context,
+    builder: (_) => _TournamentPairingSettingsDialog(
+      settings: initialSettings,
+    ),
+  );
 }
 
 Future<TournamentPairingControlResult?> showTournamentPairingControlDialog({
@@ -231,6 +294,83 @@ class _TournamentPairingControlDialogState
     }
   }
 
+  void _update(TournamentPairingSettings value) {
+    setState(() => _settings = value);
+    widget.onSettingsChanged(value);
+  }
+
+  Widget _inlineSettings() {
+    Widget toggle(String label, bool value, ValueChanged<bool> changed) =>
+        SwitchListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: MakeChessLocalizedText(label),
+          value: value,
+          onChanged: changed,
+        );
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: _settings.cycles,
+                decoration: const InputDecoration(labelText: 'Полных кругов'),
+                items: List.generate(10, (i) => i + 1)
+                    .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                    .toList(),
+                onChanged: (v) => _update(_settings.copyWith(cycles: v)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: _settings.gamesPerOpponent,
+                decoration:
+                    const InputDecoration(labelText: 'Партий с соперником'),
+                items: List.generate(10, (i) => i + 1)
+                    .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                    .toList(),
+                onChanged: (v) =>
+                    _update(_settings.copyWith(gamesPerOpponent: v)),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<TournamentRepeatTiming>(
+          initialValue: _settings.repeatTiming,
+          decoration:
+              const InputDecoration(labelText: 'Порядок повторных партий'),
+          items: TournamentRepeatTiming.values
+              .map((v) => DropdownMenuItem(value: v, child: Text(v.label)))
+              .toList(),
+          onChanged: (v) => _update(_settings.copyWith(repeatTiming: v)),
+        ),
+        toggle(
+            'Пары из игроков, максимально близких по текущим очкам',
+            _settings.pairByCurrentScore,
+            (v) => _update(_settings.copyWith(pairByCurrentScore: v))),
+        toggle('Учитывать рейтинг', _settings.useRating,
+            (v) => _update(_settings.copyWith(useRating: v))),
+        toggle(
+            'Запрещать незапланированные повторные встречи',
+            _settings.avoidRematches,
+            (v) => _update(_settings.copyWith(avoidRematches: v))),
+        toggle('Балансировать белые и чёрные', _settings.balanceColors,
+            (v) => _update(_settings.copyWith(balanceColors: v))),
+        toggle('Завершать тур после всех партий', _settings.autoFinishRound,
+            (v) => _update(_settings.copyWith(autoFinishRound: v))),
+        toggle(
+            'Автоматически запускать следующий тур',
+            _settings.autoStartNextRound,
+            (v) => _update(_settings.copyWith(autoStartNextRound: v))),
+        toggle('Разрешить ручные исправления', _settings.allowManualCorrections,
+            (v) => _update(_settings.copyWith(allowManualCorrections: v))),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final canPair = widget.participantCount >= 2;
@@ -263,102 +403,117 @@ class _TournamentPairingControlDialogState
           ),
           content: SizedBox(
             width: 720,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SegmentedButton<TournamentPairingMode>(
-                  segments: TournamentPairingMode.values
-                      .map((mode) => ButtonSegment<TournamentPairingMode>(
-                            value: mode,
-                            label: MakeChessLocalizedText(mode.label),
-                          ))
-                      .toList(growable: false),
-                  selected: <TournamentPairingMode>{_settings.mode},
-                  onSelectionChanged: (selection) {
-                    final updated = _settings.copyWith(mode: selection.first);
-                    setState(() => _settings = updated);
-                    widget.onSettingsChanged(updated);
-                  },
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(.04),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white12),
+            height: MediaQuery.sizeOf(context).height * .72,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SegmentedButton<TournamentPairingMode>(
+                    segments: TournamentPairingMode.values
+                        .map((mode) => ButtonSegment<TournamentPairingMode>(
+                              value: mode,
+                              label: MakeChessLocalizedText(mode.label),
+                            ))
+                        .toList(growable: false),
+                    selected: <TournamentPairingMode>{_settings.mode},
+                    onSelectionChanged: (selection) {
+                      final updated = _settings.copyWith(mode: selection.first);
+                      setState(() => _settings = updated);
+                      widget.onSettingsChanged(updated);
+                    },
                   ),
-                  child: MakeChessLocalizedText(
-                    _settings.mode.description,
-                    style: const TextStyle(color: Colors.white70, height: 1.4),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                MakeChessLocalizedText(
-                  'Участников: ${widget.participantCount}',
-                  style: TextStyle(
-                    color: canPair ? Colors.greenAccent : Colors.orangeAccent,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _openSettings,
-                      icon: const Icon(Icons.settings),
-                      label: const MakeChessLocalizedText('Настройка'),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(.04),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
                     ),
-                    if (_settings.mode == TournamentPairingMode.manual)
+                    child: MakeChessLocalizedText(
+                      _settings.mode.description,
+                      style:
+                          const TextStyle(color: Colors.white70, height: 1.4),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  MakeChessLocalizedText(
+                    'Участников: ${widget.participantCount}',
+                    style: TextStyle(
+                      color: canPair ? Colors.greenAccent : Colors.orangeAccent,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ExpansionTile(
+                    initiallyExpanded: true,
+                    tilePadding: EdgeInsets.zero,
+                    title: const MakeChessLocalizedText(
+                      'Все настройки жеребьёвки',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    children: [_inlineSettings()],
+                  ),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: canPair && !_busy
+                            ? () => _run(
+                                  TournamentPairingAction.generateAutomatically,
+                                )
+                            : null,
+                        icon: const Icon(Icons.shuffle),
+                        label: MakeChessLocalizedText(
+                          'Автоматическая жеребьёвка',
+                        ),
+                      ),
                       OutlinedButton.icon(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(TournamentPairingAction.editManually),
+                        onPressed: canPair && !_busy
+                            ? () => _run(TournamentPairingAction.editManually)
+                            : null,
                         icon: const Icon(Icons.edit),
-                        label: const MakeChessLocalizedText(
-                            'Составить пары вручную'),
-                      ),
-                    FilledButton.icon(
-                      onPressed: canPair && !_busy
-                          ? () => _run(
-                                TournamentPairingAction.generateAutomatically,
-                              )
-                          : null,
-                      icon: const Icon(Icons.shuffle),
-                      label: MakeChessLocalizedText(
-                        _settings.mode == TournamentPairingMode.manual
-                            ? 'Автоматическая жеребьёвка'
-                            : 'Сформировать пары',
-                      ),
-                    ),
-                    if (_settings.mode != TournamentPairingMode.automatic) ...[
-                      OutlinedButton.icon(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(TournamentPairingAction.startRound),
-                        icon: const Icon(Icons.play_arrow),
-                        label: const MakeChessLocalizedText('Начать тур'),
+                        label:
+                            const MakeChessLocalizedText('Ручная жеребьёвка'),
                       ),
                       OutlinedButton.icon(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(TournamentPairingAction.finishRound),
-                        icon: const Icon(Icons.stop_circle_outlined),
-                        label: const MakeChessLocalizedText('Завершить тур'),
+                        onPressed: canPair && !_busy
+                            ? () => _run(TournamentPairingAction.showVariants)
+                            : null,
+                        icon: const Icon(Icons.tab),
+                        label:
+                            const MakeChessLocalizedText('Варианты жеребьёвки'),
                       ),
-                      OutlinedButton.icon(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(TournamentPairingAction.nextRound),
-                        icon: const Icon(Icons.skip_next),
-                        label: const MakeChessLocalizedText('Следующий тур'),
-                      ),
+                      if (_settings.mode !=
+                          TournamentPairingMode.automatic) ...[
+                        OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(TournamentPairingAction.startRound),
+                          icon: const Icon(Icons.play_arrow),
+                          label: const MakeChessLocalizedText('Начать тур'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(TournamentPairingAction.finishRound),
+                          icon: const Icon(Icons.stop_circle_outlined),
+                          label: const MakeChessLocalizedText('Завершить тур'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(TournamentPairingAction.nextRound),
+                          icon: const Icon(Icons.skip_next),
+                          label: const MakeChessLocalizedText('Следующий тур'),
+                        ),
+                      ],
                     ],
-                  ],
-                ),
-              ],
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -460,6 +615,11 @@ class _TournamentPairingSettingsDialogState
               ),
               const Divider(height: 28),
               _toggle(
+                  'Формировать пары из игроков, максимально близких по текущим очкам',
+                  _value.pairByCurrentScore,
+                  (v) => setState(
+                      () => _value = _value.copyWith(pairByCurrentScore: v))),
+              _toggle(
                   'Учитывать рейтинг',
                   _value.useRating,
                   (v) =>
@@ -489,6 +649,22 @@ class _TournamentPairingSettingsDialogState
                   _value.allowManualCorrections,
                   (v) => setState(() =>
                       _value = _value.copyWith(allowManualCorrections: v))),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<TournamentRepeatTiming>(
+                initialValue: _value.repeatTiming,
+                decoration: InputDecoration(
+                  labelText: MakeChessLocalization.phrase(
+                      'Когда играть повторные партии'),
+                ),
+                items: TournamentRepeatTiming.values
+                    .map((timing) => DropdownMenuItem(
+                          value: timing,
+                          child: MakeChessLocalizedText(timing.label),
+                        ))
+                    .toList(growable: false),
+                onChanged: (timing) => setState(
+                    () => _value = _value.copyWith(repeatTiming: timing)),
+              ),
               const SizedBox(height: 10),
               DropdownButtonFormField<int>(
                 value: _value.nextRoundDelaySeconds,

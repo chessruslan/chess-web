@@ -2,6 +2,7 @@
 // MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:convert';
+import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -309,6 +310,15 @@ class _TournamentData {
     this.finishedAt,
     this.templateSchema,
     this.templateValues = const <String, String>{},
+    this.playMode = 'online',
+    this.minRating,
+    this.maxRating,
+    this.minAge,
+    this.maxAge,
+    this.birthYearFrom,
+    this.birthYearTo,
+    this.allowedTitles = const <String>[],
+    this.ownerId = '',
   });
 
   final String id;
@@ -334,6 +344,15 @@ class _TournamentData {
   final DateTime? finishedAt;
   final TournamentTemplateSchema? templateSchema;
   final Map<String, String> templateValues;
+  final String playMode;
+  final int? minRating;
+  final int? maxRating;
+  final int? minAge;
+  final int? maxAge;
+  final int? birthYearFrom;
+  final int? birthYearTo;
+  final List<String> allowedTitles;
+  final String ownerId;
 
   _TournamentData copyWith({
     String? name,
@@ -356,6 +375,15 @@ class _TournamentData {
     bool? isTemplate,
     TournamentTemplateSchema? templateSchema,
     Map<String, String>? templateValues,
+    String? playMode,
+    int? minRating,
+    int? maxRating,
+    int? minAge,
+    int? maxAge,
+    int? birthYearFrom,
+    int? birthYearTo,
+    List<String>? allowedTitles,
+    String? ownerId,
   }) {
     return _TournamentData(
       id: id,
@@ -380,6 +408,15 @@ class _TournamentData {
       finishedAt: finishedAt ?? this.finishedAt,
       templateSchema: templateSchema ?? this.templateSchema,
       templateValues: templateValues ?? this.templateValues,
+      playMode: playMode ?? this.playMode,
+      minRating: minRating ?? this.minRating,
+      maxRating: maxRating ?? this.maxRating,
+      minAge: minAge ?? this.minAge,
+      maxAge: maxAge ?? this.maxAge,
+      birthYearFrom: birthYearFrom ?? this.birthYearFrom,
+      birthYearTo: birthYearTo ?? this.birthYearTo,
+      allowedTitles: allowedTitles ?? this.allowedTitles,
+      ownerId: ownerId ?? this.ownerId,
     );
   }
 
@@ -407,6 +444,22 @@ class _TournamentData {
         'finishedAt': finishedAt?.toIso8601String(),
         if (templateSchema != null) 'templateSchema': templateSchema!.toJson(),
         'templateValues': templateValues,
+        'playMode': playMode,
+        if (minRating != null) 'minRating': minRating,
+        if (maxRating != null) 'maxRating': maxRating,
+        if (minAge != null) 'minAge': minAge,
+        if (maxAge != null) 'maxAge': maxAge,
+        if (birthYearFrom != null) 'birthYearFrom': birthYearFrom,
+        if (birthYearTo != null) 'birthYearTo': birthYearTo,
+        'allowedTitles': allowedTitles,
+        if (ownerId.isNotEmpty) 'ownerId': ownerId,
+        'participationFilterEnabled': minRating != null ||
+            maxRating != null ||
+            minAge != null ||
+            maxAge != null ||
+            birthYearFrom != null ||
+            birthYearTo != null ||
+            allowedTitles.isNotEmpty,
       };
 
   factory _TournamentData.fromJson(Map<String, dynamic> json) {
@@ -439,6 +492,17 @@ class _TournamentData {
     final pairingsRaw = json['pairings'];
     final historyRaw = json['roundHistory'];
     final namesRaw = json['participantNames'];
+    final rawMaxParticipants =
+        (json['maxParticipants'] as num?)?.toInt() ?? 8;
+    final schemaRaw = json['templateSchema'];
+    final schemaRowCount = schemaRaw is Map
+        ? (schemaRaw['rowCount'] as num?)?.toInt()
+        : null;
+    // Older expandable tournaments used int32.maxValue as an "unlimited"
+    // marker. It is not a real participant count and must never reach the UI.
+    final normalizedMaxParticipants = rawMaxParticipants > 128
+        ? (schemaRowCount ?? 8).clamp(2, 128).toInt()
+        : rawMaxParticipants.clamp(2, 128).toInt();
     return _TournamentData(
       id: '${json['id'] ?? ''}',
       name: '${json['name'] ?? 'Турнир'}',
@@ -447,7 +511,7 @@ class _TournamentData {
         json['learning'] != false,
       ),
       format: parseFormat('${json['format'] ?? ''}'),
-      maxParticipants: (json['maxParticipants'] as num?)?.toInt() ?? 8,
+      maxParticipants: normalizedMaxParticipants,
       minutes: (json['minutes'] as num?)?.toInt() ?? 5,
       increment: (json['increment'] as num?)?.toInt() ?? 0,
       rounds: (json['rounds'] as num?)?.toInt() ?? 3,
@@ -497,6 +561,21 @@ class _TournamentData {
                   ),
             )
           : const <String, String>{},
+      playMode: '${json['playMode'] ?? 'online'}',
+      minRating: int.tryParse('${json['minRating'] ?? ''}'),
+      maxRating: int.tryParse('${json['maxRating'] ?? ''}'),
+      minAge: int.tryParse('${json['minAge'] ?? ''}'),
+      maxAge: int.tryParse('${json['maxAge'] ?? ''}'),
+      birthYearFrom: int.tryParse('${json['birthYearFrom'] ?? ''}'),
+      birthYearTo: int.tryParse('${json['birthYearTo'] ?? ''}'),
+      allowedTitles: json['allowedTitles'] is List
+          ? (json['allowedTitles'] as List)
+              .map((value) => '$value')
+              .toList(growable: false)
+          : const <String>[],
+      ownerId:
+          '${json['_ownerId'] ?? json['ownerId'] ?? json['creatorId'] ?? ''}'
+              .trim(),
     );
   }
 }
@@ -527,6 +606,8 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   static const String _sentInvitationsStorageKey =
       'makechess_sent_tournament_invitations_v1';
 
+  bool _cloudUnavailableDialogShown = false;
+
   final TextEditingController _nameCtl = TextEditingController();
   final TextEditingController _maxCtl = TextEditingController(text: '8');
   final TextEditingController _minutesCtl = TextEditingController(text: '5');
@@ -538,9 +619,10 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   final TextEditingController _participantSearchCtl = TextEditingController();
   final TextEditingController _tournamentSearchCtl = TextEditingController();
   final TextEditingController _schoolSearchCtl = TextEditingController();
+  final ScrollController _templatePreviewScrollCtl = ScrollController();
 
   _TournamentSection _section = _TournamentSection.create;
-  _OpenTournamentTab _openTab = _OpenTournamentTab.created;
+  _OpenTournamentTab _openTab = _OpenTournamentTab.newTournament;
   _TournamentType _type = _TournamentType.learning;
   _TournamentFormat _format = _TournamentFormat.roundRobin;
   bool _rated = false;
@@ -632,10 +714,119 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   @override
   void initState() {
     super.initState();
+    TournamentStorageService.instance.addListener(_onTournamentStorageChanged);
+    TournamentStorageService.instance.initialize();
     _loadOwnerStudent();
     _loadParticipantDirectory();
     _loadRegisteredSchools();
     _load();
+  }
+
+  void _onTournamentStorageChanged() {
+    if (!mounted) return;
+    setState(() {});
+    if (TournamentStorageService.instance.cloudState ==
+        TournamentCloudState.online) {
+      _cloudUnavailableDialogShown = false;
+    }
+    if (TournamentStorageService.instance.cloudState ==
+            TournamentCloudState.offline &&
+        !_cloudUnavailableDialogShown) {
+      _cloudUnavailableDialogShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showCloudUnavailableDialog();
+      });
+    }
+  }
+
+  Future<void> _showCloudUnavailableDialog() async {
+    if (!mounted) return;
+    final storage = TournamentStorageService.instance;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.cloud_off_outlined, color: Colors.orangeAccent),
+            SizedBox(width: 10),
+            MakeChessLocalizedText('База MakeChess недоступна'),
+          ],
+        ),
+        content: const MakeChessLocalizedText(
+          'Можно полностью продолжить работу с локальными турнирами. '
+          'Создание турнира, участники, жеребьёвка, туры, результаты, таблица '
+          'и архив сохраняются на этом компьютере. Когда соединение восстановится, '
+          'несинхронизированные изменения можно отправить в MakeChess.\n\n'
+          'Для переноса или резервной копии можно сохранить локальные турниры '
+          'в файл и потом открыть этот файл на другом компьютере.',
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await _importLocalTournamentFile();
+            },
+            icon: const Icon(Icons.folder_open_outlined),
+            label: const MakeChessLocalizedText('Открыть локальный файл'),
+          ),
+          TextButton.icon(
+            onPressed: () async {
+              final ok = await storage.probeCloud();
+              if (ok) {
+                await storage.syncPendingChanges();
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                if (mounted) _message('Связь с MakeChess восстановлена');
+              } else if (mounted) {
+                _message('База MakeChess пока недоступна');
+              }
+            },
+            icon: const Icon(Icons.refresh),
+            label: const MakeChessLocalizedText('Повторить подключение'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const MakeChessLocalizedText('Продолжить локально'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _exportLocalTournamentFile() async {
+    try {
+      final text = await TournamentStorageService.instance.exportLocalBundle();
+      final bytes = utf8.encode(text);
+      final blob = html.Blob(<Object>[bytes], 'application/json;charset=utf-8');
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+      html.AnchorElement(href: url)
+        ..download = 'MakeChess_tournaments_$stamp.mct'
+        ..click();
+      html.Url.revokeObjectUrl(url);
+      if (mounted) _message('Локальные турниры сохранены в файл');
+    } catch (error) {
+      if (mounted) _message('Не удалось сохранить локальный файл: $error');
+    }
+  }
+
+  Future<void> _importLocalTournamentFile() async {
+    final input = html.FileUploadInputElement()..accept = '.mct,.json,application/json';
+    input.click();
+    await input.onChange.first;
+    final file = input.files?.isNotEmpty == true ? input.files!.first : null;
+    if (file == null) return;
+    final reader = html.FileReader();
+    reader.readAsText(file);
+    await reader.onLoad.first;
+    try {
+      final count = await TournamentStorageService.instance
+          .importLocalBundle('${reader.result ?? ''}');
+      if (!mounted) return;
+      _message('Импортировано локальных турниров: $count');
+      await _load();
+    } catch (error) {
+      if (mounted) _message('Не удалось открыть файл турниров: $error');
+    }
   }
 
   Future<void> _loadRegisteredSchools() async {
@@ -724,6 +915,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   @override
   void dispose() {
+    TournamentStorageService.instance.removeListener(_onTournamentStorageChanged);
     _nameCtl.dispose();
     _maxCtl.dispose();
     _minutesCtl.dispose();
@@ -733,6 +925,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     _participantSearchCtl.dispose();
     _tournamentSearchCtl.dispose();
     _schoolSearchCtl.dispose();
+    _templatePreviewScrollCtl.dispose();
     super.dispose();
   }
 
@@ -758,8 +951,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
             );
         }
       }
-      final userId =
-          (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
+      final userId = TournamentStorageService.instance.currentUserId;
       if (userId.isNotEmpty) {
         final migrationKey = 'makechess_tournaments_db_migrated_$userId';
         final remote =
@@ -884,13 +1076,21 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
+    final userId = TournamentStorageService.instance.currentUserId;
+    if (userId.isNotEmpty) {
+      for (var i = 0; i < _tournaments.length; i++) {
+        if (_tournaments[i].ownerId.isEmpty ||
+            _tournaments[i].ownerId == 'local_offline_owner') {
+          _tournaments[i] = _tournaments[i].copyWith(ownerId: userId);
+        }
+      }
+    }
     final data = _tournaments.map((e) => e.toJson()).toList();
     await prefs.setString(
       _storageKey,
       jsonEncode(data),
     );
     await TournamentStorageService.instance.saveTournaments(data);
-    final userId = (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
     if (userId.isNotEmpty) {
       _visibleInvitationTournaments
         ..removeWhere((entry) => entry.ownerId == userId)
@@ -928,7 +1128,15 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   void _fillForm(_TournamentData tournament) {
     _nameCtl.text = tournament.name;
-    _maxCtl.text = '${tournament.maxParticipants}';
+    final schema = tournament.templateSchema;
+    final defaultParticipants = schema?.expandableRows == true
+        ? schema!.rowCount
+        : tournament.maxParticipants;
+    _maxCtl.text = '$defaultParticipants';
+    if (schema != null) {
+      _templateSchema = _withStandardColumns(schema);
+      _templateRowsCtl.text = '${schema.rowCount}';
+    }
     _minutesCtl.text = '${tournament.minutes}';
     _incrementCtl.text = '${tournament.increment}';
     _roundsCtl.text = '${tournament.rounds}';
@@ -939,13 +1147,58 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     _saveGames = tournament.saveGames;
   }
 
+  TournamentTemplateSchema _withStandardColumns(
+    TournamentTemplateSchema schema,
+  ) {
+    final savedById = <String, TournamentTemplateColumn>{
+      for (final column in schema.columns) column.id: column,
+    };
+    final standardIds = TournamentTemplateSchema.defaults.columns
+        .map((column) => column.id)
+        .toSet();
+    final savedButtonsById = <String, TournamentTemplateButton>{
+      for (final button in schema.buttons) button.id: button,
+    };
+    final standardButtonIds = TournamentTemplateSchema.defaults.buttons
+        .map((button) => button.id)
+        .toSet();
+    return schema.copyWith(
+      columns: <TournamentTemplateColumn>[
+        for (final standard in TournamentTemplateSchema.defaults.columns)
+          savedById[standard.id] ??
+              TournamentTemplateColumn(
+                id: standard.id,
+                label: standard.label,
+                kind: standard.kind,
+                editable: standard.editable,
+                enabled: false,
+              ),
+        ...schema.columns.where((column) => !standardIds.contains(column.id)),
+      ],
+      buttons: <TournamentTemplateButton>[
+        for (final standard in TournamentTemplateSchema.defaults.buttons)
+          savedButtonsById[standard.id] ??
+              TournamentTemplateButton(
+                id: standard.id,
+                label: standard.label,
+                action: standard.action,
+                enabled: false,
+              ),
+        ...schema.buttons
+            .where((button) => !standardButtonIds.contains(button.id)),
+      ],
+    );
+  }
+
   Future<void> _createTournament() async {
     final name = _nameCtl.text.trim();
     if (name.isEmpty) {
       _message('Введите название турнира');
       return;
     }
-    if (_templateSchema.columns.isEmpty) {
+    if (!_templateSchema.columns.any(
+      (column) => column.enabled && column.label.trim().isNotEmpty,
+    )) {
       _message('Добавьте хотя бы один столбец турнирной таблицы');
       return;
     }
@@ -954,10 +1207,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         _positiveInt(_maxCtl, _format == _TournamentFormat.swiss ? 12 : 8)
             .clamp(2, 128)
             .toInt();
-    // Расширяемая швейцарская таблица не имеет лимита участников.
-    // Большое int-значение нужно только для совместимости с хранимой моделью.
-    final maxParticipants =
-        _templateSchema.expandableRows ? 2147483647 : requestedParticipants;
+    // Расширяемость означает возможность изменить число строк в редакторе,
+    // но сохранённый турнир всегда обязан иметь точный конечный лимит.
+    final maxParticipants = requestedParticipants;
     final minutes = _positiveInt(_minutesCtl, 5).clamp(1, 180).toInt();
     final increment = _positiveInt(_incrementCtl, 0).clamp(0, 60).toInt();
     final rounds = _positiveInt(_roundsCtl, 3).clamp(1, 50).toInt();
@@ -984,10 +1236,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       participantIds: participantIds,
       participantNames: participantNames,
       templateSchema: _templateSchema.copyWith(
-        rowCount: (int.tryParse(_templateRowsCtl.text.trim()) ??
-                requestedParticipants)
-            .clamp(1, 256)
-            .toInt(),
+        rowCount: requestedParticipants,
       ),
     );
 
@@ -1035,12 +1284,17 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   }
 
   Future<void> _deleteTournament(_TournamentData tournament) async {
+    if (!_canDeleteTournament(tournament)) {
+      _message(
+          'Удалить турнир может только его создатель или администратор сайта');
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const MakeChessLocalizedText('Удалить турнир?'),
         content: MakeChessLocalizedText(
-            '«${tournament.name}» будет удалён из этого браузера.'),
+            '«${tournament.name}» будет навсегда удалён из базы данных и больше не восстановится после перезапуска сайта.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -1054,6 +1308,17 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       ),
     );
     if (confirmed != true) return;
+    try {
+      await TournamentStorageService.instance.deleteTournament(
+        tournament.id,
+        ownerId: _isSiteAdministrator && tournament.ownerId.isNotEmpty
+            ? tournament.ownerId
+            : null,
+      );
+    } catch (error) {
+      _message('Не удалось навсегда удалить турнир: $error');
+      return;
+    }
     setState(() {
       _tournaments.removeWhere((e) => e.id == tournament.id);
       if (_openedArchiveTournamentId == tournament.id) {
@@ -1068,7 +1333,33 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       }
     });
     await _save();
-    await TournamentStorageService.instance.deleteTournament(tournament.id);
+  }
+
+  bool get _isSiteAdministrator {
+    final metadata = Supabase.instance.client.auth.currentUser?.appMetadata ??
+        const <String, dynamic>{};
+    final role = '${metadata['role'] ?? metadata['user_role'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    final roles = metadata['roles'];
+    return metadata['is_admin'] == true ||
+        metadata['isAdmin'] == true ||
+        role == 'admin' ||
+        role == 'administrator' ||
+        (roles is List &&
+            roles.any((value) {
+              final normalized = '$value'.trim().toLowerCase();
+              return normalized == 'admin' || normalized == 'administrator';
+            }));
+  }
+
+  bool _canDeleteTournament(_TournamentData tournament) {
+    if (_isSiteAdministrator) return true;
+    final ownerId = tournament.ownerId.trim();
+    if (ownerId.isEmpty) return true;
+    final currentUserId =
+        (Supabase.instance.client.auth.currentUser?.id ?? '').trim();
+    return currentUserId.isNotEmpty && ownerId == currentUserId;
   }
 
   Future<void> _toggleParticipant(String studentId, bool add) async {
@@ -1521,39 +1812,49 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         : _activeTournament;
     return Container(
       height: 58,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      padding: const EdgeInsets.only(left: 18),
       decoration: const BoxDecoration(
         color: Color(0xFF252C35),
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
-      child: Row(
+      child: Stack(
         children: [
-          const Icon(Icons.emoji_events, color: Colors.amberAccent),
-          const SizedBox(width: 10),
-          const MakeChessLocalizedText(
-            'Управление турниром',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
+          Padding(
+            padding: const EdgeInsets.only(right: 58),
+            child: Row(
+              children: [
+                const Icon(Icons.emoji_events, color: Colors.amberAccent),
+                const SizedBox(width: 10),
+                const MakeChessLocalizedText(
+                  'Управление турниром',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                if (active != null)
+                  Flexible(
+                    child: MakeChessLocalizedText(
+                      active.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                const Spacer(),
+                if (active != null) _statusChip(active.status),
+              ],
             ),
           ),
-          const SizedBox(width: 16),
-          if (active != null)
-            Flexible(
-              child: MakeChessLocalizedText(
-                active.name,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70),
-              ),
+          Positioned(
+            top: 5,
+            right: 4,
+            child: IconButton(
+              tooltip: MakeChessLocalization.phrase('Закрыть'),
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close, color: Colors.white70),
             ),
-          const Spacer(),
-          if (active != null) _statusChip(active.status),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: MakeChessLocalization.phrase('Закрыть'),
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close, color: Colors.white70),
           ),
         ],
       ),
@@ -1654,13 +1955,60 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
             label: const MakeChessLocalizedText('Игровая платформа'),
           ),
           const SizedBox(height: 10),
-          MakeChessLocalizedText(
-            'Турниры сохраняются в базе MakeChess.',
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.42),
-              fontSize: 11,
-              height: 1.35,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _importLocalTournamentFile,
+                  icon: const Icon(Icons.folder_open_outlined, size: 16),
+                  label: const MakeChessLocalizedText('Открыть'),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exportLocalTournamentFile,
+                  icon: const Icon(Icons.save_alt, size: 16),
+                  label: const MakeChessLocalizedText('В файл'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              final storage = TournamentStorageService.instance;
+              final online = storage.cloudState == TournamentCloudState.online;
+              final pending = storage.hasPendingChanges;
+              final text = online
+                  ? (pending
+                      ? 'Локально сохранено • ожидается синхронизация'
+                      : 'Локально сохранено • MakeChess подключён')
+                  : (pending
+                      ? 'Локальный режим • есть несинхронизированные изменения'
+                      : 'Локальный режим');
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    online ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
+                    size: 15,
+                    color: online ? Colors.greenAccent : Colors.orangeAccent,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: MakeChessLocalizedText(
+                      text,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.58),
+                        fontSize: 11,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -1675,7 +2023,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         return _buildOpen();
       case _TournamentSection.current:
         return TournamentCurrentTournamentsPanel(
-          userId: Supabase.instance.client.auth.currentUser?.id ?? '',
+          userId: TournamentStorageService.instance.currentUserId,
           userName: _currentUserDisplayName,
         );
       case _TournamentSection.digitalBoard:
@@ -1694,7 +2042,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         return _buildControl();
       case _TournamentSection.statistics:
         return TournamentStatisticsPanel(
-          userId: Supabase.instance.client.auth.currentUser?.id ?? '',
+          userId: TournamentStorageService.instance.currentUserId,
           userName: _currentUserDisplayName,
         );
       case _TournamentSection.archive:
@@ -1949,6 +2297,127 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         ));
   }
 
+  void _appendTemplateColumn() {
+    setState(() {
+      _templateSchema = _templateSchema.copyWith(
+        columns: <TournamentTemplateColumn>[
+          ..._templateSchema.columns,
+          TournamentTemplateColumn(
+            id: 'column_${DateTime.now().microsecondsSinceEpoch}',
+            label: '',
+            kind: TournamentTemplateColumnKind.text,
+            editable: true,
+          ),
+        ],
+      );
+    });
+  }
+
+  void _replaceTemplateColumn(
+    int index,
+    TournamentTemplateColumn column,
+  ) {
+    final columns = _templateSchema.columns.toList();
+    columns[index] = column;
+    setState(
+        () => _templateSchema = _templateSchema.copyWith(columns: columns));
+  }
+
+  bool _isStandardTemplateColumn(String id) =>
+      TournamentTemplateSchema.defaults.columns.any((item) => item.id == id);
+
+  Widget _templateColumnRow(int index) {
+    final column = _templateSchema.columns[index];
+    final standard = _isStandardTemplateColumn(column.id);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Checkbox(
+            value: column.enabled,
+            onChanged: (value) => _replaceTemplateColumn(
+              index,
+              TournamentTemplateColumn(
+                id: column.id,
+                label: column.label,
+                kind: column.kind,
+                editable: column.editable,
+                enabled: value == true,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            flex: 3,
+            child: TextFormField(
+              key: ValueKey(column.id),
+              initialValue: column.label,
+              readOnly: standard,
+              decoration: InputDecoration(
+                isDense: true,
+                labelText: standard
+                    ? 'Стандартный столбец'
+                    : 'Название нового столбца',
+              ),
+              onChanged: (value) => _replaceTemplateColumn(
+                index,
+                TournamentTemplateColumn(
+                  id: column.id,
+                  label: value,
+                  kind: column.kind,
+                  editable: column.editable,
+                  enabled: column.enabled,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            flex: 2,
+            child: DropdownButtonFormField<TournamentTemplateColumnKind>(
+              value: column.kind,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: 'Тип данных',
+              ),
+              items: TournamentTemplateColumnKind.values
+                  .map((kind) => DropdownMenuItem(
+                        value: kind,
+                        child: Text(tournamentColumnKindLabel(kind)),
+                      ))
+                  .toList(growable: false),
+              onChanged: standard
+                  ? null
+                  : (kind) {
+                      if (kind == null) return;
+                      _replaceTemplateColumn(
+                        index,
+                        TournamentTemplateColumn(
+                          id: column.id,
+                          label: column.label,
+                          kind: kind,
+                          editable: column.editable,
+                          enabled: column.enabled,
+                        ),
+                      );
+                    },
+            ),
+          ),
+          if (!standard)
+            IconButton(
+              tooltip: 'Удалить добавленный столбец',
+              onPressed: () => setState(() {
+                final columns = _templateSchema.columns.toList()
+                  ..removeAt(index);
+                _templateSchema = _templateSchema.copyWith(columns: columns);
+              }),
+              icon: const Icon(Icons.delete_outline, color: Colors.white38),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _addTemplateButton() async {
     final label = TextEditingController();
     var action = TournamentTemplateAction.addParticipant;
@@ -2012,6 +2481,103 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
             result
           ],
         ));
+  }
+
+  void _replaceTemplateButton(int index, TournamentTemplateButton button) {
+    final buttons = _templateSchema.buttons.toList();
+    buttons[index] = button;
+    setState(
+        () => _templateSchema = _templateSchema.copyWith(buttons: buttons));
+  }
+
+  bool _isStandardTemplateButton(String id) =>
+      TournamentTemplateSchema.defaults.buttons.any((item) => item.id == id);
+
+  Widget _templateButtonRow(int index) {
+    final button = _templateSchema.buttons[index];
+    final standard = _isStandardTemplateButton(button.id);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Checkbox(
+            value: button.enabled,
+            onChanged: (value) => _replaceTemplateButton(
+              index,
+              TournamentTemplateButton(
+                id: button.id,
+                label: button.label,
+                action: button.action,
+                enabled: value == true,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            flex: 3,
+            child: TextFormField(
+              key: ValueKey(button.id),
+              initialValue: button.label,
+              readOnly: standard,
+              decoration: InputDecoration(
+                isDense: true,
+                labelText: standard ? 'Стандартная кнопка' : 'Текст кнопки',
+              ),
+              onChanged: (value) => _replaceTemplateButton(
+                index,
+                TournamentTemplateButton(
+                  id: button.id,
+                  label: value,
+                  action: button.action,
+                  enabled: button.enabled,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            flex: 2,
+            child: DropdownButtonFormField<TournamentTemplateAction>(
+              value: button.action,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: 'Действие',
+              ),
+              items: TournamentTemplateAction.values
+                  .map((action) => DropdownMenuItem(
+                        value: action,
+                        child: Text(tournamentActionLabel(action)),
+                      ))
+                  .toList(growable: false),
+              onChanged: standard
+                  ? null
+                  : (action) {
+                      if (action == null) return;
+                      _replaceTemplateButton(
+                        index,
+                        TournamentTemplateButton(
+                          id: button.id,
+                          label: button.label,
+                          action: action,
+                          enabled: button.enabled,
+                        ),
+                      );
+                    },
+            ),
+          ),
+          if (!standard)
+            IconButton(
+              tooltip: 'Удалить добавленную кнопку',
+              onPressed: () => setState(() {
+                final buttons = _templateSchema.buttons.toList()
+                  ..removeAt(index);
+                _templateSchema = _templateSchema.copyWith(buttons: buttons);
+              }),
+              icon: const Icon(Icons.delete_outline, color: Colors.white38),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _editTemplatePosition(String elementId, String label) async {
@@ -2201,6 +2767,13 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Colors.white),
                     decoration: _inputDecoration('Количество строк'),
+                    onChanged: (value) {
+                      final count = int.tryParse(value);
+                      if (count == null || count < 1) return;
+                      _maxCtl.text = '$count';
+                      setState(() => _templateSchema =
+                          _templateSchema.copyWith(rowCount: count));
+                    },
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -2229,30 +2802,12 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
             const SizedBox(height: 12),
             _constructorBlock(
               title: 'Столбцы таблицы',
-              onAdd: _addTemplateColumn,
+              onAdd: _appendTemplateColumn,
               children: [
                 for (var index = 0;
                     index < _templateSchema.columns.length;
                     index++)
-                  _constructorRow(
-                    icon: Icons.view_column_outlined,
-                    title: _templateSchema.columns[index].label,
-                    subtitle: tournamentColumnKindLabel(
-                        _templateSchema.columns[index].kind),
-                    onDelete: () => setState(() {
-                      final items = _templateSchema.columns.toList()
-                        ..removeAt(index);
-                      _templateSchema =
-                          _templateSchema.copyWith(columns: items);
-                    }),
-                    onPosition: _templateSchema.layoutMode ==
-                            TournamentTemplateLayoutMode.coordinates
-                        ? () => _editTemplatePosition(
-                              _templateSchema.columns[index].id,
-                              _templateSchema.columns[index].label,
-                            )
-                        : null,
-                  ),
+                  _templateColumnRow(index),
               ],
             ),
             const SizedBox(height: 12),
@@ -2265,25 +2820,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                 for (var index = 0;
                     index < _templateSchema.buttons.length;
                     index++)
-                  _constructorRow(
-                    icon: Icons.smart_button_outlined,
-                    title: _templateSchema.buttons[index].label,
-                    subtitle: tournamentActionLabel(
-                        _templateSchema.buttons[index].action),
-                    onDelete: () => setState(() {
-                      final items = _templateSchema.buttons.toList()
-                        ..removeAt(index);
-                      _templateSchema =
-                          _templateSchema.copyWith(buttons: items);
-                    }),
-                    onPosition: _templateSchema.layoutMode ==
-                            TournamentTemplateLayoutMode.coordinates
-                        ? () => _editTemplatePosition(
-                              _templateSchema.buttons[index].id,
-                              _templateSchema.buttons[index].label,
-                            )
-                        : null,
-                  ),
+                  _templateButtonRow(index),
               ],
             ),
           ],
@@ -2291,6 +2828,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       );
 
   Widget _templateTablePreview() {
+    final visibleColumns = _templateSchema.columns
+        .where((column) => column.enabled && column.label.trim().isNotEmpty)
+        .toList(growable: false);
     String example(TournamentTemplateColumnKind kind) => switch (kind) {
           TournamentTemplateColumnKind.text => 'Текст',
           TournamentTemplateColumnKind.player => 'Иванов Пётр',
@@ -2303,7 +2843,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           TournamentTemplateColumnKind.games => '7',
         };
 
-    if (_templateSchema.columns.isEmpty) {
+    if (visibleColumns.isEmpty) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -2321,46 +2861,53 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
               style: TextStyle(
                   color: Colors.amberAccent, fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    for (final column in _templateSchema.columns)
-                      Container(
-                        width: 130,
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(.08),
-                          border: Border.all(color: Colors.white12),
+          Scrollbar(
+            controller: _templatePreviewScrollCtl,
+            thumbVisibility: true,
+            scrollbarOrientation: ScrollbarOrientation.bottom,
+            child: SingleChildScrollView(
+              controller: _templatePreviewScrollCtl,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      for (final column in visibleColumns)
+                        Container(
+                          width: 105,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(.08),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Text(column.label,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700)),
                         ),
-                        child: Text(column.label,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700)),
-                      ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    for (final column in _templateSchema.columns)
-                      Container(
-                        width: 130,
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(.18),
-                          border: Border.all(color: Colors.white12),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      for (final column in visibleColumns)
+                        Container(
+                          width: 105,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(.18),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Text(example(column.kind),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white70)),
                         ),
-                        child: Text(example(column.kind),
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white70)),
-                      ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -2496,6 +3043,13 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                           ? 'Игроков по умолчанию'
                           : 'Максимум участников',
                     ),
+                    onChanged: (value) {
+                      final count = int.tryParse(value);
+                      if (count == null || count < 1) return;
+                      _templateRowsCtl.text = '$count';
+                      setState(() => _templateSchema =
+                          _templateSchema.copyWith(rowCount: count));
+                    },
                   ),
                 ),
               ],
@@ -2589,6 +3143,12 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   OutlinedButton.icon(
+                    onPressed: _startNewTemplate,
+                    icon: const Icon(Icons.note_add_outlined),
+                    label: const Text('Новый шаблон'),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
                     onPressed: _previewDraftTemplate,
                     icon: const Icon(Icons.visibility_outlined),
                     label: const Text('Посмотреть шаблон'),
@@ -2608,11 +3168,36 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     );
   }
 
+  void _startNewTemplate() {
+    setState(() {
+      _activeTournamentId = null;
+      _nameCtl.clear();
+      _format = _TournamentFormat.swiss;
+      _type = _TournamentType.open;
+      _maxCtl.text = '12';
+      _templateRowsCtl.text = '12';
+      _minutesCtl.text = '10';
+      _incrementCtl.text = '5';
+      _roundsCtl.text = '5';
+      _rated = false;
+      _videoEnabled = true;
+      _saveGames = true;
+      _draftParticipantIds.clear();
+      _templateSchema = TournamentTemplateSchema.defaults.copyWith(
+        rowCount: 12,
+        expandableRows: true,
+      );
+    });
+    _message('Новый шаблон готов к заполнению');
+  }
+
   void _previewDraftTemplate() {
     final name = _nameCtl.text.trim();
-    final rowCount =
-        (int.tryParse(_templateRowsCtl.text.trim()) ?? 8).clamp(1, 256).toInt();
-    final maxParticipants = _positiveInt(_maxCtl, 8).clamp(2, 128).toInt();
+    final rowCount = _positiveInt(
+      _maxCtl,
+      _format == _TournamentFormat.swiss ? 12 : 8,
+    ).clamp(1, 256).toInt();
+    final maxParticipants = rowCount;
     final template = _TournamentData(
       id: 'draft_template_preview',
       name: name.isEmpty ? 'Новый шаблон турнира' : name,
@@ -2664,9 +3249,10 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   Future<void> _createCurrentTournamentFromTemplate(
     _TournamentData template,
   ) async {
-    final maxParticipants = template.templateSchema?.expandableRows == true
-        ? 2147483647
-        : template.maxParticipants;
+    final maxParticipants = (template.templateSchema?.rowCount ??
+            template.maxParticipants)
+        .clamp(2, 128)
+        .toInt();
     final templateValues = <String, String>{
       for (final field in (template.templateSchema?.fields ??
           const <TournamentTemplateField>[]))
@@ -2704,7 +3290,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       await TournamentStorageService.instance
           .saveTournaments(<Map<String, dynamic>>[draftTournament.toJson()]);
     } catch (error) {
-      if (mounted) _message('Не удалось создать турнир в базе: $error');
+      if (mounted) _message('Не удалось сохранить турнир локально: $error');
       return;
     }
     if (!mounted) return;
@@ -2718,6 +3304,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       initialMinutes: template.minutes,
       initialIncrement: template.increment,
       initialRounds: template.rounds,
+      initialRated: template.rated,
       initialParticipantNames: const <String>[],
       maxParticipants: maxParticipants,
       initialJudge: _templateValueByLabel(
@@ -2737,8 +3324,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       ),
       templateSchema: template.templateSchema,
       templateValues: templateValues,
-      lockTournamentType: true,
+      lockTournamentType: false,
       organizerMode: true,
+      creatingNewTournament: true,
     );
 
     if (!mounted) return;
@@ -2751,8 +3339,44 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
         await TournamentStorageService.instance.loadTournamentTable(createdId);
     if (!mounted) return;
     final savedName = '${savedTable?['name'] ?? ''}'.trim();
+    final savedType = '${savedTable?['type'] ?? ''}'.trim();
+    final savedParticipants = savedTable?['participants'] is List
+        ? (savedTable!['participants'] as List)
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .where((item) => '${item['id'] ?? ''}'.trim().isNotEmpty)
+            .toList(growable: false)
+        : const <Map<String, dynamic>>[];
+    final savedParticipantIds = savedParticipants
+        .map((item) => '${item['id']}')
+        .toList(growable: false);
+    final savedParticipantNames = <String, String>{
+      for (final item in savedParticipants)
+        '${item['id']}': '${item['name'] ?? ''}',
+    };
+    final savedMaxParticipants =
+        ((savedTable?['maxParticipants'] as num?)?.toInt() ?? maxParticipants)
+            .clamp(2, 128)
+            .toInt();
     final tournament = draftTournament.copyWith(
       name: savedName.isEmpty ? draftTournament.name : savedName,
+      format: _formatFromEditorType(savedType, draftTournament.format),
+      rated: savedTable?['rated'] == true,
+      playMode: '${savedTable?['playMode'] ?? 'online'}',
+      minRating: int.tryParse('${savedTable?['minRating'] ?? ''}'),
+      maxRating: int.tryParse('${savedTable?['maxRating'] ?? ''}'),
+      minAge: int.tryParse('${savedTable?['minAge'] ?? ''}'),
+      maxAge: int.tryParse('${savedTable?['maxAge'] ?? ''}'),
+      birthYearFrom: int.tryParse('${savedTable?['birthYearFrom'] ?? ''}'),
+      birthYearTo: int.tryParse('${savedTable?['birthYearTo'] ?? ''}'),
+      allowedTitles: savedTable?['allowedTitles'] is List
+          ? (savedTable!['allowedTitles'] as List)
+              .map((value) => '$value')
+              .toList(growable: false)
+          : const <String>[],
+      maxParticipants: savedMaxParticipants,
+      participantIds: savedParticipantIds,
+      participantNames: savedParticipantNames,
       status: result == TournamentTableEditorResult.published
           ? _TournamentStatus.ready
           : _TournamentStatus.draft,
@@ -2767,6 +3391,30 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     if (result == TournamentTableEditorResult.published) {
       // Creator joins only by explicit action; no self-invitation.
     }
+  }
+
+  Future<void> _createTournamentFromConstructor() async {
+    final constructorTemplate = _TournamentData(
+      id: 'constructor_${DateTime.now().microsecondsSinceEpoch}',
+      name: 'Новый турнир',
+      type: _TournamentType.open,
+      format: _TournamentFormat.swiss,
+      maxParticipants: 8,
+      minutes: 10,
+      increment: 5,
+      rounds: 5,
+      rated: false,
+      videoEnabled: true,
+      saveGames: true,
+      status: _TournamentStatus.draft,
+      createdAt: DateTime.now(),
+      isTemplate: true,
+      templateSchema: TournamentTemplateSchema.defaults.copyWith(
+        rowCount: 8,
+        expandableRows: true,
+      ),
+    );
+    await _createCurrentTournamentFromTemplate(constructorTemplate);
   }
 
   String? _templateValueByLabel(
@@ -2978,6 +3626,17 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     }
   }
 
+  _TournamentFormat _formatFromEditorType(
+    String value,
+    _TournamentFormat fallback,
+  ) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.contains('швейцар')) return _TournamentFormat.swiss;
+    if (normalized.contains('кругов')) return _TournamentFormat.roundRobin;
+    if (normalized.contains('выбыван')) return _TournamentFormat.knockout;
+    return fallback;
+  }
+
   List<Map<String, dynamic>> _previewParticipantsFor(_TournamentData template) {
     return <Map<String, dynamic>>[
       {
@@ -3080,6 +3739,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
       initialMinutes: template.minutes,
       initialIncrement: template.increment,
       initialRounds: template.rounds,
+      initialRated: template.rated,
       initialParticipantNames: List<String>.filled(rowCount, ''),
       maxParticipants: template.maxParticipants,
       previewMode: true,
@@ -3151,11 +3811,12 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                   ],
                 ),
               ),
-              IconButton(
-                tooltip: MakeChessLocalization.phrase('Удалить шаблон'),
-                onPressed: () => _deleteTournament(template),
-                icon: const Icon(Icons.delete_outline, color: Colors.white38),
-              ),
+              if (_canDeleteTournament(template))
+                IconButton(
+                  tooltip: MakeChessLocalization.phrase('Удалить шаблон'),
+                  onPressed: () => _deleteTournament(template),
+                  icon: const Icon(Icons.delete_outline, color: Colors.white38),
+                ),
             ],
           ),
           const SizedBox(height: 13),
@@ -3322,17 +3983,55 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     );
     await TournamentStorageService.instance.startTournamentGames(tournament.id);
     if (!mounted) return;
-    _message('Турнир начат. Игровые доски участников активированы.');
+    _message(TournamentStorageService.instance.cloudAvailable
+        ? 'Турнир начат. Игровые доски участников активированы.'
+        : 'Турнир начат локально. Жеребьёвка, результаты и таблица работают без сети; сетевые доски будут доступны после восстановления соединения.');
   }
 
   Future<void> _launchTournamentForRegistration(
     _TournamentData tournament,
   ) async {
-    final launched = tournament.copyWith(status: _TournamentStatus.ready);
+    final savedTable = await TournamentStorageService.instance
+        .loadTournamentTable(tournament.id);
+    final savedParticipants = savedTable?['participants'] is List
+        ? (savedTable!['participants'] as List)
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .where((item) => '${item['id'] ?? ''}'.trim().isNotEmpty)
+            .toList(growable: false)
+        : const <Map<String, dynamic>>[];
+    final savedIds = savedParticipants
+        .map((item) => '${item['id']}')
+        .toList(growable: false);
+    final savedNames = <String, String>{
+      for (final item in savedParticipants)
+        '${item['id']}': '${item['name'] ?? ''}',
+    };
+    final savedMax = ((savedTable?['maxParticipants'] as num?)?.toInt() ??
+            tournament.templateSchema?.rowCount ??
+            tournament.maxParticipants)
+        .clamp(2, 128)
+        .toInt();
+    final savedName = '${savedTable?['name'] ?? ''}'.trim();
+    final launched = tournament.copyWith(
+      name: savedName.isEmpty ? tournament.name : savedName,
+      maxParticipants: savedMax,
+      participantIds:
+          savedTable == null ? tournament.participantIds : savedIds,
+      participantNames:
+          savedTable == null ? tournament.participantNames : savedNames,
+      status: _TournamentStatus.ready,
+    );
     await _updateActive(launched);
     await TournamentStorageService.instance.updateOwnedTournamentFields(
       tournament.id,
-      <String, dynamic>{'status': _TournamentStatus.ready.name},
+      <String, dynamic>{
+        'name': launched.name,
+        'maxParticipants': launched.maxParticipants,
+        'participantIds': launched.participantIds,
+        'participantNames': launched.participantNames,
+        'status': _TournamentStatus.ready.name,
+      },
     );
     if (!mounted) return;
     _setActive(launched);
@@ -3386,15 +4085,28 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           Row(
             children: [
               _openTabButton(
-                tab: _OpenTournamentTab.created,
-                label: 'Созданные турниры',
-                icon: Icons.inventory_2_outlined,
+                tab: _OpenTournamentTab.newTournament,
+                label: 'Создать турнир по шаблону',
+                icon: Icons.dashboard_customize_outlined,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _createTournamentFromConstructor,
+                  icon: const Icon(Icons.architecture_outlined),
+                  label: const MakeChessLocalizedText(
+                    'Создать турнир по конструктору',
+                  ),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
               ),
               const SizedBox(width: 10),
               _openTabButton(
-                tab: _OpenTournamentTab.newTournament,
-                label: 'Новый турнир',
-                icon: Icons.add_box_outlined,
+                tab: _OpenTournamentTab.created,
+                label: 'Созданные турниры',
+                icon: Icons.inventory_2_outlined,
               ),
             ],
           ),
@@ -3466,6 +4178,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                       initialMinutes: tournament.minutes,
                                       initialIncrement: tournament.increment,
                                       initialRounds: tournament.rounds,
+                                      initialRated: tournament.rated,
                                       initialParticipantNames: tournament
                                           .participantIds
                                           .map((id) => _tournamentStudentName(
@@ -3477,8 +4190,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                       organizerMode: true,
                                       templateSchema: tournament.templateSchema,
                                       templateValues: tournament.templateValues,
-                                      lockTournamentType:
-                                          tournament.templateSchema != null,
+                                      lockTournamentType: false,
                                       onCallTournament: () =>
                                           _callTournamentParticipants(
                                               tournament),
@@ -3504,10 +4216,54 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                       if (!mounted) return;
                                       final savedName =
                                           '${savedTable?['name'] ?? ''}'.trim();
+                                      final savedType =
+                                          '${savedTable?['type'] ?? ''}'.trim();
+                                      final savedParticipants =
+                                          savedTable?['participants'] is List
+                                              ? (savedTable!['participants']
+                                                      as List)
+                                                  .whereType<Map>()
+                                                  .map((item) =>
+                                                      Map<String, dynamic>.from(
+                                                          item))
+                                                  .where((item) =>
+                                                      '${item['id'] ?? ''}'
+                                                          .trim()
+                                                          .isNotEmpty)
+                                                  .toList(growable: false)
+                                              : const <Map<String, dynamic>>[];
+                                      final savedIds = savedParticipants
+                                          .map((item) => '${item['id']}')
+                                          .toList(growable: false);
+                                      final savedNames = <String, String>{
+                                        for (final item in savedParticipants)
+                                          '${item['id']}':
+                                              '${item['name'] ?? ''}',
+                                      };
+                                      final savedMax = ((savedTable?[
+                                                      'maxParticipants']
+                                                  as num?)
+                                              ?.toInt() ??
+                                          tournament.templateSchema?.rowCount ??
+                                          tournament.maxParticipants)
+                                          .clamp(2, 128)
+                                          .toInt();
                                       final updated = tournament.copyWith(
                                         name: savedName.isEmpty
                                             ? tournament.name
                                             : savedName,
+                                        format: _formatFromEditorType(
+                                          savedType,
+                                          tournament.format,
+                                        ),
+                                        rated: savedTable?['rated'] == true,
+                                        maxParticipants: savedMax,
+                                        participantIds: savedTable == null
+                                            ? tournament.participantIds
+                                            : savedIds,
+                                        participantNames: savedTable == null
+                                            ? tournament.participantNames
+                                            : savedNames,
                                         status: result ==
                                                 TournamentTableEditorResult
                                                     .published
@@ -3547,14 +4303,15 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                   child: const MakeChessLocalizedText(
                                       'Управление'),
                                 ),
-                                IconButton(
-                                  tooltip:
-                                      MakeChessLocalization.phrase('Удалить'),
-                                  onPressed: () =>
-                                      _deleteTournament(tournament),
-                                  icon: const Icon(Icons.delete_outline,
-                                      color: Colors.white54),
-                                ),
+                                if (_canDeleteTournament(tournament))
+                                  IconButton(
+                                    tooltip:
+                                        MakeChessLocalization.phrase('Удалить'),
+                                    onPressed: () =>
+                                        _deleteTournament(tournament),
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: Colors.white54),
+                                  ),
                               ],
                             ),
                           );
@@ -5283,15 +6040,16 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                           color: Colors.cyanAccent,
                         ),
                       ),
-                      IconButton(
-                        tooltip:
-                            MakeChessLocalization.phrase('Удалить из архива'),
-                        onPressed: () => _deleteTournament(tournament),
-                        icon: const Icon(
-                          Icons.delete_outline,
-                          color: Colors.white54,
+                      if (_canDeleteTournament(tournament))
+                        IconButton(
+                          tooltip:
+                              MakeChessLocalization.phrase('Удалить из архива'),
+                          onPressed: () => _deleteTournament(tournament),
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.white54,
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 );
@@ -5341,11 +6099,13 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                 label: const MakeChessLocalizedText('Скопировать как шаблон'),
               ),
               const SizedBox(width: 8),
-              IconButton(
-                tooltip: MakeChessLocalization.phrase('Удалить из архива'),
-                onPressed: () => _deleteTournament(tournament),
-                icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-              ),
+              if (_canDeleteTournament(tournament))
+                IconButton(
+                  tooltip: MakeChessLocalization.phrase('Удалить из архива'),
+                  onPressed: () => _deleteTournament(tournament),
+                  icon:
+                      const Icon(Icons.delete_outline, color: Colors.redAccent),
+                ),
             ],
           ),
           const SizedBox(height: 14),

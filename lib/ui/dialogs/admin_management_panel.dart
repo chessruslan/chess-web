@@ -816,7 +816,10 @@ class _AdminManagementPanelState extends State<AdminManagementPanel> {
 
       if (action == 'delete') {
         if (target.kind == AdminEntityKind.tournament) {
-          await TournamentStorageService.instance.deleteTournament(target.id);
+          await TournamentStorageService.instance.deleteTournament(
+            target.id,
+            ownerId: target.recipientId,
+          );
         }
         await AdminModerationStore.instance.markTargetDeleted(target);
       } else if (action == 'restore') {
