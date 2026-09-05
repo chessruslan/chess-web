@@ -1,11 +1,8 @@
-// MAKECHESS_REMAINING_UI_V6_20260807
-// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../app_style.dart';
 import '../start_modal.dart';
-
-import '../../localization/makechess_localization.dart';
 
 class AuthButton extends StatelessWidget {
   const AuthButton({
@@ -23,6 +20,16 @@ class AuthButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsWeb) {
+      final label = (nickname ?? '').trim().isEmpty ? 'Имя' : nickname!.trim();
+      return FilledButton.tonalIcon(
+        style: AppButtons.primary(active: true),
+        onPressed: onTap,
+        icon: const Icon(Icons.person),
+        label: Text(label),
+      );
+    }
+
     if (!isLoggedIn) {
       return Row(
         mainAxisSize: MainAxisSize.min,
@@ -39,20 +46,20 @@ class AuthButton extends StatelessWidget {
                 onRegister: onTap,
               );
             },
-            child: const MakeChessLocalizedText('Тарифы'),
+            child: const Text('Тарифы'),
           ),
           const SizedBox(width: 8),
           FilledButton.tonal(
             style: AppButtons.primary(active: true),
             onPressed: onTap,
-            child: const MakeChessLocalizedText('Вход'),
+            child: const Text('Вход'),
           ),
         ],
       );
     }
 
     return PopupMenuButton<String>(
-      tooltip: MakeChessLocalization.phrase('Аккаунт'),
+      tooltip: 'Аккаунт',
       onSelected: (v) async {
         if (v == 'pricing') {
           final rootNav = Navigator.of(context, rootNavigator: true);
@@ -72,16 +79,16 @@ class AuthButton extends StatelessWidget {
         PopupMenuItem<String>(
           value: 'nick',
           enabled: false,
-          child: MakeChessLocalizedText(nickname ?? 'player'),
+          child: Text(nickname ?? 'player'),
         ),
         const PopupMenuDivider(),
         const PopupMenuItem<String>(
           value: 'pricing',
-          child: MakeChessLocalizedText('Тарифы'),
+          child: Text('Тарифы'),
         ),
         const PopupMenuItem<String>(
           value: 'logout',
-          child: MakeChessLocalizedText('Выйти'),
+          child: Text('Выйти'),
         ),
       ],
       child: Chip(
@@ -92,7 +99,7 @@ class AuthButton extends StatelessWidget {
           size: 18,
           color: AppColors.text,
         ),
-        label: MakeChessLocalizedText(
+        label: Text(
           nickname ?? 'Аккаунт',
           style: const TextStyle(color: AppColors.text),
         ),
@@ -130,6 +137,72 @@ class _AuthPanelState extends State<AuthPanel> {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsWeb) {
+      return ConstrainedBox(
+        constraints: const BoxConstraints.tightFor(width: 380),
+        child: Material(
+          elevation: 8,
+          borderRadius: AppRadius.r16,
+          color: AppColors.surface,
+          child: Container(
+            decoration: AppDecorations.panel(bright: true),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Ваше имя в MakeChess',
+                        style: AppTextStyles.sectionTitle,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: widget.onClose,
+                      icon: const Icon(Icons.close, color: AppColors.text),
+                      tooltip: 'Закрыть',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Пароль не нужен. Имя сохраняется на этом компьютере. '
+                  'Если есть интернет, MakeChess проверит похожие имена на сайте.',
+                  style: TextStyle(color: AppColors.textDim, fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: widget.nickCtl,
+                  autofocus: true,
+                  style: const TextStyle(color: AppColors.text),
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => widget.onSubmit(),
+                  decoration: AppInputs.dark(labelText: 'Имя пользователя'),
+                ),
+                const SizedBox(height: 10),
+                if (widget.authError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      widget.authError!,
+                      style: const TextStyle(color: AppColors.danger),
+                    ),
+                  ),
+                FilledButton.icon(
+                  style: AppButtons.primary(active: true),
+                  onPressed: widget.onSubmit,
+                  icon: const Icon(Icons.check),
+                  label: const Text('Использовать это имя'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final card = ConstrainedBox(
       constraints: const BoxConstraints.tightFor(width: 360),
       child: Material(
@@ -146,7 +219,7 @@ class _AuthPanelState extends State<AuthPanel> {
               Row(
                 children: [
                   const Expanded(
-                    child: MakeChessLocalizedText(
+                    child: Text(
                       'Вход / Регистрация',
                       style: AppTextStyles.sectionTitle,
                     ),
@@ -157,7 +230,7 @@ class _AuthPanelState extends State<AuthPanel> {
                       Icons.close,
                       color: AppColors.text,
                     ),
-                    tooltip: MakeChessLocalization.phrase('Закрыть'),
+                    tooltip: 'Закрыть',
                   ),
                 ],
               ),
@@ -166,7 +239,7 @@ class _AuthPanelState extends State<AuthPanel> {
                 controller: widget.nickCtl,
                 style: const TextStyle(color: AppColors.text),
                 decoration: AppInputs.dark(
-                  labelText: MakeChessLocalization.phrase('Ник (a-z, 0-9, _)'),
+                  labelText: 'Ник (a-z, 0-9, _)',
                 ),
               ),
               const SizedBox(height: 8),
@@ -175,8 +248,7 @@ class _AuthPanelState extends State<AuthPanel> {
                 style: const TextStyle(color: AppColors.text),
                 obscureText: !_passwordVisible,
                 decoration: AppInputs.dark(
-                  labelText:
-                      MakeChessLocalization.phrase('Пароль (≥ 6 символов)'),
+                  labelText: 'Пароль (≥ 6 символов)',
                 ).copyWith(
                   suffixIcon: IconButton(
                     onPressed: () {
@@ -184,9 +256,9 @@ class _AuthPanelState extends State<AuthPanel> {
                         _passwordVisible = !_passwordVisible;
                       });
                     },
-                    tooltip: MakeChessLocalization.phrase(
-                      _passwordVisible ? 'Скрыть пароль' : 'Показать пароль',
-                    ),
+                    tooltip: _passwordVisible
+                        ? 'Скрыть пароль'
+                        : 'Показать пароль',
                     icon: Icon(
                       _passwordVisible
                           ? Icons.visibility_off
@@ -200,7 +272,7 @@ class _AuthPanelState extends State<AuthPanel> {
               if (widget.authError != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: MakeChessLocalizedText(
+                  child: Text(
                     widget.authError!,
                     style: const TextStyle(color: AppColors.danger),
                   ),
@@ -208,7 +280,7 @@ class _AuthPanelState extends State<AuthPanel> {
               FilledButton(
                 style: AppButtons.primary(active: true),
                 onPressed: widget.onSubmit,
-                child: MakeChessLocalizedText(
+                child: Text(
                   widget.isLogin ? 'Войти' : 'Зарегистрироваться',
                 ),
               ),
@@ -219,7 +291,7 @@ class _AuthPanelState extends State<AuthPanel> {
                   disabledForegroundColor: AppColors.textMuted,
                 ),
                 onPressed: widget.onToggleMode,
-                child: MakeChessLocalizedText(
+                child: Text(
                   widget.isLogin
                       ? 'Нет аккаунта? Зарегистрироваться'
                       : 'Уже есть аккаунт? Войти',

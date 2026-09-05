@@ -2,7 +2,6 @@
 // MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -11,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/tournament_storage_service.dart';
+import '../../platform/local_file_service.dart';
 import '../../services/tournament_presence_service.dart';
 import 'tournament_pairing_control_dialog.dart';
 import 'tournament_participant_picker_dialog.dart';
@@ -493,8 +493,7 @@ class _TournamentTableEditorDialogState
     final participantTitle = participant.title.trim();
     if (allowedTitles.isNotEmpty &&
         !allowedTitles.contains(participantTitle.toLowerCase())) {
-      final actualTitle =
-          participantTitle.isEmpty ? 'не указано' : participantTitle;
+      final actualTitle = participantTitle.isEmpty ? 'не указано' : participantTitle;
       errors.add(
         '• Шахматное звание: у участника $actualTitle. '
         'Допускаются: ${_allowedTitles.join(', ')}',
@@ -1517,7 +1516,8 @@ class _TournamentTableEditorDialogState
           .replaceAll('½', '1/2');
       if (result == '1/2-1/2') {
         points += _pairingSettings.scoringSystem.drawPoints;
-      } else if ((isWhite && result == '1-0') || (isBlack && result == '0-1')) {
+      } else if ((isWhite && result == '1-0') ||
+          (isBlack && result == '0-1')) {
         points += _pairingSettings.scoringSystem.winPoints;
       }
     }
@@ -1736,18 +1736,13 @@ class _TournamentTableEditorDialogState
   }
 
   Future<void> _pickLogoFromFile() async {
-    final input = html.FileUploadInputElement()..accept = 'image/*';
-    input.click();
-    await input.onChange.first;
-    final file = input.files?.isNotEmpty == true ? input.files!.first : null;
-    if (file == null) return;
-    final reader = html.FileReader();
-    reader.readAsDataUrl(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (!mounted) return;
+    final picked = await LocalFileService.pickFile(
+      extensions: const <String>['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'],
+    );
+    if (picked == null || !mounted) return;
+    final encoded = base64Encode(picked.bytes);
     setState(() {
-      _logoDataUrl = result is String ? result : '';
+      _logoDataUrl = 'data:${picked.mimeType};base64,$encoded';
     });
   }
 
@@ -2102,8 +2097,9 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _participantTitleDropdown(TextEditingController controller) {
-    final current =
-        controller.text.trim().isEmpty ? 'Без звания' : controller.text.trim();
+    final current = controller.text.trim().isEmpty
+        ? 'Без звания'
+        : controller.text.trim();
     final titles = <String>[
       ..._chessTitles,
       if (!_chessTitles.contains(current)) current,
@@ -3798,7 +3794,20 @@ class _TournamentTableEditorDialogState
                             const SizedBox(width: 8),
                           ],
                           OutlinedButton.icon(
-                            onPressed: html.window.print,
+                            onPressed: () async {
+                              final text = _roundPairingsText(
+                                round,
+                                pairings,
+                                detailed: detailed,
+                              );
+                              final ok = await LocalFileService.printText(
+                                text,
+                                fileName: 'pairings_round_$round.txt',
+                              );
+                              if (!ok && mounted) {
+                                _message('Печать недоступна на этой платформе');
+                              }
+                            },
                             icon: const Icon(Icons.print_outlined),
                             label: const MakeChessLocalizedText('Печать'),
                           ),
@@ -3815,17 +3824,18 @@ class _TournamentTableEditorDialogState
                           ),
                           const SizedBox(width: 8),
                           FilledButton.icon(
-                            onPressed: () {
-                              final text = _roundPairingsText(round, pairings,
-                                  detailed: detailed);
-                              final blob = html.Blob(
-                                  <String>[text], 'text/plain;charset=utf-8');
-                              final url =
-                                  html.Url.createObjectUrlFromBlob(blob);
-                              html.AnchorElement(href: url)
-                                ..download = 'pairings_round_$round.txt'
-                                ..click();
-                              html.Url.revokeObjectUrl(url);
+                            onPressed: () async {
+                              final text = _roundPairingsText(
+                                round,
+                                pairings,
+                                detailed: detailed,
+                              );
+                              await LocalFileService.saveText(
+                                suggestedName: 'pairings_round_$round.txt',
+                                text: text,
+                                initialDirectory:
+                                    await TournamentStorageService.instance.localFolderPath,
+                              );
                             },
                             icon: const Icon(Icons.save_alt),
                             label: const MakeChessLocalizedText('Сохранить'),

@@ -2,7 +2,6 @@
 // MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -10,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/tournament_storage_service.dart';
+import '../../platform/local_file_service.dart';
 import '../../services/teacher_account_store.dart';
 import '../app_style.dart';
 import '../messages/general_messages_dialog.dart';
@@ -771,6 +771,18 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           ),
           TextButton.icon(
             onPressed: () async {
+              final folder = await storage.localFolderPath;
+              if (folder == null || !await LocalFileService.openFolder(folder)) {
+                if (mounted) {
+                  _message('Папка доступна только в установленном приложении Windows');
+                }
+              }
+            },
+            icon: const Icon(Icons.folder_outlined),
+            label: const MakeChessLocalizedText('Папка локальных данных'),
+          ),
+          TextButton.icon(
+            onPressed: () async {
               final ok = await storage.probeCloud();
               if (ok) {
                 await storage.syncPendingChanges();
@@ -794,33 +806,31 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   Future<void> _exportLocalTournamentFile() async {
     try {
-      final text = await TournamentStorageService.instance.exportLocalBundle();
-      final bytes = utf8.encode(text);
-      final blob = html.Blob(<Object>[bytes], 'application/json;charset=utf-8');
-      final url = html.Url.createObjectUrlFromBlob(blob);
+      final storage = TournamentStorageService.instance;
+      final text = await storage.exportLocalBundle();
       final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-      html.AnchorElement(href: url)
-        ..download = 'MakeChess_tournaments_$stamp.mct'
-        ..click();
-      html.Url.revokeObjectUrl(url);
-      if (mounted) _message('Локальные турниры сохранены в файл');
+      final folder = await storage.localFolderPath;
+      final saved = await LocalFileService.saveText(
+        suggestedName: 'MakeChess_tournaments_$stamp.mct',
+        text: text,
+        initialDirectory: folder,
+      );
+      if (mounted && saved) _message('Локальные турниры сохранены в файл');
     } catch (error) {
       if (mounted) _message('Не удалось сохранить локальный файл: $error');
     }
   }
 
   Future<void> _importLocalTournamentFile() async {
-    final input = html.FileUploadInputElement()..accept = '.mct,.json,application/json';
-    input.click();
-    await input.onChange.first;
-    final file = input.files?.isNotEmpty == true ? input.files!.first : null;
-    if (file == null) return;
-    final reader = html.FileReader();
-    reader.readAsText(file);
-    await reader.onLoad.first;
     try {
-      final count = await TournamentStorageService.instance
-          .importLocalBundle('${reader.result ?? ''}');
+      final storage = TournamentStorageService.instance;
+      final folder = await storage.localFolderPath;
+      final text = await LocalFileService.pickTextFile(
+        extensions: const <String>['mct', 'json'],
+        initialDirectory: folder,
+      );
+      if (text == null) return;
+      final count = await storage.importLocalBundle(text);
       if (!mounted) return;
       _message('Импортировано локальных турниров: $count');
       await _load();

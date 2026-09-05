@@ -1,6 +1,7 @@
 name: my_new_chess_app
 description: Chess demo project
 publish_to: "none"
+version: 1.0.0+1
 
 environment:
   sdk: ">=3.2.0 <4.0.0"
@@ -26,10 +27,16 @@ dependencies:
   http: ^1.2.2
 
   # --- 🔹 ДОБАВЛЕНО: выбор файлов (для фоновой картинки) ---
-  file_picker: ^6.1.1
+  file_picker: ^8.1.7
 
   # --- 🔹 ДОБАВЛЕНО: сохранение пути к фону между перезапусками ---
   shared_preferences: ^2.3.2
+
+  # --- Desktop/offline/update ---
+  path_provider: ^2.1.5
+  package_info_plus: ^8.1.1
+  crypto: ^3.0.6
+  cupertino_icons: ^1.0.8
 
   # --- 🔹 ДОБАВЛЕНО: выбор цвета для темы доски ---
   flutter_colorpicker: ^1.1.0

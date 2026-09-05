@@ -17,6 +17,8 @@ import 'package:http/http.dart' as http;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:chess/chess.dart' as ch;
 import 'services/gpt_explain_service.dart';
+import 'services/desktop_update_service.dart';
+import 'services/local_identity_service.dart';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:realtime_client/realtime_client.dart' as rt;
@@ -133,6 +135,13 @@ void main() async {
     anonKey: supabaseAnonKey,
   );
 
+  // Windows app: local identity is primary. Network identity is attached
+  // silently when the server is reachable. Web keeps the existing auth flow.
+  await LocalIdentityService.instance.initialize();
+  if (!kIsWeb) {
+    LocalIdentityService.instance.startNetworkMonitoring();
+  }
+
   // 2) Загрузка сохранённого фона (без отрисовки)
   await BgController.instance.load();
 
@@ -146,6 +155,12 @@ void main() async {
       ),
     ),
   );
+
+  // Windows desktop: check for signed/hash-verified MakeChess updates
+  // automatically. Web builds use a no-op implementation.
+  if (!kIsWeb) {
+    DesktopUpdateService.instance.startAutomaticChecks();
+  }
 }
 
 class MyHomePage extends StatefulWidget {
@@ -4703,6 +4718,22 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _logout() async {
+    if (!kIsWeb) {
+      // Desktop has no permission gate. The selected local name remains active
+      // until the user explicitly replaces it with another name.
+      openAuthPanel();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: MakeChessLocalizedText(
+              'В приложении выход не требуется. Чтобы сменить пользователя, задайте другое имя.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     try {
       await _leaveLobby();
     } catch (e) {
@@ -4762,6 +4793,10 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void openAuthPanel() {
     if (!mounted) return;
+    if (!kIsWeb) {
+      _nickCtl.text = LocalIdentityService.instance.name;
+      _authError = null;
+    }
     setState(() {
       _authOpen = true;
     });
@@ -4779,6 +4814,8 @@ class _MyHomePageState extends State<MyHomePage> {
   final _nickCtl = TextEditingController();
   String? _authError;
   String? _nickname;
+  bool? _lastDesktopOnline;
+  bool _desktopIdentitySyncing = false;
 
   // realtime
   LobbyService? _lobby;
@@ -4876,11 +4913,18 @@ class _MyHomePageState extends State<MyHomePage> {
 
     _fens.add(game.fen);
     _plyIndex = 0;
-    _loadNickname().then((_) async {
-      await _loadLearningStudents();
-      await _enterLobbyAutomatically();
-      await _tryRestoreRoom();
-    });
+    if (!kIsWeb) {
+      final identity = LocalIdentityService.instance;
+      _lastDesktopOnline = identity.online.value;
+      identity.online.addListener(_handleDesktopNetworkChange);
+      unawaited(_initializeDesktopIdentity());
+    } else {
+      _loadNickname().then((_) async {
+        await _loadLearningStudents();
+        await _enterLobbyAutomatically();
+        await _tryRestoreRoom();
+      });
+    }
     _duelDelayCtl = TextEditingController(text: _engineDuelDelayMs.toString());
     _startLessonResponseListener();
 
@@ -4915,6 +4959,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    if (!kIsWeb) {
+      LocalIdentityService.instance.online.removeListener(_handleDesktopNetworkChange);
+    }
     _openingTrainer.removeListener(_onOpeningTrainerChanged);
     _openingTrainer.dispose();
     _antiBlunderTrainer.dispose();
@@ -5329,6 +5376,16 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _loadNickname() async {
+    if (!kIsWeb) {
+      final identity = LocalIdentityService.instance;
+      await identity.initialize();
+      final localName = identity.name.trim();
+      if (localName.isNotEmpty) {
+        if (mounted) setState(() => _nickname = localName);
+        return;
+      }
+    }
+
     final supa = Supabase.instance.client;
     final uid = supa.auth.currentUser?.id;
     if (uid == null) {
@@ -5395,6 +5452,11 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _submitAuth() async {
+    if (!kIsWeb) {
+      await _submitDesktopIdentity();
+      return;
+    }
+
     setState(() => _authError = null);
     final uname = _nickCtl.text.trim().toLowerCase();
     final pass = _passCtl.text;
@@ -5448,6 +5510,166 @@ class _MyHomePageState extends State<MyHomePage> {
       if (mounted)
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: MakeChessLocalizedText(msg)));
+    }
+  }
+
+  Future<void> _initializeDesktopIdentity() async {
+    final identity = LocalIdentityService.instance;
+    await identity.initialize();
+    final localName = identity.name.trim();
+    if (mounted) {
+      setState(() {
+        _nickname = localName.isEmpty ? null : localName;
+        _nickCtl.text = localName;
+      });
+    }
+
+    final reachable = identity.online.value ?? await identity.checkNetworkNow();
+    _lastDesktopOnline = reachable;
+    if (reachable && localName.isNotEmpty) {
+      await _syncDesktopIdentityWithNetwork();
+    } else {
+      if (mounted && !reachable) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: MakeChessLocalizedText(
+                'Интернет недоступен. MakeChess продолжает работать локально.',
+              ),
+              duration: Duration(seconds: 4),
+            ),
+          );
+        });
+      }
+      await _tryRestoreRoom();
+    }
+  }
+
+  void _handleDesktopNetworkChange() {
+    if (kIsWeb || !mounted) return;
+    final now = LocalIdentityService.instance.online.value;
+    if (now == null) return;
+    final previous = _lastDesktopOnline;
+    _lastDesktopOnline = now;
+
+    if (previous == now) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText(
+            now
+                ? 'Интернет восстановлен. Подключаем сетевые функции MakeChess.'
+                : 'Интернет отключён. MakeChess продолжает работать локально.',
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    });
+
+    if (now) {
+      unawaited(_syncDesktopIdentityWithNetwork());
+    }
+  }
+
+  Future<void> _syncDesktopIdentityWithNetwork() async {
+    if (kIsWeb || _desktopIdentitySyncing) return;
+    final identity = LocalIdentityService.instance;
+    final name = identity.name.trim();
+    if (name.isEmpty) return;
+
+    _desktopIdentitySyncing = true;
+    try {
+      final connected = await identity.ensureNetworkIdentity(nameOverride: name);
+      if (!connected) return;
+      await _loadNickname();
+      await _loadLearningStudents();
+      await _enterLobbyAutomatically();
+      await _tryRestoreRoom();
+    } catch (error) {
+      debugPrint('[DESKTOP IDENTITY] Синхронизация отложена: $error');
+    } finally {
+      _desktopIdentitySyncing = false;
+    }
+  }
+
+  Future<void> _submitDesktopIdentity() async {
+    if (!mounted) return;
+    final identity = LocalIdentityService.instance;
+    final candidate = _nickCtl.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final validation = identity.validateName(candidate);
+    if (validation != null) {
+      setState(() => _authError = validation);
+      return;
+    }
+
+    setState(() => _authError = null);
+
+    final check = await identity.checkSimilarNames(candidate);
+    if (!mounted) return;
+
+    if (check.hasSimilar) {
+      final keepLocal = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const MakeChessLocalizedText('Похожее имя уже есть'),
+          content: MakeChessLocalizedText(
+            'В сетевой базе MakeChess найдены похожие имена:\n\n'
+            '${check.similarNames.join(', ')}\n\n'
+            'Лучше выбрать другое имя, чтобы игроки точно понимали, с кем общаются. '
+            'Приложение всё равно можно продолжить использовать локально.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const MakeChessLocalizedText('Изменить имя'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const MakeChessLocalizedText('Оставить локально'),
+            ),
+          ],
+        ),
+      );
+      if (keepLocal != true) {
+        setState(() => _authError = 'Введите другое имя и сохраните снова.');
+        return;
+      }
+    }
+
+    await identity.setName(candidate);
+    if (!mounted) return;
+    setState(() {
+      _nickname = candidate;
+      _authOpen = false;
+      _authError = null;
+    });
+
+    if (check.online && !check.hasSimilar) {
+      unawaited(_syncDesktopIdentityWithNetwork());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText('Имя «$candidate» сохранено. Сеть подключена.'),
+        ),
+      );
+    } else if (!check.online) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText(
+            'Имя «$candidate» сохранено на компьютере. При появлении интернета MakeChess проверит сеть автоматически.',
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: MakeChessLocalizedText(
+            'Имя «$candidate» сохранено локально. Для сетевой синхронизации лучше выбрать уникальное имя.',
+          ),
+        ),
+      );
     }
   }
 
@@ -13545,7 +13767,9 @@ $prettyJson
 
     // Телефонный режим: сначала только доска, остальные зоны открываются из меню.
     final bool isMobile = w < 760;
-    final bool isLogged = Supabase.instance.client.auth.currentUser != null;
+    final bool isLogged = !kIsWeb
+        ? LocalIdentityService.instance.hasName
+        : Supabase.instance.client.auth.currentUser != null;
 
     final double requestedBoardSize = _baseAt100 * (_boardPercent / 100);
 

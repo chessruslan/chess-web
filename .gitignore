@@ -81,3 +81,4 @@ restore_makechess_working.sh
 makechess_build_config.json
 /lib/secrets.dart
 /stockfish/stockfish.exe
+/MAKECHESS_WINDOWS_LOCAL_ENV.cmd

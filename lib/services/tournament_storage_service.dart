@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'tournament_disk_mirror.dart';
+
 enum TournamentCloudState { unknown, online, offline }
 
 class TournamentCloudRequiredException implements Exception {
@@ -1118,7 +1120,17 @@ class TournamentStorageService extends ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> _readRows(String key) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(key);
+    var raw = prefs.getString(key);
+
+    // Desktop fallback: if SharedPreferences is empty, recover from the
+    // visible local mirror in Documents\\MakeChess\\Tournaments.
+    if (raw == null || raw.trim().isEmpty) {
+      raw = await TournamentDiskMirror.read(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        await prefs.setString(key, raw);
+      }
+    }
+
     if (raw == null || raw.trim().isEmpty) return <Map<String, dynamic>>[];
     try {
       final decoded = jsonDecode(raw);
@@ -1128,7 +1140,21 @@ class TournamentStorageService extends ChangeNotifier {
           .map((row) => Map<String, dynamic>.from(row))
           .toList(growable: false);
     } catch (_) {
-      return <Map<String, dynamic>>[];
+      final mirror = await TournamentDiskMirror.read(key);
+      if (mirror == null || mirror.trim().isEmpty || mirror == raw) {
+        return <Map<String, dynamic>>[];
+      }
+      try {
+        final decoded = jsonDecode(mirror);
+        if (decoded is! List) return <Map<String, dynamic>>[];
+        await prefs.setString(key, mirror);
+        return decoded
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList(growable: false);
+      } catch (_) {
+        return <Map<String, dynamic>>[];
+      }
     }
   }
 
@@ -1136,9 +1162,18 @@ class TournamentStorageService extends ChangeNotifier {
     String key,
     List<Map<String, dynamic>> rows,
   ) async {
+    final encoded = jsonEncode(rows);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(key, jsonEncode(rows));
+    await prefs.setString(key, encoded);
+
+    try {
+      await TournamentDiskMirror.write(key, encoded);
+    } catch (_) {
+      // The primary local save already succeeded; mirror failures never stop play.
+    }
   }
+
+  Future<String?> get localFolderPath => TournamentDiskMirror.folderPath();
 
   Future<void> _refreshPendingState() async {
     final tournaments = await _readRows(_tournamentRowsKey);

@@ -1,41 +1,55 @@
-// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
-// MAKECHESS_BIG_LOCALIZATION_STAGE_V4_20260807
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'app_style.dart';
-import '../localization/makechess_localization.dart';
 
-const List<String> kSupportedLanguageCodes = kMakeChessSupportedLanguageCodes;
+const List<String> kSupportedLanguageCodes = [
+  'RU',
+  'EN',
+  'DE',
+  'FR',
+  'ES',
+  'AR',
+  'ZH',
+  'HI',
+  'JA',
+  'KO',
+  'VI',
+];
 
-const Map<String, String> kLanguageLabels = kMakeChessLanguageLabels;
+const Map<String, String> kLanguageLabels = {
+  'RU': 'Русский',
+  'EN': 'English',
+  'DE': 'Deutsch',
+  'FR': 'Français',
+  'ES': 'Español',
+  'AR': 'العربية',
+  'ZH': '中文',
+  'HI': 'हिन्दी',
+  'JA': '日本語',
+  'KO': '한국어',
+  'VI': 'Tiếng Việt',
+};
 
-const Map<String, String> kLanguageFlags = kMakeChessLanguageFlags;
+const Map<String, String> kLanguageFlags = {
+  'RU': '🇷🇺',
+  'EN': '🇬🇧',
+  'DE': '🇩🇪',
+  'FR': '🇫🇷',
+  'ES': '🇪🇸',
+  'AR': '🇸🇦',
+  'ZH': '🇨🇳',
+  'HI': '🇮🇳',
+  'JA': '🇯🇵',
+  'KO': '🇰🇷',
+  'VI': '🇻🇳',
+};
 
+/// Текст кнопки верхнего меню «Учиться».
+/// Главная игровая страница меняет его при входе в роль ученика/учителя.
 final ValueNotifier<String> makechessLearningTopBarLabel =
     ValueNotifier<String>('Учиться');
-
-String _makechessCoreLearningLabel(String value) {
-  final raw = value.trim();
-  if (raw.isEmpty || raw == 'Учиться') {
-    return MakeChessLocalization.text(MakeChessTextKey.learn);
-  }
-  const teacherPrefix = 'Учитель: ';
-  if (raw.startsWith(teacherPrefix)) {
-    return MakeChessLocalization.text(
-      MakeChessTextKey.teacherWithName,
-      params: <String, Object?>{'name': raw.substring(teacherPrefix.length)},
-    );
-  }
-  const studentPrefix = 'Ученик: ';
-  if (raw.startsWith(studentPrefix)) {
-    return MakeChessLocalization.text(
-      MakeChessTextKey.studentWithName,
-      params: <String, Object?>{'name': raw.substring(studentPrefix.length)},
-    );
-  }
-  return raw;
-}
 
 class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
   final VoidCallback? onTitleTap;
@@ -158,7 +172,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
           InkWell(
             onTap: onTitleTap,
             borderRadius: AppRadius.r8,
-            child: MakeChessLocalizedText(
+            child: Text(
               'Makechess',
               style: AppTextStyles.topBarTitle.copyWith(fontSize: 14),
             ),
@@ -178,22 +192,21 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
                   ),
                   const SizedBox(width: 4),
                   _NeoTopButton(
-                    label:
-                        MakeChessLocalization.text(MakeChessTextKey.contacts),
+                    label: 'Контакты',
                     icon: Icons.people_alt,
                     onTap: onOpenLobby,
                     compact: true,
                   ),
                   const SizedBox(width: 4),
                   _NeoTopButton(
-                    label: MakeChessLocalization.text(MakeChessTextKey.video),
+                    label: 'Видео',
                     icon: Icons.videocam,
                     onTap: onVideoCall,
                     compact: true,
                   ),
                   const SizedBox(width: 4),
                   _NeoTopButton(
-                    label: MakeChessLocalization.text(MakeChessTextKey.hangUp),
+                    label: 'Завершить',
                     icon: Icons.call_end,
                     onTap: onHangup,
                     danger: true,
@@ -201,7 +214,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
                   ),
                   const SizedBox(width: 4),
                   _NeoTopButton(
-                    label: MakeChessLocalization.text(MakeChessTextKey.login),
+                    label: kIsWeb ? 'Вход' : 'Имя',
                     icon: Icons.person,
                     onTap: onLoginTap,
                     compact: true,
@@ -280,19 +293,16 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
             onSchool: onSchool ?? onLearn,
           ),
           gap(menuGap),
-          _TopMenuText(
-              label: MakeChessLocalization.text(MakeChessTextKey.puzzles),
-              onTap: onPuzzles,
-              compact: compact),
+          _TopMenuText(label: 'Задачи', onTap: onPuzzles, compact: compact),
           gap(menuGap),
           _TopMenuText(
-            label: MakeChessLocalization.text(MakeChessTextKey.tournaments),
+            label: 'Турниры',
             onTap: onTournaments,
             compact: compact,
           ),
           gap(menuGap),
           _TopMenuText(
-            label: MakeChessLocalization.text(MakeChessTextKey.community),
+            label: 'Сообщество',
             onTap: onCommunity,
             compact: compact,
           ),
@@ -306,16 +316,14 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
           ),
           gap(menuGap),
           _TopMenuText(
-            label: MakeChessLocalization.text(MakeChessTextKey.messages),
+            label: 'Сообщения',
             onTap: onMessages,
             compact: compact,
             badgeCount: unreadMessages,
           ),
           gap(menuGap),
           _TopMenuText(
-            label: compact
-                ? MakeChessLocalization.text(MakeChessTextKey.cabinet)
-                : MakeChessLocalization.text(MakeChessTextKey.personalCabinet),
+            label: compact ? 'Кабинет' : 'Личный кабинет',
             onTap: onPersonalCabinet,
             compact: compact,
           ),
@@ -335,7 +343,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         gap(actionGap),
         _NeoTopButton(
-          label: MakeChessLocalization.text(MakeChessTextKey.audio),
+          label: 'Аудио',
           icon: Icons.call,
           onTap: onVoiceCall,
           compact: compact,
@@ -343,7 +351,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         gap(actionGap),
         _NeoTopButton(
-          label: MakeChessLocalization.text(MakeChessTextKey.video),
+          label: 'Видео',
           icon: Icons.videocam,
           onTap: onVideoCall,
           compact: compact,
@@ -351,7 +359,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         gap(actionGap),
         _NeoTopButton(
-          label: MakeChessLocalization.text(MakeChessTextKey.hangUp),
+          label: 'Завершить',
           icon: Icons.call_end,
           onTap: onHangup,
           danger: true,
@@ -382,7 +390,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
         ],
         gap(actionGap),
         _NeoTopButton(
-          label: MakeChessLocalization.text(MakeChessTextKey.login),
+          label: kIsWeb ? 'Вход' : 'Имя',
           icon: Icons.person,
           onTap: onLoginTap,
           compact: true,
@@ -402,7 +410,7 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
             borderRadius: AppRadius.r8,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-              child: MakeChessLocalizedText(
+              child: Text(
                 'Makechess',
                 style: compact
                     ? AppTextStyles.topBarTitle.copyWith(fontSize: 17)
@@ -444,7 +452,7 @@ class _PlayMenuButton extends StatelessWidget {
 
     return PopupMenuButton<String>(
       enabled: enabled,
-      tooltip: MakeChessLocalization.text(MakeChessTextKey.play),
+      tooltip: 'Играть',
       color: const Color(0xFF121A26),
       surfaceTintColor: Colors.transparent,
       onSelected: (value) {
@@ -464,47 +472,41 @@ class _PlayMenuButton extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'here',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.play_arrow, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.playHere),
-                style: AppTextStyles.body),
+            title: Text('Играть здесь', style: AppTextStyles.body),
           ),
         ),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'auto',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.radar, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.automaticSearch),
-                style: AppTextStyles.body),
+            title: Text('Автоматический поиск', style: AppTextStyles.body),
           ),
         ),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'list',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.people_alt, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.searchFromList),
-                style: AppTextStyles.body),
+            title: Text('Поиск из списка', style: AppTextStyles.body),
           ),
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'teams',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.grid_3x3, color: AppColors.text),
-            title: MakeChessLocalizedText('2×2', style: AppTextStyles.body),
+            title: Text('2×2', style: AppTextStyles.body),
           ),
         ),
       ],
@@ -512,12 +514,10 @@ class _PlayMenuButton extends StatelessWidget {
         height: 32,
         padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 11),
         decoration: AppDecorations.neoButton(enabled: enabled),
-        child: Row(
+        child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.play),
-                style: AppTextStyles.topBarButton),
+            Text('Играть', style: AppTextStyles.topBarButton),
             SizedBox(width: 4),
             Icon(Icons.arrow_drop_down, size: 18, color: AppColors.text),
           ],
@@ -551,7 +551,7 @@ class _LearnMenuButton extends StatelessWidget {
 
     return PopupMenuButton<String>(
       enabled: enabled,
-      tooltip: MakeChessLocalization.phrase('Учиться'),
+      tooltip: 'Учиться',
       color: const Color(0xFF121A26),
       surfaceTintColor: Colors.transparent,
       onSelected: (value) {
@@ -571,48 +571,40 @@ class _LearnMenuButton extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'avatar',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.smart_toy, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.teacherAvatar),
-                style: AppTextStyles.body),
+            title: Text('Учитель аватар', style: AppTextStyles.body),
           ),
         ),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'teacher',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.school_outlined, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.loginAsTeacher),
-                style: AppTextStyles.body),
+            title: Text('Войти как учитель', style: AppTextStyles.body),
           ),
         ),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'student',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.person_outline, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.loginAsStudent),
-                style: AppTextStyles.body),
+            title: Text('Войти как ученик', style: AppTextStyles.body),
           ),
         ),
-        PopupMenuItem<String>(
+        const PopupMenuItem<String>(
           value: 'school',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.account_balance, color: AppColors.text),
-            title: MakeChessLocalizedText(
-                MakeChessLocalization.text(MakeChessTextKey.school),
-                style: AppTextStyles.body),
+            title: Text('Школа', style: AppTextStyles.body),
           ),
         ),
       ],
@@ -623,12 +615,11 @@ class _LearnMenuButton extends StatelessWidget {
         child: ValueListenableBuilder<String>(
           valueListenable: makechessLearningTopBarLabel,
           builder: (context, value, child) {
-            final label = _makechessCoreLearningLabel(value);
+            final label = value.trim().isEmpty ? 'Учиться' : value.trim();
             return Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                MakeChessLocalizedText(label,
-                    style: AppTextStyles.topBarButton),
+                Text(label, style: AppTextStyles.topBarButton),
                 const SizedBox(width: 4),
                 const Icon(
                   Icons.arrow_drop_down,
@@ -729,7 +720,7 @@ class _MobileHamburgerButton extends StatelessWidget {
             {int badgeCount = 0}) {
           return ListTile(
             leading: Icon(icon, color: AppColors.text),
-            title: MakeChessLocalizedText(title, style: AppTextStyles.body),
+            title: Text(title, style: AppTextStyles.body),
             trailing: badgeCount > 0 ? _UnreadBadge(count: badgeCount) : null,
             enabled: callback != null,
             onTap: callback == null ? null : () => run(sheetContext, callback),
@@ -748,10 +739,8 @@ class _MobileHamburgerButton extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      child: MakeChessLocalizedText(
-                          MakeChessLocalization.text(MakeChessTextKey.menu),
-                          style: AppTextStyles.sectionTitle),
+                    const Expanded(
+                      child: Text('Меню', style: AppTextStyles.sectionTitle),
                     ),
                     IconButton(
                       onPressed: () => Navigator.of(sheetContext).pop(),
@@ -767,10 +756,9 @@ class _MobileHamburgerButton extends StatelessWidget {
                         ListTile(
                           leading:
                               const Icon(Icons.call, color: AppColors.accent),
-                          title: MakeChessLocalizedText(
+                          title: Text(
                             incomingFrom == null || incomingFrom!.trim().isEmpty
-                                ? MakeChessLocalization.text(
-                                    MakeChessTextKey.incomingCall)
+                                ? 'Входящий звонок'
                                 : 'Звонит $incomingFrom',
                             style: AppTextStyles.body,
                           ),
@@ -783,9 +771,7 @@ class _MobileHamburgerButton extends StatelessWidget {
                                     ? null
                                     : () => run(sheetContext, onDeclineCall),
                                 icon: const Icon(Icons.call_end),
-                                label: MakeChessLocalizedText(
-                                    MakeChessLocalization.text(
-                                        MakeChessTextKey.decline)),
+                                label: const Text('Отклонить'),
                               ),
                             ),
                             Expanded(
@@ -794,9 +780,7 @@ class _MobileHamburgerButton extends StatelessWidget {
                                     ? null
                                     : () => run(sheetContext, onAcceptCall),
                                 icon: const Icon(Icons.call),
-                                label: MakeChessLocalizedText(
-                                    MakeChessLocalization.text(
-                                        MakeChessTextKey.accept)),
+                                label: const Text('Принять'),
                               ),
                             ),
                           ],
@@ -807,103 +791,47 @@ class _MobileHamburgerButton extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                 ],
-                item(
-                    Icons.call,
-                    MakeChessLocalization.text(MakeChessTextKey.audio),
-                    onVoiceCall),
+                item(Icons.call, 'Аудио', onVoiceCall),
                 const Divider(color: AppColors.borderSoft),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
                   child: ValueListenableBuilder<String>(
                     valueListenable: makechessLearningTopBarLabel,
                     builder: (context, value, child) {
-                      final label = _makechessCoreLearningLabel(value);
-                      return MakeChessLocalizedText(label,
-                          style: AppTextStyles.caption);
+                      final label =
+                          value.trim().isEmpty ? 'Учиться' : value.trim();
+                      return Text(label, style: AppTextStyles.caption);
                     },
                   ),
                 ),
-                item(
-                    Icons.smart_toy,
-                    MakeChessLocalization.text(MakeChessTextKey.teacherAvatar),
-                    onTeacherAvatar),
-                item(
-                    Icons.school_outlined,
-                    MakeChessLocalization.text(MakeChessTextKey.loginAsTeacher),
+                item(Icons.smart_toy, 'Учитель аватар', onTeacherAvatar),
+                item(Icons.school_outlined, 'Войти как учитель',
                     onLearnAsTeacher),
                 item(
-                    Icons.person_outline,
-                    MakeChessLocalization.text(MakeChessTextKey.loginAsStudent),
-                    onLearnAsStudent),
-                item(
-                    Icons.account_balance,
-                    MakeChessLocalization.text(MakeChessTextKey.school),
-                    onSchool ?? onLearn),
-                item(
-                    Icons.task_alt,
-                    MakeChessLocalization.text(MakeChessTextKey.puzzles),
-                    onPuzzles),
-                item(
-                    Icons.people_alt,
-                    MakeChessLocalization.text(MakeChessTextKey.contacts),
-                    onOpenLobby),
-                item(
-                    Icons.tune,
-                    MakeChessLocalization.text(MakeChessTextKey.gameModes),
-                    onOpenGameSettings),
-                item(
-                    Icons.list_alt,
-                    MakeChessLocalization.text(
-                        MakeChessTextKey.movesAndControls),
-                    onOpenMoves),
-                item(
-                    Icons.chat_bubble_outline,
-                    MakeChessLocalization.text(MakeChessTextKey.chat),
-                    onOpenChat),
+                    Icons.person_outline, 'Войти как ученик', onLearnAsStudent),
+                item(Icons.account_balance, 'Школа', onSchool ?? onLearn),
+                item(Icons.task_alt, 'Задачи', onPuzzles),
+                item(Icons.people_alt, 'Контакты', onOpenLobby),
+                item(Icons.tune, 'Режимы игры', onOpenGameSettings),
+                item(Icons.list_alt, 'Ходы и управление', onOpenMoves),
+                item(Icons.chat_bubble_outline, 'Чат', onOpenChat),
                 const Divider(color: AppColors.borderSoft),
                 item(Icons.grid_3x3, '2×2', onTeams),
-                item(
-                    Icons.emoji_events,
-                    MakeChessLocalization.text(MakeChessTextKey.tournaments),
-                    onTournaments),
-                item(
-                    Icons.visibility,
-                    MakeChessLocalization.text(MakeChessTextKey.watch),
-                    onWatch),
-                item(
-                    Icons.forum,
-                    MakeChessLocalization.text(MakeChessTextKey.community),
-                    onCommunity),
+                item(Icons.emoji_events, 'Турниры', onTournaments),
+                item(Icons.visibility, 'Смотреть', onWatch),
+                item(Icons.forum, 'Сообщество', onCommunity),
                 const Divider(color: AppColors.borderSoft),
-                item(
-                    Icons.wallpaper,
-                    MakeChessLocalization.text(
-                        MakeChessTextKey.backgroundTheme),
-                    onBackgroundTheme),
-                item(
-                    Icons.dashboard_customize,
-                    MakeChessLocalization.text(MakeChessTextKey.boardTheme),
-                    onBoardTheme),
-                item(
-                    Icons.smart_toy,
-                    MakeChessLocalization.text(MakeChessTextKey.gptSettings),
-                    onGptSettings),
-                item(
-                    Icons.mail_outline,
-                    MakeChessLocalization.text(MakeChessTextKey.messages),
-                    onMessages,
+                item(Icons.wallpaper, 'Тема фона', onBackgroundTheme),
+                item(Icons.dashboard_customize, 'Тема доски', onBoardTheme),
+                item(Icons.smart_toy, 'Настройка GPT', onGptSettings),
+                item(Icons.mail_outline, 'Сообщения', onMessages,
                     badgeCount: unreadMessages),
-                item(
-                    Icons.account_circle_outlined,
-                    MakeChessLocalization.text(
-                        MakeChessTextKey.personalCabinet),
+                item(Icons.account_circle_outlined, 'Личный кабинет',
                     onPersonalCabinet),
                 const Divider(color: AppColors.borderSoft),
                 ListTile(
                   leading: const Icon(Icons.language, color: AppColors.text),
-                  title: MakeChessLocalizedText(
-                      MakeChessLocalization.text(MakeChessTextKey.language),
-                      style: AppTextStyles.body),
+                  title: const Text('Язык', style: AppTextStyles.body),
                   trailing: DropdownButton<String>(
                     value: currentLanguage.toUpperCase(),
                     dropdownColor: AppColors.surface,
@@ -914,13 +842,12 @@ class _MobileHamburgerButton extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            MakeChessLocalizedText(
+                            Text(
                               kLanguageFlags[lang] ?? '🏳️',
                               style: const TextStyle(fontSize: 16),
                             ),
                             const SizedBox(width: 8),
-                            MakeChessLocalizedText(
-                                kLanguageLabels[lang] ?? lang),
+                            Text(kLanguageLabels[lang] ?? lang),
                           ],
                         ),
                       );
@@ -928,20 +855,14 @@ class _MobileHamburgerButton extends StatelessWidget {
                     onChanged: onLanguageChanged == null
                         ? null
                         : (value) {
-                            if (value != null) {
-                              MakeChessLocalizationController.setLanguage(
-                                  value);
-                              onLanguageChanged?.call(value);
-                            }
+                            if (value != null) onLanguageChanged?.call(value);
                           },
                   ),
                 ),
                 if (showScale)
                   ListTile(
                     leading: const Icon(Icons.zoom_in, color: AppColors.text),
-                    title: MakeChessLocalizedText(
-                        MakeChessLocalization.text(MakeChessTextKey.scale),
-                        style: AppTextStyles.body),
+                    title: const Text('Масштаб', style: AppTextStyles.body),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -951,7 +872,7 @@ class _MobileHamburgerButton extends StatelessWidget {
                         ),
                         GestureDetector(
                           onDoubleTap: onScaleReset,
-                          child: MakeChessLocalizedText(
+                          child: Text(
                             '${(scalePercent ?? 100).toInt()}%',
                             style: AppTextStyles.body,
                           ),
@@ -1059,7 +980,7 @@ class _TopMenuTextState extends State<_TopMenuText> {
             clipBehavior: Clip.none,
             alignment: Alignment.center,
             children: [
-              MakeChessLocalizedText(
+              Text(
                 widget.label,
                 style: AppTextStyles.topBarButton.copyWith(
                   fontSize: widget.compact ? 12.5 : 13.5,
@@ -1108,7 +1029,7 @@ class _UnreadBadge extends StatelessWidget {
           BoxShadow(color: Colors.black45, blurRadius: 4, offset: Offset(0, 1)),
         ],
       ),
-      child: MakeChessLocalizedText(
+      child: Text(
         label,
         style: const TextStyle(
           color: Colors.white,
@@ -1162,7 +1083,7 @@ class _SettingsMenuState extends State<_SettingsMenu> {
       onExit: (_) => setState(() => _hover = false),
       child: PopupMenuButton<String>(
         enabled: enabled,
-        tooltip: MakeChessLocalization.text(MakeChessTextKey.settings),
+        tooltip: 'Настройки',
         color: const Color(0xFF121A26),
         surfaceTintColor: Colors.transparent,
         shadowColor: AppColors.accentGlow.withOpacity(0.35),
@@ -1200,8 +1121,8 @@ class _SettingsMenuState extends State<_SettingsMenu> {
         itemBuilder: (_) => [
           PopupMenuItem<String>(
             value: 'bg',
-            child: MakeChessLocalizedText(
-              MakeChessLocalization.text(MakeChessTextKey.backgroundTheme),
+            child: Text(
+              'Тема фона',
               style: AppTextStyles.topBarButton.copyWith(
                 color: AppColors.text,
               ),
@@ -1209,8 +1130,8 @@ class _SettingsMenuState extends State<_SettingsMenu> {
           ),
           PopupMenuItem<String>(
             value: 'board',
-            child: MakeChessLocalizedText(
-              MakeChessLocalization.text(MakeChessTextKey.boardTheme),
+            child: Text(
+              'Тема доски',
               style: AppTextStyles.topBarButton.copyWith(
                 color: AppColors.text,
               ),
@@ -1218,8 +1139,8 @@ class _SettingsMenuState extends State<_SettingsMenu> {
           ),
           PopupMenuItem<String>(
             value: 'gpt',
-            child: MakeChessLocalizedText(
-              MakeChessLocalization.text(MakeChessTextKey.gptSettings),
+            child: Text(
+              'Настройка GPT',
               style: AppTextStyles.topBarButton.copyWith(
                 color: AppColors.text,
               ),
@@ -1227,8 +1148,8 @@ class _SettingsMenuState extends State<_SettingsMenu> {
           ),
           PopupMenuItem<String>(
             value: 'site',
-            child: MakeChessLocalizedText(
-              MakeChessLocalization.text(MakeChessTextKey.siteSettings),
+            child: Text(
+              'Настройка сайта',
               style: AppTextStyles.topBarButton.copyWith(
                 color: AppColors.text,
               ),
@@ -1245,8 +1166,8 @@ class _SettingsMenuState extends State<_SettingsMenu> {
             enabled: enabled,
           ),
           child: Center(
-            child: MakeChessLocalizedText(
-              MakeChessLocalization.text(MakeChessTextKey.settings),
+            child: Text(
+              'Настройки',
               style: AppTextStyles.topBarButton.copyWith(
                 fontSize: widget.compact ? 12.5 : 13.5,
                 color: fgColor,
@@ -1343,7 +1264,7 @@ class _NeoTopButtonState extends State<_NeoTopButton> {
                 Icon(widget.icon, size: 18, color: fgColor),
                 if (!widget.iconOnly) ...[
                   SizedBox(width: widget.compact ? 6 : 8),
-                  MakeChessLocalizedText(
+                  Text(
                     widget.label,
                     style: TextStyle(fontSize: widget.compact ? 13 : 14),
                   ),
@@ -1395,7 +1316,7 @@ class _LanguageSwitcherState extends State<_LanguageSwitcher> {
       onExit: (_) => setState(() => _hover = false),
       child: PopupMenuButton<String>(
         enabled: enabled,
-        tooltip: MakeChessLocalization.text(MakeChessTextKey.chooseLanguage),
+        tooltip: 'Выбор языка',
         color: const Color(0xFF121A26),
         surfaceTintColor: Colors.transparent,
         shadowColor: AppColors.accentGlow.withOpacity(0.35),
@@ -1414,7 +1335,6 @@ class _LanguageSwitcherState extends State<_LanguageSwitcher> {
         },
         onSelected: (lang) {
           if (mounted) setState(() => _menuOpen = false);
-          MakeChessLocalizationController.setLanguage(lang);
           widget.onChanged?.call(lang);
         },
         itemBuilder: (context) => kSupportedLanguageCodes.map((lang) {
@@ -1422,12 +1342,12 @@ class _LanguageSwitcherState extends State<_LanguageSwitcher> {
             value: lang,
             child: Row(
               children: [
-                MakeChessLocalizedText(
+                Text(
                   kLanguageFlags[lang] ?? '🏳️',
                   style: const TextStyle(fontSize: 16),
                 ),
                 const SizedBox(width: 8),
-                MakeChessLocalizedText(
+                Text(
                   kLanguageLabels[lang] ?? lang,
                   style: AppTextStyles.topBarButton.copyWith(
                     color: AppColors.text,
@@ -1449,12 +1369,12 @@ class _LanguageSwitcherState extends State<_LanguageSwitcher> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              MakeChessLocalizedText(
+              Text(
                 _flag(current),
                 style: const TextStyle(fontSize: 16),
               ),
               const SizedBox(width: 8),
-              MakeChessLocalizedText(
+              Text(
                 current,
                 style: AppTextStyles.topBarButton.copyWith(
                   color: fgColor,
@@ -1508,7 +1428,7 @@ class _ScaleControl extends StatelessWidget {
           ),
           padding: EdgeInsets.zero,
           splashRadius: 18,
-          tooltip: MakeChessLocalization.text(MakeChessTextKey.decrease),
+          tooltip: 'Уменьшить',
           icon: const Icon(Icons.remove, size: 18, color: AppColors.text),
           onPressed: onMinus,
         ),
@@ -1519,7 +1439,7 @@ class _ScaleControl extends StatelessWidget {
             padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
             alignment: Alignment.center,
             decoration: AppDecorations.scaleBox(),
-            child: MakeChessLocalizedText(
+            child: Text(
               '$percent%',
               style: AppTextStyles.scaleText,
             ),
@@ -1532,7 +1452,7 @@ class _ScaleControl extends StatelessWidget {
           ),
           padding: EdgeInsets.zero,
           splashRadius: 18,
-          tooltip: MakeChessLocalization.text(MakeChessTextKey.increase),
+          tooltip: 'Увеличить',
           icon: const Icon(Icons.add, size: 18, color: AppColors.text),
           onPressed: onPlus,
         ),
@@ -1558,9 +1478,8 @@ class _IncomingCallNeoButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final text = (from == null || from!.isEmpty)
-        ? MakeChessLocalization.text(MakeChessTextKey.acceptCall)
-        : MakeChessLocalization.text(MakeChessTextKey.acceptCall);
+    final text =
+        (from == null || from!.isEmpty) ? 'Принять звонок' : 'Принять звонок';
 
     return Opacity(
       opacity: enabled ? 1 : 0.45,
@@ -1584,7 +1503,7 @@ class _IncomingCallNeoButton extends StatelessWidget {
               ],
               const Icon(Icons.call, size: 16, color: AppColors.text),
               const SizedBox(width: 8),
-              MakeChessLocalizedText(
+              Text(
                 text,
                 style: AppTextStyles.topBarButton,
               ),

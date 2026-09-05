@@ -38,3 +38,7 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# MAKECHESS_OUTPUT_NAME_BEGIN
+set_target_properties(${BINARY_NAME} PROPERTIES OUTPUT_NAME "MakeChess")
+# MAKECHESS_OUTPUT_NAME_END
