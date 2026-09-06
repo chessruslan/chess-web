@@ -8,11 +8,13 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../app_style.dart';
+import '../dialogs/temporary_feature_access_dialog.dart';
 import '../../localization/makechess_localization.dart';
 
 // MAKECHESS_OPENING_NAMES_RU_V9_20260805
@@ -1959,43 +1961,51 @@ class OpeningTrainerController extends ChangeNotifier {
     loadTreeJson(utf8.decode(bytes));
   }
 
+  // MAKECHESS_LOCAL_OPENINGS_V1
   Future<List<OpeningDatabaseItem>> fetchPublishedOpenings() async {
+    if (!kIsWeb) {
+      try {
+        final source = await rootBundle.loadString(
+          'assets/makechess_openings_v1.json',
+        );
+        final decoded = jsonDecode(source);
+        if (decoded is List) {
+          final items = decoded
+              .whereType<Map>()
+              .map(
+                (row) => OpeningDatabaseItem.fromRow(
+                  Map<String, dynamic>.from(row),
+                ),
+              )
+              .toList(growable: false);
+          if (items.isNotEmpty) return items;
+        }
+      } catch (_) {
+        // Fallback below allows development builds without the generated asset.
+      }
+    }
+
     try {
-      const pageSize = 500;
-      var offset = 0;
-      final result = <OpeningDatabaseItem>[];
+      final rows = await Supabase.instance.client
+          .from('makechess_opening_trees_v1')
+          .select(
+            'id,name,student_color,start_fen,source_name,'
+            'source_license,opening_json',
+          )
+          .eq('is_published', true)
+          .order('sort_order', ascending: true)
+          .order('name', ascending: true);
 
-      while (true) {
-        final rows = await Supabase.instance.client
-            .from('makechess_opening_trees_v1')
-            .select(
-              'id,name,student_color,start_fen,source_name,source_license,'
-              'first_moves:opening_json->firstMoves,'
-              'popularity:opening_json->>popularity,'
-              'white_efficiency:opening_json->>whiteEfficiency,'
-              'black_efficiency:opening_json->>blackEfficiency',
-            )
-            .eq('is_published', true)
-            .order('sort_order', ascending: true)
-            .order('name', ascending: true)
-            .range(offset, offset + pageSize - 1);
-
-        for (final row in rows) {
-          result.add(
-            OpeningDatabaseItem.fromRow(
+      return rows
+          .map(
+            (row) => OpeningDatabaseItem.fromRow(
               Map<String, dynamic>.from(row),
             ),
-          );
-        }
-
-        if (rows.length < pageSize) break;
-        offset += pageSize;
-      }
-
-      return List<OpeningDatabaseItem>.unmodifiable(result);
+          )
+          .toList(growable: false);
     } catch (error) {
       throw StateError(
-        'Не удалось получить каталог дебютов из Selectel: $error',
+        'Не удалось открыть локальную базу дебютов MakeChess: $error',
       );
     }
   }
@@ -3991,6 +4001,11 @@ class _OpeningTrainerDialogState extends State<OpeningTrainerDialog> {
   Future<void> _openOpeningChooser(
     OpeningTrainerController controller,
   ) async {
+    // MAKECHESS_OPENING_20_LIMIT_V1
+    if (!kIsWeb) {
+      final accessAllowed = await ensureOpeningChooserAccess(context);
+      if (!accessAllowed || !mounted) return;
+    }
     List<OpeningDatabaseItem>? cachedOpenings =
         controller.catalog.isEmpty ? null : controller.catalog;
 

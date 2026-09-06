@@ -1,41 +1,99 @@
-@echo off
-setlocal EnableDelayedExpansion
+﻿@echo off
+setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
-echo   MAKECHESS WINDOWS - SBORKA INSTALLERA
-ECHO ============================================================
+echo   MAKECHESS - BUILD INSTALLER 1.0.0
+echo ============================================================
+echo.
 
-call BUILD_MAKECHESS_WINDOWS.cmd nopause
-if errorlevel 1 exit /b 1
+set "RELEASE_DIR=%~dp0build\windows\x64\runner\Release"
+set "APP_EXE=%RELEASE_DIR%\MakeChess.exe"
+set "ISS=%~dp0installer\MakeChess.iss"
+set "OUT=%~dp0dist\MakeChess_Setup_1.0.0.exe"
 
-for /f "tokens=2 delims=: " %%A in ('findstr /b /c:"version:" pubspec.yaml') do set APP_VERSION=%%A
-for /f "tokens=1 delims=+" %%A in ("!APP_VERSION!") do set APP_VERSION=%%A
-
-set ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe
-if not exist "!ISCC!" set ISCC=C:\Program Files\Inno Setup 6\ISCC.exe
-if not exist "!ISCC!" (
+if not exist "%APP_EXE%" (
+  echo MakeChess.exe not found. Building Windows release first...
   echo.
-  echo Inno Setup 6 ne nayden.
-  echo Ustanovite Inno Setup 6 i zapustite etot fail eshe raz.
-  pause
-  exit /b 2
+  call "%~dp0BUILD_MAKECHESS_WINDOWS.cmd"
+  if errorlevel 1 goto :fail
 )
 
-"!ISCC!" /DMyAppVersion=!APP_VERSION! installer\MakeChess.iss
+if not exist "%RELEASE_DIR%\flutter_windows.dll" (
+  echo ERROR: flutter_windows.dll not found in Release folder.
+  goto :fail
+)
+
+if not exist "%RELEASE_DIR%\data" (
+  echo ERROR: Flutter data folder not found in Release folder.
+  goto :fail
+)
+
+if not exist "%ISS%" (
+  echo ERROR: installer\MakeChess.iss not found.
+  goto :fail
+)
+
+if not exist "%~dp0installer\MakeChess.ico" (
+  echo ERROR: installer\MakeChess.ico not found.
+  goto :fail
+)
+
+set "ISCC="
+
+where ISCC.exe >nul 2>nul
+if not errorlevel 1 set "ISCC=ISCC.exe"
+
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 7\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 7\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 7\ISCC.exe"
+if not defined ISCC if exist "%LocalAppData%\Programs\Inno Setup 7\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 7\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
+
+if not defined ISCC (
+  echo.
+  echo INNO SETUP NOT FOUND.
+  echo.
+  echo Install it once with:
+  echo   winget install --id JRSoftware.InnoSetup.7 -e -s winget -i
+  echo.
+  echo Then run BUILD_MAKECHESS_INSTALLER.cmd again.
+  goto :fail
+)
+
+if exist "%OUT%" del /q "%OUT%"
+
+echo Inno Setup compiler:
+echo %ISCC%
+echo.
+echo Building installer...
+"%ISCC%" "%ISS%"
 if errorlevel 1 goto :fail
 
-echo.
-echo INSTALLER GOTOV:
-echo build\installer\MakeChessSetup-!APP_VERSION!.exe
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0MAKE_UPDATE_JSON.ps1" -Version !APP_VERSION!
+if not exist "%OUT%" (
+  echo ERROR: installer build finished but output file was not found.
+  goto :fail
+)
 
 echo.
-echo update.json sozdany v desktop\update.json
+echo ============================================================
+echo   INSTALLER READY
+echo ============================================================
+echo   %OUT%
+echo ============================================================
+echo.
+for %%F in ("%OUT%") do echo Size: %%~zF bytes
+echo.
+explorer /select,"%OUT%"
 pause
 exit /b 0
 
 :fail
-echo OSHIBKA SBORKI INSTALLERA.
+echo.
+echo ============================================================
+echo   INSTALLER BUILD STOPPED
+echo ============================================================
+echo.
 pause
 exit /b 1

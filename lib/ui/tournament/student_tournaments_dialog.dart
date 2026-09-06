@@ -1,5 +1,6 @@
-// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
+﻿// MAKECHESS_ALL_RUSSIAN_UI_V5_20260807
 // MAKECHESS_STUDENT_TOURNAMENTS_LOCALIZED_V3_2_20260807
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 
@@ -115,6 +116,8 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
   String? _selectedTournamentKey;
   List<Map<String, dynamic>> _tournaments = <Map<String, dynamic>>[];
   final TextEditingController _searchCtl = TextEditingController();
+  Timer? _autoRefreshTimer;
+  bool _refreshInProgress = false;
   final Map<String, TextEditingController> _filterControllers = {
     for (final key in const <String>[
       'name',
@@ -138,20 +141,35 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
       key: TextEditingController(),
   };
 
+  // MAKECHESS_TOURNAMENT_AUTO_REFRESH_15S_V2
   @override
   void initState() {
     super.initState();
     if (widget.statisticsOnly) {
       _section = _StudentTournamentSection.statistics;
     }
+
     _load();
+
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!mounted ||
+          _section != _StudentTournamentSection.current ||
+          _refreshInProgress) {
+        return;
+      }
+      _load(silent: true);
+    });
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool silent = false}) async {
+    if (_refreshInProgress) return;
+    _refreshInProgress = true;
+
     try {
       final list =
           await TournamentStorageService.instance.loadVisibleTournaments();
       if (!mounted) return;
+
       setState(() {
         _tournaments = list;
         _loadError = null;
@@ -159,10 +177,15 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
       });
     } catch (error) {
       if (!mounted) return;
-      setState(() {
-        _loadError = '$error';
-        _loading = false;
-      });
+
+      if (!silent) {
+        setState(() {
+          _loadError = '$error';
+          _loading = false;
+        });
+      }
+    } finally {
+      _refreshInProgress = false;
     }
   }
 
@@ -837,7 +860,12 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
           leading:
               Icon(icon, color: active ? Colors.cyanAccent : Colors.white54),
           title: MakeChessLocalizedText(text),
-          onTap: () => setState(() => _section = section),
+          onTap: () {
+            setState(() => _section = section);
+            if (section == _StudentTournamentSection.current) {
+              _load(silent: true);
+            }
+          },
         ),
       );
     }
@@ -1340,6 +1368,7 @@ class _StudentTournamentsDialogState extends State<_StudentTournamentsDialog> {
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _searchCtl.dispose();
     for (final controller in _filterControllers.values) {
       controller.dispose();

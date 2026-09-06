@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart' as makechess_url;
 
+import '../services/temporary_feature_access_service.dart';
 import 'app_style.dart';
 
 const List<String> kSupportedLanguageCodes = [
@@ -50,6 +52,294 @@ const Map<String, String> kLanguageFlags = {
 /// Главная игровая страница меняет его при входе в роль ученика/учителя.
 final ValueNotifier<String> makechessLearningTopBarLabel =
     ValueNotifier<String>('Учиться');
+
+// MAKECHESS_DOWNLOAD_GATE_V5
+Future<void> _showWindowsDownloadAccessDialog(
+  BuildContext context, {
+  VoidCallback? onLoginTap,
+}) async {
+  final action = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.download_outlined),
+          SizedBox(width: 10),
+          Expanded(child: Text('Скачивание MakeChess')),
+        ],
+      ),
+      content: const Text(
+        'Для скачивания программы MakeChess необходимо получить '
+        'разрешение администратора.\n\n'
+        'Нажмите «Запрос на скачивание». После одобрения администратора '
+        'снова откройте меню «Скачать».',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Отмена'),
+        ),
+        FilledButton.icon(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop('request_download'),
+          icon: const Icon(Icons.outgoing_mail),
+          label: const Text('Запрос на скачивание'),
+        ),
+      ],
+    ),
+  );
+
+  if (action != 'request_download' || !context.mounted) return;
+
+  await _submitWindowsDownloadRequestOnly(
+    context,
+    onLoginTap: onLoginTap,
+  );
+}
+
+Future<void> _submitWindowsDownloadRequestOnly(
+  BuildContext context, {
+  VoidCallback? onLoginTap,
+}) async {
+  final service = TemporaryFeatureAccessService.instance;
+
+  try {
+    await service.submitWindowsDownloadRequest();
+    if (!context.mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.mark_email_read_outlined),
+            SizedBox(width: 10),
+            Expanded(child: Text('Запрос отправлен')),
+          ],
+        ),
+        content: const Text(
+          'Запрос на скачивание отправлен администратору.\n\n'
+          'После того как администратор разрешит скачивание, '
+          'снова откройте меню «Скачать».',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Понятно'),
+          ),
+        ],
+      ),
+    );
+  } on StateError catch (error) {
+    if (!context.mounted) return;
+
+    final message = error.message.toString();
+    final requiresLogin = message.toLowerCase().contains('аккаунт') ||
+        message.toLowerCase().contains('вход') ||
+        message.toLowerCase().contains('подключение');
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Запрос не отправлен'),
+        content: Text(
+          requiresLogin
+              ? 'Для отправки запроса необходимо войти в аккаунт MakeChess.\n\n'
+                  'После входа снова нажмите «Скачать» → '
+                  '«Запрос на скачивание».'
+              : message,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Закрыть'),
+          ),
+          if (requiresLogin && onLoginTap != null)
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop('login'),
+              icon: const Icon(Icons.login),
+              label: const Text('Войти'),
+            ),
+        ],
+      ),
+    );
+
+    if (action == 'login') {
+      onLoginTap?.call();
+    }
+  } catch (error) {
+    if (!context.mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Не удалось отправить запрос'),
+        content: Text('Сервер отклонил запрос: $error'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> _downloadOrRequestMakeChessWindows(
+  BuildContext context, {
+  VoidCallback? onLoginTap,
+}) async {
+  final service = TemporaryFeatureAccessService.instance;
+
+  try {
+    final uri = await service.windowsDownloadUri();
+
+    if (uri == null) {
+      if (!context.mounted) return;
+      await _showWindowsDownloadAccessDialog(
+        context,
+        onLoginTap: onLoginTap,
+      );
+      return;
+    }
+
+    final opened = await makechess_url.launchUrl(
+      uri,
+      webOnlyWindowName: kIsWeb ? '_self' : null,
+    );
+
+    if (!opened && context.mounted) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Скачивание MakeChess'),
+          content: const Text(
+            'Разрешение получено, но браузер не смог открыть '
+            'временную ссылку скачивания.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Закрыть'),
+            ),
+          ],
+        ),
+      );
+    }
+  } on StateError catch (error) {
+    if (!context.mounted) return;
+
+    final message = error.message.toString();
+    final requiresLogin = message.toLowerCase().contains('аккаунт') ||
+        message.toLowerCase().contains('вход') ||
+        message.toLowerCase().contains('подключение');
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(requiresLogin ? 'Требуется вход' : 'Скачивание MakeChess'),
+        content: Text(
+          requiresLogin
+              ? 'Для проверки разрешения на скачивание необходимо войти '
+                  'в аккаунт MakeChess.'
+              : message,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Закрыть'),
+          ),
+          if (requiresLogin && onLoginTap != null)
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop('login'),
+              icon: const Icon(Icons.login),
+              label: const Text('Войти'),
+            ),
+        ],
+      ),
+    );
+
+    if (action == 'login') {
+      onLoginTap?.call();
+    }
+  } catch (error) {
+    if (!context.mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Не удалось проверить разрешение'),
+        content: Text('Сервер вернул ошибку: $error'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// MAKECHESS_DOWNLOAD_VARIANTS_V1
+Future<void> _showMakeChessDownloadMenu(
+  BuildContext context, {
+  VoidCallback? onLoginTap,
+}) async {
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+  final screenWidth = overlay?.size.width ?? MediaQuery.sizeOf(context).width;
+
+  final selected = await showMenu<String>(
+    context: context,
+    position: RelativeRect.fromLTRB(
+      screenWidth > 420 ? screenWidth - 360 : 12,
+      52,
+      12,
+      0,
+    ),
+    items: const [
+      PopupMenuItem<String>(
+        value: 'windows-modern',
+        child: ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.desktop_windows),
+          title: Text('Windows 10 / 11'),
+          subtitle: Text('По разрешению администратора'),
+        ),
+      ),
+      PopupMenuItem<String>(
+        enabled: false,
+        child: ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.laptop_windows),
+          title: Text('Windows 8 / 8.1'),
+          subtitle: Text('Готовится отдельная совместимая версия'),
+        ),
+      ),
+      PopupMenuDivider(),
+      PopupMenuItem<String>(
+        enabled: false,
+        child: ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.desktop_mac),
+          title: Text('Apple macOS'),
+          subtitle: Text('Готовится версия для Mac'),
+        ),
+      ),
+    ],
+  );
+
+  if (selected == 'windows-modern' && context.mounted) {
+    await _downloadOrRequestMakeChessWindows(
+      context,
+      onLoginTap: onLoginTap,
+    );
+  }
+}
 
 class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
   final VoidCallback? onTitleTap;
@@ -220,6 +510,18 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
                     compact: true,
                   ),
                   const SizedBox(width: 4),
+                  if (kIsWeb) ...[
+                    _NeoTopButton(
+                      label: 'Скачать',
+                      icon: Icons.download_rounded,
+                      onTap: () => _showMakeChessDownloadMenu(
+                        context,
+                        onLoginTap: onLoginTap,
+                      ),
+                      compact: true,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   _MobileHamburgerButton(
                     hasIncomingCall: hasIncomingCall,
                     incomingFrom: incomingFrom,
@@ -307,6 +609,17 @@ class CommonTopBar extends StatelessWidget implements PreferredSizeWidget {
             compact: compact,
           ),
           gap(menuGap),
+          if (kIsWeb) ...[
+            _TopMenuText(
+              label: 'Скачать',
+              onTap: () => _showMakeChessDownloadMenu(
+                context,
+                onLoginTap: onLoginTap,
+              ),
+              compact: compact,
+            ),
+            gap(menuGap),
+          ],
           _SettingsMenu(
             onBackgroundTheme: onBackgroundTheme,
             onBoardTheme: onBoardTheme,

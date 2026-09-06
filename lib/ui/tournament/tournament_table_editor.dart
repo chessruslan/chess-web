@@ -4,7 +4,9 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import '../dialogs/temporary_round_access_dialog.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -493,7 +495,8 @@ class _TournamentTableEditorDialogState
     final participantTitle = participant.title.trim();
     if (allowedTitles.isNotEmpty &&
         !allowedTitles.contains(participantTitle.toLowerCase())) {
-      final actualTitle = participantTitle.isEmpty ? 'не указано' : participantTitle;
+      final actualTitle =
+          participantTitle.isEmpty ? 'не указано' : participantTitle;
       errors.add(
         '• Шахматное звание: у участника $actualTitle. '
         'Допускаются: ${_allowedTitles.join(', ')}',
@@ -786,6 +789,12 @@ class _TournamentTableEditorDialogState
   }
 
   Future<void> _saveAndClose(TournamentTableEditorResult result) async {
+    // MAKECHESS_APP_ONLY_10_TOURNAMENTS_V3
+    // Website: no limit. Windows/native application: 10 created tournaments.
+    if (!kIsWeb && widget.creatingNewTournament) {
+      final allowed = await ensureTemporaryTournamentAccess(context);
+      if (!allowed) return;
+    }
     await _save();
     if (!mounted) return;
     Navigator.pop(context, result);
@@ -1516,8 +1525,7 @@ class _TournamentTableEditorDialogState
           .replaceAll('½', '1/2');
       if (result == '1/2-1/2') {
         points += _pairingSettings.scoringSystem.drawPoints;
-      } else if ((isWhite && result == '1-0') ||
-          (isBlack && result == '0-1')) {
+      } else if ((isWhite && result == '1-0') || (isBlack && result == '0-1')) {
         points += _pairingSettings.scoringSystem.winPoints;
       }
     }
@@ -2097,9 +2105,8 @@ class _TournamentTableEditorDialogState
   }
 
   Widget _participantTitleDropdown(TextEditingController controller) {
-    final current = controller.text.trim().isEmpty
-        ? 'Без звания'
-        : controller.text.trim();
+    final current =
+        controller.text.trim().isEmpty ? 'Без звания' : controller.text.trim();
     final titles = <String>[
       ..._chessTitles,
       if (!_chessTitles.contains(current)) current,
@@ -3833,8 +3840,8 @@ class _TournamentTableEditorDialogState
                               await LocalFileService.saveText(
                                 suggestedName: 'pairings_round_$round.txt',
                                 text: text,
-                                initialDirectory:
-                                    await TournamentStorageService.instance.localFolderPath,
+                                initialDirectory: await TournamentStorageService
+                                    .instance.localFolderPath,
                               );
                             },
                             icon: const Icon(Icons.save_alt),

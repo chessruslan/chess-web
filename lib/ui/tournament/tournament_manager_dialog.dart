@@ -492,12 +492,10 @@ class _TournamentData {
     final pairingsRaw = json['pairings'];
     final historyRaw = json['roundHistory'];
     final namesRaw = json['participantNames'];
-    final rawMaxParticipants =
-        (json['maxParticipants'] as num?)?.toInt() ?? 8;
+    final rawMaxParticipants = (json['maxParticipants'] as num?)?.toInt() ?? 8;
     final schemaRaw = json['templateSchema'];
-    final schemaRowCount = schemaRaw is Map
-        ? (schemaRaw['rowCount'] as num?)?.toInt()
-        : null;
+    final schemaRowCount =
+        schemaRaw is Map ? (schemaRaw['rowCount'] as num?)?.toInt() : null;
     // Older expandable tournaments used int32.maxValue as an "unlimited"
     // marker. It is not a real participant count and must never reach the UI.
     final normalizedMaxParticipants = rawMaxParticipants > 128
@@ -772,9 +770,11 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
           TextButton.icon(
             onPressed: () async {
               final folder = await storage.localFolderPath;
-              if (folder == null || !await LocalFileService.openFolder(folder)) {
+              if (folder == null ||
+                  !await LocalFileService.openFolder(folder)) {
                 if (mounted) {
-                  _message('Папка доступна только в установленном приложении Windows');
+                  _message(
+                      'Папка доступна только в установленном приложении Windows');
                 }
               }
             },
@@ -925,7 +925,8 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
 
   @override
   void dispose() {
-    TournamentStorageService.instance.removeListener(_onTournamentStorageChanged);
+    TournamentStorageService.instance
+        .removeListener(_onTournamentStorageChanged);
     _nameCtl.dispose();
     _maxCtl.dispose();
     _minutesCtl.dispose();
@@ -2001,7 +2002,9 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(
-                    online ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
+                    online
+                        ? Icons.cloud_done_outlined
+                        : Icons.cloud_off_outlined,
                     size: 15,
                     color: online ? Colors.greenAccent : Colors.orangeAccent,
                   ),
@@ -3259,10 +3262,10 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
   Future<void> _createCurrentTournamentFromTemplate(
     _TournamentData template,
   ) async {
-    final maxParticipants = (template.templateSchema?.rowCount ??
-            template.maxParticipants)
-        .clamp(2, 128)
-        .toInt();
+    final maxParticipants =
+        (template.templateSchema?.rowCount ?? template.maxParticipants)
+            .clamp(2, 128)
+            .toInt();
     final templateValues = <String, String>{
       for (final field in (template.templateSchema?.fields ??
           const <TournamentTemplateField>[]))
@@ -4026,8 +4029,7 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
     final launched = tournament.copyWith(
       name: savedName.isEmpty ? tournament.name : savedName,
       maxParticipants: savedMax,
-      participantIds:
-          savedTable == null ? tournament.participantIds : savedIds,
+      participantIds: savedTable == null ? tournament.participantIds : savedIds,
       participantNames:
           savedTable == null ? tournament.participantNames : savedNames,
       status: _TournamentStatus.ready,
@@ -4250,14 +4252,15 @@ class _TournamentManagerDialogState extends State<TournamentManagerDialog> {
                                           '${item['id']}':
                                               '${item['name'] ?? ''}',
                                       };
-                                      final savedMax = ((savedTable?[
-                                                      'maxParticipants']
-                                                  as num?)
-                                              ?.toInt() ??
-                                          tournament.templateSchema?.rowCount ??
-                                          tournament.maxParticipants)
-                                          .clamp(2, 128)
-                                          .toInt();
+                                      final savedMax =
+                                          ((savedTable?['maxParticipants']
+                                                          as num?)
+                                                      ?.toInt() ??
+                                                  tournament.templateSchema
+                                                      ?.rowCount ??
+                                                  tournament.maxParticipants)
+                                              .clamp(2, 128)
+                                              .toInt();
                                       final updated = tournament.copyWith(
                                         name: savedName.isEmpty
                                             ? tournament.name

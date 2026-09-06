@@ -54,5 +54,6 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/makechess_openings_v1.json
     - assets/pieces/cburnett/
     - assets/sfx/

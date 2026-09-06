@@ -4,6 +4,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 
 import '../../services/webrtc_service.dart';
+import '../../services/temporary_feature_access_service.dart';
 import 'supabase_signaling.dart';
 
 class VoiceService {
@@ -18,6 +19,30 @@ class VoiceService {
   Object? _readySub;
 
   String? _roomId;
+
+  // MAKECHESS_REAL_VIDEO_CONNECTION_COUNTER_V1
+  bool _currentCallIsVideo = false;
+  bool _videoConnectionCharged = false;
+
+  Future<void> _markConnected() async {
+    connected.value = true;
+
+    if (!_currentCallIsVideo || _videoConnectionCharged) return;
+    _videoConnectionCharged = true;
+
+    try {
+      final consumed = await TemporaryFeatureAccessService.instance
+          .consumeSuccessfulVideoConnection();
+      if (!consumed) {
+        _videoConnectionCharged = false;
+        await hangup();
+      }
+    } catch (_) {
+      // A temporary accounting RPC failure must not create a duplicate charge.
+      // The next call will be checked again before it starts.
+    }
+  }
+
   bool _mediaReady = false;
   bool? _preparedAudioOnly;
 
@@ -44,7 +69,7 @@ class VoiceService {
       onLocalIce: (_) {},
       onRemoteStream: (MediaStream stream) {
         remoteRenderer.srcObject = stream;
-        connected.value = true;
+        unawaited(_markConnected());
       },
     );
 
@@ -78,7 +103,7 @@ class VoiceService {
         ms.addTrack(e.track);
         remoteRenderer.srcObject = ms;
       }
-      connected.value = true;
+      unawaited(_markConnected());
     };
   }
 
@@ -108,6 +133,8 @@ class VoiceService {
     required String roomId,
     required bool audioOnly,
   }) async {
+    _currentCallIsVideo = !audioOnly;
+    _videoConnectionCharged = false;
     _roomId = roomId.trim();
 
     await init(audioOnly: audioOnly);
@@ -164,6 +191,8 @@ class VoiceService {
     required String roomId,
     required bool audioOnly,
   }) async {
+    _currentCallIsVideo = !audioOnly;
+    _videoConnectionCharged = false;
     _roomId = roomId.trim();
 
     await init(audioOnly: audioOnly);
@@ -230,6 +259,8 @@ class VoiceService {
     _mediaReady = false;
     _preparedAudioOnly = null;
     connected.value = false;
+    _currentCallIsVideo = false;
+    _videoConnectionCharged = false;
   }
 
   Future<void> dispose() => hangup();

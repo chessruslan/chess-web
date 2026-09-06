@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal
 cd /d "%~dp0"
 
@@ -29,6 +29,12 @@ call flutter pub get
 if errorlevel 1 goto :fail
 
 call flutter build windows --release --dart-define="SUPABASE_URL=%SUPABASE_URL%" --dart-define="SUPABASE_ANON_KEY=%SUPABASE_ANON_KEY%"
+if errorlevel 1 goto :fail
+
+rem MAKECHESS_BUNDLE_STOCKFISH_V1
+set "RELEASE_DIR=%~dp0build\windows\x64\runner\Release"
+if not exist "%RELEASE_DIR%\stockfish" mkdir "%RELEASE_DIR%\stockfish"
+xcopy /E /I /Y "%~dp0stockfish\*" "%RELEASE_DIR%\stockfish\" >nul
 if errorlevel 1 goto :fail
 
 echo.

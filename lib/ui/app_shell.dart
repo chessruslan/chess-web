@@ -21,6 +21,7 @@ import '../features/call/room_selection.dart';
 import 'start_modal.dart';
 import 'board_theme_controller.dart';
 import 'dialogs/site_settings_dialog.dart';
+import 'dialogs/temporary_feature_access_dialog.dart';
 import 'dialogs/board_theme_picker_dialog.dart';
 import 'dialogs/personal_cabinet_dialog.dart';
 import 'dialogs/teacher_access_dialog.dart';
@@ -1194,6 +1195,12 @@ class _AppShellState extends State<AppShell> {
       }
     }
 
+    // MAKECHESS_VIDEO_ACCESS_PRECHECK_V1
+    if (!audioOnly) {
+      final accessAllowed = await ensureVideoConnectionAccess(context);
+      if (!accessAllowed || !mounted) return;
+    }
+
     String? toName = RoomSelection.instance.room;
 
     final users = LobbyStore.instance.users.value;
@@ -1300,8 +1307,15 @@ class _AppShellState extends State<AppShell> {
             onAcceptCall: () async {
               final inc = _incoming;
               if (inc == null) return;
+
+              if (!inc.audioOnly) {
+                final accessAllowed =
+                    await ensureVideoConnectionAccess(context);
+                if (!accessAllowed || !mounted) return;
+              }
+
               await CallCoordinator.instance.acceptIncoming(inc);
-              setState(() => _incoming = null);
+              if (mounted) setState(() => _incoming = null);
             },
             onDeclineCall: () => setState(() => _incoming = null),
             showScale: true,

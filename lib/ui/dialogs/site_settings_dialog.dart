@@ -18,6 +18,9 @@ import '../messages/general_messages_dialog.dart';
 import '../board_theme_controller.dart';
 import 'board_theme_picker_dialog.dart';
 import 'admin_management_panel.dart';
+import 'temporary_license_admin_dialog.dart';
+import 'temporary_feature_access_admin_panel.dart';
+import '../../services/temporary_access_request_service.dart';
 import 'electronic_board_calibration_panel.dart';
 import '../../localization/makechess_localization.dart';
 
@@ -74,6 +77,8 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
   void initState() {
     super.initState();
     _adminCaseRequest = widget.initialAdminCase;
+    // MAKECHESS_ADMIN_SESSION_RESTORE_V3
+    _authorized = temporaryAdminSessionOpen;
     unawaited(refreshMakeChessAdminReplyUnreadCount());
   }
 
@@ -85,11 +90,16 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
     super.dispose();
   }
 
-  void _login() {
-    if (_password.text == 'makechess-admin') {
+  Future<void> _login() async {
+    final ok = await temporaryAdminLoginWithPassword(_password.text);
+    if (!mounted) return;
+
+    if (ok) {
       setState(() {
         _authorized = true;
-        _adminCredential = _password.text;
+        // Keep the existing backend credential untouched for legacy
+        // administrative RPCs. The temporary UI password is a separate gate.
+        _adminCredential = 'makechess-admin';
         _designDraft = SiteDesignController.instance.defaults;
         _error = null;
         if (_adminCaseRequest != null) {
@@ -279,23 +289,6 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
                   icon: const Icon(Icons.login),
                   label: const MakeChessLocalizedText('Войти'),
                 ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: () => setState(() {
-                    _authorized = true;
-                    _adminCredential = 'makechess-admin';
-                    _designDraft = SiteDesignController.instance.defaults;
-                  }),
-                  icon: const Icon(Icons.construction),
-                  label:
-                      const MakeChessLocalizedText('Временный вход без пароля'),
-                ),
-                const SizedBox(height: 10),
-                const MakeChessLocalizedText(
-                  'Режим разработки. Кнопка будет удалена перед запуском административного доступа.',
-                  textAlign: TextAlign.center,
-                  style: AppTextStyles.caption,
-                ),
               ],
             ),
           ),
@@ -371,11 +364,16 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
                       _nav(8, Icons.gavel_outlined, 'Правила сайта'),
                       ValueListenableBuilder<int>(
                         valueListenable: makechessAdminReplyUnreadCount,
-                        builder: (_, count, __) => _nav(
-                          9,
-                          Icons.campaign_outlined,
-                          'Сообщения',
-                          badgeCount: count,
+                        builder: (_, count, __) => ValueListenableBuilder<int>(
+                          // MAKECHESS_AUTO_APPROVE_BADGE_V4
+                          valueListenable: TemporaryAccessRequestService
+                              .instance.pendingCount,
+                          builder: (_, accessCount, __) => _nav(
+                            9,
+                            Icons.campaign_outlined,
+                            'Сообщения',
+                            badgeCount: count + accessCount,
+                          ),
                         ),
                       ),
                       const Padding(
@@ -383,6 +381,7 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
                         child: Divider(height: 1, color: AppColors.borderSoft),
                       ),
                       _nav(10, Icons.archive_outlined, 'Архив'),
+                      _nav(11, Icons.vpn_key_outlined, 'Ключи доступа'),
                     ],
                   ),
                 ),
@@ -477,12 +476,65 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
       case 10:
         return const AdminArchivePanel();
       case 11:
+        return _temporaryTestAccess();
+      case 11:
         return const ElectronicBoardCalibrationPanel();
       default:
         return _overview();
     }
   }
 
+  Widget _temporaryTestAccess() => ListView(
+        children: [
+          _title(
+            'Ключи доступа',
+            'Ручная выдача ключей для установленного приложения',
+          ),
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppColors.appBgSoft,
+              borderRadius: AppRadius.r12,
+              border: Border.all(color: AppColors.borderSoft),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const MakeChessLocalizedText(
+                  'После исчерпания лимита преподаватель сообщает номер '
+                  'установки. Здесь можно сгенерировать одноразовый ключ '
+                  'ещё на выбранное количество турниров.',
+                  style: AppTextStyles.body,
+                ),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: () => showTemporaryLicenseAdminDialog(context),
+                  icon: const Icon(Icons.vpn_key),
+                  label: const MakeChessLocalizedText(
+                    'Сгенерировать ключ продолжения',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    temporaryAdminLogout();
+                    setState(() {
+                      _authorized = false;
+                      _password.clear();
+                      _error = null;
+                      _section = 0;
+                    });
+                  },
+                  icon: const Icon(Icons.logout),
+                  label: const MakeChessLocalizedText(
+                    'Выйти из режима администратора',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
   Widget _title(String text, String hint) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -888,6 +940,13 @@ class _SiteSettingsDialogState extends State<_SiteSettingsDialog> {
         footer: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // MAKECHESS_REAL_ACCESS_REQUESTS_MESSAGES_V3
+            const TemporaryAccessRequestsAdminPanel(),
+            const SizedBox(height: 18),
+            const TemporaryFeatureAccessRequestsAdminPanel(),
+            const SizedBox(height: 18),
+            const Divider(color: AppColors.borderSoft),
+            const SizedBox(height: 14),
             const _AdminDirectMessageComposer(),
             const SizedBox(height: 18),
             const Divider(color: AppColors.borderSoft),
